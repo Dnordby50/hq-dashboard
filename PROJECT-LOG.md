@@ -1,3 +1,37 @@
+## [2026-08-11 MST] Prompt 86 verification: the revoke mechanism is proven at the database and code level. The live sign-in half was deliberately not run.
+
+By: Cowork
+
+Changed: this entry only. No code, no schema, no settings, no data. Nothing was revoked, no test account was created, and no real user's sessions were touched.
+
+**Why the plan changed.** The handoff asked for a throwaway staff login, a second signed-in browser profile, and a real sign-in. Two of those steps require creating an account and typing passwords into password fields, which this operator cannot do, and only one Chrome browser is connected to the session, so a second profile was not observable either. Dylan chose the alternative: skip the live sign-in and verify the mechanism instead. This entry records exactly what that does and does not establish.
+
+**Migration and deploy state (live prod).** `admin_users.login_revoked_at` and `login_revoked_by` both present. `settings.login_revoked_poll_seconds = '60'`. Baseline clean before and after this session: 0 rows with `login_revoked_at` set, 0 `revoke_login` or `restore_login` rows in `audit_log`, 0 open `pec_ops_items`. The deployed `index.html` at prescottepoxy.netlify.app carries the UI strings (Revoke login, Restore login, Delete login, and the "Your access was removed by an admin" copy). `POST /.netlify/functions/pec-revoke-login` with no bearer token returns **401**.
+
+**The session-kill chain, proven end to end in the database.** `pec_admin_kill_sessions(uuid)` is SECURITY DEFINER with `search_path = public, auth`; its body is `delete from auth.sessions where user_id = target_auth_user_id` returning the row count. The claim the whole design rests on, that killing sessions also kills refresh tokens, is now proven rather than assumed: `auth.refresh_tokens_session_id_fkey` has `confdeltype = 'c'`, a real ON DELETE CASCADE from `refresh_tokens.session_id` to `sessions`. The security boundary holds: EXECUTE on the RPC is false for `authenticated`, false for `anon`, true for `service_role`, so the only path to it is the Netlify function holding the service role key. As a second confirmation, `auth.sessions` is not even readable by `authenticated` (permission denied for table sessions). There is real work for the delete to do: live session counts at verification time were Dylan 17, Dusty 6, Aron 6, Anne 4, Kyle 0, Landen 0.
+
+**The kill-switch poll, including the dependency that would have failed silently.** `pecStartRevokedLoginWatch()` is called at index.html:7324 inside `renderAuthUI`, on the signed-in-staff path only, once per page life; an unwired poll would have been a silent no-op and this was the first thing checked. The check reads its own row through `withFreshSession` and tests `r.error` before `r.data`, so the documented supabase-js trap (a bad column returns an empty response without throwing) cannot masquerade as "not revoked". The subtle dependency: the poll only works if a REVOKED user can still read `admin_users`. `is_admin_staff()` is `exists (select 1 from admin_users where auth_user_id = auth.uid())` with no reference to `login_revoked_at`, so a revoked user keeps SELECT and can still see their own revoked flag. Had that function excluded revoked users, the read would have failed, the catch would have swallowed it, and the tab would have sat there forever looking fine. Verified by impersonation, not by reading alone: `set local role authenticated` with `request.jwt.claims.sub` set to a non-admin staff uid returns `is_admin_staff() = true`, a successful self-read of `login_revoked_at`, and 6 visible rows.
+
+**Reassignment filters checked against the live schema (standing rule 9).** Every column `pec-revoke-login.cjs` filters or writes on exists live with the expected type: `leads.owner_user_id` (uuid), `leads.deleted_at`, `leads.archived_at`, `leads.stage`; `pec_user_todos.admin_user_id`, `pec_user_todos.done` (boolean); `pec_notifications.target_user_id`, `pec_notifications.read_at`; `pec_ops_items.assigned_to`, `pec_ops_items.status`. `leads.deleted_at` was the one worth checking because it is not in SCHEMA.md's leads column list as a declared FK context; it is real, so the lead PATCH filter will not 400.
+
+**UI check that did run.** Settings > People renders the roster with LOGIN role chips and no "Login revoked" badges, matching the 0-revoked database state. Dylan's own person modal shows the Login section (email, linked auth, Role, Reset password, Permissions, Linked login) with **no Revoke login control and no Delete login control**, which is handoff task 5 and matches the render gate `!au.login_revoked_at && viewerCanManageTeam && au.id !== state.adminUser?.id`. The modal was closed with Cancel; nothing was saved.
+
+**What this does NOT establish, stated plainly.** Five things remain unproven and all of them need one real revoke:
+1. That an open tab actually drops to the sign-in screen, and how many seconds it takes.
+2. **That GoTrue accepts `ban_duration: '876000h'`.** This is the highest-risk unverified item. The value has never been sent to this project's GoTrue. If the format is rejected the PUT fails, the function returns 502, and the login is NOT revoked.
+3. That a banned user is actually refused at sign-in.
+4. That the reassignment PATCHes move the rows and return the counts the toast and audit row report.
+5. That Restore unbans and that sign-in works again afterwards.
+
+**One code observation worth recording.** Reassignment runs BEFORE the ban, so a failed ban leaves the work already moved with no revoke performed. The function's own 502 message says so ("Nothing was revoked; reassignments (if any) already ran"), and with the counts in hand it is recoverable by hand, but it is a real ordering trade-off rather than an oversight, and it is now written down.
+
+**Unrelated observation, not acted on.** The People roster shows two person rows each for Kyle Floyd and Landen Johnson (one holding the LOGIN role, one holding CREW). That is the People model behaving as designed with the dedupe screen's merge suggestion pending, not a revoke bug, but an operator revoking a login should be aware the other row is a separate person record.
+
+## Handoff to Dylan
+
+1. The only thing standing between this feature and "verified" is one real revoke. When you have five minutes: create a throwaway login yourself, sign into it on your phone, revoke it from your laptop, and watch the phone. Everything else is already proven.
+2. Watch item 2 above specifically. If the revoke returns a 502 mentioning the ban, the `876000h` duration is the culprit and it is a one-line fix in `pec-revoke-login.cjs`.
+3. Nothing in prod was changed by this session. There is no test row to clean up.
 ## [2026-08-11 MST] Prompt 86 run: a login can now be revoked (and restored) without deleting a single record.
 
 By: Claude Code
