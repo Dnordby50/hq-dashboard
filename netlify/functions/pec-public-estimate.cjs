@@ -1409,7 +1409,21 @@ async function ensureJobCreated(est) {
       sort_order: i,
     })));
   }
-  if (areas.length) {
+  // Included lines with NO estimate_areas row (2026-08-12 fix): a
+  // whole-estimate CUSTOM estimate (est.is_custom) carries its entire sale in
+  // one 'Custom scope of work' line with estimate_area_id null, and add-on /
+  // standalone-MVB lines are area-less by construction. Before this fix only
+  // `areas` produced job_areas rows, so a custom estimate's job got ZERO rows;
+  // the job detail treats job_areas as THE estimate lines (renderJobDetailInner
+  // seeds a blank $0 'Main' when empty), so the page showed no line items and
+  // a $0 total, and a Save there would have re-derived jobs.price to 0 from
+  // the blank line (found on EST-102098). Every included area-less line now
+  // becomes its own job_areas row, exactly like a prompt-69 custom LINE: name
+  // from the label, no system/products (contributes nothing to the material
+  // plan, same as decision 6), price and description carried so the money and
+  // the words render on the job detail and the crew work order.
+  const arealessLines = included.filter(li => li && !li.estimate_area_id);
+  if (areas.length || arealessLines.length) {
     const existingAreas = await sb('GET', `/job_areas?job_id=eq.${jobId}&select=id&limit=1`);
     if (!existingAreas.length) {
       // Each area's line item (prompt 69): its FINAL price and its scope
@@ -1420,7 +1434,7 @@ async function ensureJobCreated(est) {
       for (const li of included) {
         if (li && li.estimate_area_id && !liByArea.has(li.estimate_area_id)) liByArea.set(li.estimate_area_id, li);
       }
-      await sb('POST', '/job_areas', areas.map((a, i) => {
+      const areaRows = areas.map((a, i) => {
         const li = a.id ? liByArea.get(a.id) : null;
         const isCustomLine = a.is_custom === true;
         return {
@@ -1435,7 +1449,24 @@ async function ensureJobCreated(est) {
           price: li && li.total != null ? Number(li.total) : null,
           description: li && li.description ? String(li.description) : null,
         };
+      });
+      // Area-less lines land AFTER the real areas (order_index continues past
+      // them), in their estimate sort order (loadLineItems orders by
+      // sort_order). sqft stays null: jobs.sqft already carries a custom
+      // estimate's typed custom_sqft, and an add-on has no footage of its own.
+      const lineRows = arealessLines.map((li, i) => ({
+        job_id: jobId,
+        name: li.label || 'Custom work',
+        sqft: null,
+        system_type_id: null,
+        flake_product_id: null,
+        basecoat_product_id: null,
+        topcoat_cure_speed: null,
+        order_index: areaRows.length + i,
+        price: li.total != null ? Number(li.total) : null,
+        description: li.description ? String(li.description) : null,
       }));
+      await sb('POST', '/job_areas', [...areaRows, ...lineRows]);
     }
   }
 

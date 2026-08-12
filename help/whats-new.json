@@ -1,5 +1,16 @@
 [
   {
+    "id": "custom-estimate-job-line-items",
+    "date": "2026-08-12",
+    "title": "Custom estimate jobs now show their line items and price",
+    "summary": "Jobs created from a signed custom estimate (and any estimate with add-on lines) now carry every sold line onto the job page. Before this fix, a custom estimate's job showed an empty line items table and a zero price.",
+    "howto": [
+      "Open the job from the Jobs page.",
+      "The Line Items table now shows each sold line with its price and scope.",
+      "The one affected job (EST-102098) was repaired automatically, nothing to redo."
+    ]
+  },
+  {
     "id": "system-heartbeat",
     "date": "2026-08-12",
     "title": "TopCoat now checks its own machinery every morning",

@@ -1,3 +1,25 @@
+## [2026-08-12 MST] Bug fix: a signed whole-estimate CUSTOM estimate created a job with zero line items and a $0 detail page (Brian Hixson, EST-102098). Accept path fixed, live row repaired.
+
+By: Cowork
+
+Changed: netlify/functions/pec-public-estimate.cjs (ensureJobCreated), help/whats-new.json (1 entry), features.json (accept-flow entry amended), plus this entry. One live data repair in prod (job_areas insert, see below). No schema change, no settings.
+
+Why: Dylan reported the Brian Hickson (actually Hixson) job showing zero price and no line items on the job detail after the customer signed. Root cause, proven from the code and the live rows: ensureJobCreated builds job_areas ONLY from estimate_areas rows (`if (areas.length)` at the old line ~1412), but a whole-estimate CUSTOM estimate (estimates.is_custom = true) has ZERO estimate_areas rows; its entire sale is one estimate_line_items row ('Custom scope of work', estimate_area_id null). So the accept created the jobs row correctly (price 250, line_items JSONB populated) but zero job_areas rows. The job detail page treats job_areas as THE estimate lines (renderJobDetailInner, index.html ~15970: empty areas seeds a blank $0 'Main' line), so the page rendered no detail and a $0 total. Worse, latent data risk: pressing Save on that page re-derives jobs.price and jobs.line_items FROM the areas (saveJob, index.html ~17460), which would have overwritten the real $250 price with $0. Dylan had not saved, so the jobs row was still intact.
+
+Fix: every included line item with no estimate_area_id now becomes its own job_areas row on accept (name from the label, no system/products so it adds nothing to the material plan, price and description carried, order_index after the real areas). This is the same shape prompt 69 already gives a custom LINE inside a standard estimate; whole-estimate custom mode simply never had the equivalent. Also covers add-on lines and standalone-MVB lines, which were area-less by construction and silently missing from the job detail's derived price (same latent save-clobber class). All accept/crash-heal paths funnel through ensureJobCreated, so one fix covers them; the dashboard's manual Mark accepted creates no job by design and is unaffected.
+
+Live repair (prod, 2026-08-12): a full scan found EXACTLY ONE affected job (accepted estimates having included area-less lines with zero job_areas rows): EST-102098 / job 7757ac10. Inserted its missing job_areas row (id 2f511b94, name 'Custom scope of work', price 250, description = the signed scope) guarded by a not-exists check. jobs.price was still 250 and line_items_manual_override false, so nothing else needed repair. Note for the curious: the pec_prod_jobs side was always fine (revenue 250, scheduled 2026-08-14); its Main/0-sqft pec_prod_areas row was seeded later by the schedule-side editor and is harmless (custom work contributes nothing to the material plan by design, decision 6 of prompt 69).
+
+Verified: node --check clean on the edited function; the repaired row confirmed by re-query; the job detail's line table and price derive from job_areas, so the page now renders the sold line and $250 (render logic traced at index.html 15970-15982; areaPriceSum = 250 = jobs.price, and a future save re-derives the same 250, no clobber). Not verified here: a fresh end-to-end custom-estimate accept against the deployed function (needs the Netlify deploy of this commit; the next real custom accept is the proof).
+
+Files touched: netlify/functions/pec-public-estimate.cjs, help/whats-new.json, features.json, PROJECT-LOG.md
+
+Next steps: Netlify auto-deploys on push; the commit is local only (Cowork does not push). Claude Code or Dylan pushes when ready.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: Open the Brian Hixson job on the Jobs page. The Line Items table should now show 'Custom scope of work' at $250 with the signed scope text, and the header price should read $250. The fix itself goes live on the next push to main.
+
 ## [2026-08-12 MST] Prompt 89 run: customers are the source of truth. Every lead is born linked to a customer, the appointment modal links customers with real search, titles auto-derive, and the backfill ran live (11 customers created, 8 appointments stamped).
 
 By: Claude Code
