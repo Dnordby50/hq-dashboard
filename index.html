@@ -24063,6 +24063,118 @@ async function mountJobComms(card, job) {
   reload();
 }
 
+// Estimate-page Communications card (Dylan, 2026-08-12, out of the Adam
+// Camacho linkless-text incident: "see exactly what communications went
+// out" from the estimate itself). One card: the merged texts+calls feed
+// (the SAME qoMergeFeedHtml the job console and Messages thread render),
+// the email log for this contact, and the Call/Text chip
+// (pecPhoneActionsHtml; Text deep-links into the Messages thread).
+//
+// MATCHING is by phone last-10 / exact email OR customer_id, because most
+// log rows predate customer linking (live counts 2026-08-12: 219/372 texts,
+// 1328/1741 calls, 39/86 emails carry NO customer_id) and an estimate's
+// contact info is frozen on the estimates row itself (customer_phone /
+// customer_email), with the lead/customer rows as fallback for older
+// estimates. Read-only by design: composing happens in Messages (the Text
+// chip lands there) so there is exactly one send path.
+function estimateCommsCardHtml() {
+  return `
+    <div class="pec-card" id="estCommsCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 style="margin:0">Communications</h3>
+        <div style="display:flex;gap:8px;align-items:center" data-est-comms-actions></div>
+      </div>
+      <div data-est-comms-feedwrap style="margin-top:10px">
+        <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Texts and calls</div>
+        <div data-est-comms-feed class="qo-feed" style="max-height:340px;overflow-y:auto">
+          <div class="qo-empty">Loading texts and calls&hellip;</div>
+        </div>
+      </div>
+      <div data-est-comms-emailwrap style="margin-top:12px">
+        <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Emails</div>
+        <div data-est-comms-emails><div style="color:var(--muted);font-size:.78rem">Loading emails&hellip;</div></div>
+      </div>
+    </div>`;
+}
+async function mountEstimateComms(card, est) {
+  if (!card) return;
+  const feedEl = card.querySelector('[data-est-comms-feed]');
+  const emailEl = card.querySelector('[data-est-comms-emails]');
+  const actionsEl = card.querySelector('[data-est-comms-actions]');
+
+  // Contact resolution: the frozen estimate columns first, then the linked
+  // lead, then the customer (older estimates predate the frozen columns).
+  let phone = (est.customer_phone || '').trim();
+  let email = (est.customer_email || '').trim();
+  let custId = est.customer_id || null;
+  let name = est.customer_name || (est.leads && est.leads.full_name) || (est.customers && est.customers.name) || '';
+  try {
+    if ((!phone || !email || !custId) && est.lead_id) {
+      const r = await supabase.from('leads').select('full_name,phone,email,customer_id').eq('id', est.lead_id).maybeSingle();
+      if (!r.error && r.data) {
+        phone = phone || r.data.phone || '';
+        email = email || r.data.email || '';
+        custId = custId || r.data.customer_id || null;
+        name = name || r.data.full_name || '';
+      }
+    }
+    if ((!phone || !email) && custId) {
+      const r = await supabase.from('customers').select('name,phone,email').eq('id', custId).maybeSingle();
+      if (!r.error && r.data) {
+        phone = phone || r.data.phone || '';
+        email = email || r.data.email || '';
+        name = name || r.data.name || '';
+      }
+    }
+  } catch (_) { /* whatever resolved still renders */ }
+  const p10 = String(phone).replace(/\D/g, '').slice(-10);
+
+  if (actionsEl) {
+    actionsEl.innerHTML = pecPhoneActionsHtml(phone, { name, customerId: custId, showEmpty: true })
+      + (custId ? `<button class="pec-btn ghost sm" data-est-comms-cust>Open customer</button>` : '');
+    const openCust = actionsEl.querySelector('[data-est-comms-cust]');
+    if (openCust) openCust.addEventListener('click', () => { state.openCustomerId = custId; switchView('customers'); });
+  }
+
+  if (!p10 && !email && !custId) {
+    feedEl.innerHTML = '<div class="qo-empty">No phone, email, or linked customer on this estimate yet.</div>';
+    emailEl.innerHTML = '<div style="color:var(--muted);font-size:.78rem">Nothing to match emails against.</div>';
+    return;
+  }
+
+  // OR-match on identity keys; conditional parts so a missing key never
+  // becomes an empty ilike that matches everything.
+  const phoneOr = [];
+  if (custId) phoneOr.push(`customer_id.eq.${custId}`);
+  if (p10) { phoneOr.push(`to_number.ilike.%${p10}`); phoneOr.push(`from_number.ilike.%${p10}`); }
+  const emailOr = [];
+  if (custId) emailOr.push(`customer_id.eq.${custId}`);
+  if (email) emailOr.push(`to_email.ilike.${email}`);
+
+  try {
+    const [smsRes, callRes, emRes, staffNames] = await Promise.all([
+      phoneOr.length ? supabase.from('pec_sms_log').select('*').or(phoneOr.join(',')).order('created_at', { ascending: false }).limit(200) : { data: [] },
+      phoneOr.length ? supabase.from('pec_call_log').select('*').or(phoneOr.join(',')).order('occurred_at', { ascending: false, nullsFirst: false }).limit(50) : { data: [] },
+      emailOr.length ? supabase.from('pec_email_log').select('*').or(emailOr.join(',')).order('sent_at', { ascending: false }).limit(50) : { data: [] },
+      qoStaffNames(),
+    ]);
+    const smsRows = (!smsRes.error && smsRes.data || []).slice().reverse();
+    const callRows = (!callRes.error && callRes.data || []).slice().reverse();
+    const merged = qoMergeFeedHtml(smsRows, callRows, { custName: name || '', staffNames });
+    feedEl.innerHTML = merged.count ? merged.html : '<div class="qo-empty">No texts or calls with this contact yet.</div>';
+    feedEl.scrollTop = feedEl.scrollHeight;
+    const emRows = (!emRes.error && emRes.data) || [];
+    if (emRes.error) emailEl.innerHTML = `<div style="color:var(--muted);font-size:.78rem">${esc(emRes.error.message || 'Emails unavailable.')}</div>`;
+    else if (!emRows.length) emailEl.innerHTML = '<div style="color:var(--muted);font-size:.78rem">No emails to this contact yet.</div>';
+    else {
+      emailEl.innerHTML = emailLogTableHtml(emRows, { staffNames, compact: true });
+      wireEmailLogRows(emailEl, emRows, staffNames);
+    }
+  } catch (e) {
+    feedEl.innerHTML = `<div class="qo-empty">${esc(e.message || 'Could not load communications.')}</div>`;
+  }
+}
+
 // Unified Messages view: one activity inbox merging pec_sms_log + pec_call_log
 // into conversations keyed by the customer's NORMALIZED phone number (so a
 // person's texts and calls sit in one thread regardless of stored format, and
@@ -30857,6 +30969,7 @@ async function renderEstimateDetail(estimateId) {
             <div>${txt}</div>
           </div>`).join('') : '<div class="pec-empty">No activity yet.</div>'}
         </div>
+        ${estimateCommsCardHtml()}
       </div>
     </div>
   `;
@@ -30869,6 +30982,10 @@ async function renderEstimateDetail(estimateId) {
 
   // SalesAsk visit card (prompt 71 Part D): self-contained, best-effort.
   mountEstimateSalesAsk($('estSalesAskCard'), est).catch(err => console.warn('[estimates] salesask card:', err && err.message));
+
+  // Communications card: texts + calls + emails for this estimate's contact,
+  // with the Call/Text chip. Self-contained, best-effort.
+  mountEstimateComms($('estCommsCard'), est).catch(err => console.warn('[estimates] comms card:', err && err.message));
 
   // ---- Inline estimator region (prompt 61 Part A) ---------------------------
   // The region below the toolbar is EITHER the read-only summary (the left
