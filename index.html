@@ -31801,7 +31801,17 @@ async function openEstimateSendModal(est, opts = {}) {
     <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="estCmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
     <div class="pec-field"><label>Subject</label><input id="estCmpSubject" value="${esc(defaultSubject)}"></div>
     <div class="pec-field"><label>Body</label><div id="estCmpEditorWrap" style="background:#fff;border-radius:6px"><div id="estCmpEditor" style="min-height:220px"></div></div></div>
-    <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">A "View &amp; sign your estimate" button is added under your message automatically. Sending makes the customer link live (it 404s until then). The customer can accept and sign, request changes, or decline on that page.</div>
+    ${/* Prompt 81 appends the CTA at send time (Quill strips a styled button
+         placed IN the editor), which left the compose preview showing an
+         email with no visible link; a sender reasonably stopped mid-send
+         over it (Adam Camacho, 2026-08-12). Show the real button read-only
+         under the editor so what rides along is seen, not just described. */''}
+    <div style="border:1px dashed var(--rd-line,var(--border));border-radius:8px;padding:10px 12px;margin-bottom:8px">
+      <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Added automatically under your message</div>
+      <div style="pointer-events:none">${ctaHtml}</div>
+      <div style="color:var(--muted);font-size:.7rem;margin-top:6px;word-break:break-all">Links to ${esc(link)}</div>
+    </div>
+    <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">Sending makes the customer link live (it 404s until then). The customer can accept and sign, request changes, or decline on that page.</div>
     <div class="prod-msg-err" id="estCmpErr" style="min-height:16px"></div>
     <div class="pec-modal-actions">
       <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
