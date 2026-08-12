@@ -1,5 +1,16 @@
 [
   {
+    "id": "calendar-sync-repaired",
+    "date": "2026-08-12",
+    "title": "Google Calendar sync repaired, with honest reconnect prompts",
+    "summary": "Appointments booked through Routemize now push to your TopCoat Google calendar just like in-app bookings. If Google ever stops accepting a saved connection, Settings shows a Reconnect button and you get one bell notification instead of a silently frozen calendar.",
+    "howto": [
+      "Open Settings, then Appointments, and look at the Google Calendar sync card.",
+      "If your row says Sync stopped, click Reconnect and sign in with the same Google account.",
+      "New appointments from any source then appear in your TopCoat calendar within seconds."
+    ]
+  },
+  {
     "id": "accept-slack-celebration",
     "date": "2026-08-12",
     "title": "Slack cheers when an estimate is accepted",
