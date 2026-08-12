@@ -9084,12 +9084,42 @@ async function renderCustomers() {
   // customers page can never lose a row to embed-filter semantics, whatever
   // the deployed PostgREST does with them. Archiving a job must never hide
   // the customer.
+  // Customers vs Prospects (prompt 89): leads now always hang off a customer
+  // row, so lead-originated people land in this table before they ever buy.
+  // The split is DERIVED, never stored (a stored flag would drift): engaged =
+  // has any live estimate or any non-archived job; prospect = neither. Three
+  // small id queries (~100 rows each today) buy exact chip counts and the
+  // filter; invoices ride jobs in this schema, so jobs covers them.
+  const custFilter = state.customersFilter || 'all';
+  let engagedIds = new Set();
+  let chipCounts = { all: 0, customers: 0, prospects: 0 };
+  try {
+    const [allR, jobsR, estR] = await Promise.all([
+      withFreshSession(() => supabase.from('customers').select('id').is('archived_at', null), { label: 'renderCustomers:ids' }),
+      withFreshSession(() => supabase.from('jobs').select('customer_id').is('archived_at', null).not('customer_id', 'is', null), { label: 'renderCustomers:engagedJobs' }),
+      withFreshSession(() => supabase.from('estimates').select('customer_id').is('deleted_at', null).not('customer_id', 'is', null), { label: 'renderCustomers:engagedEst' }),
+    ]);
+    (jobsR.data || []).forEach(r => engagedIds.add(r.customer_id));
+    (estR.data || []).forEach(r => engagedIds.add(r.customer_id));
+    const allIds = (allR.data || []).map(r => r.id);
+    chipCounts.all = allIds.length;
+    chipCounts.customers = allIds.filter(id => engagedIds.has(id)).length;
+    chipCounts.prospects = chipCounts.all - chipCounts.customers;
+  } catch (_) { /* chips render without counts; the list still works */ }
   let q = supabase.from('customers')
     .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip', { count: 'exact' })
     .is('archived_at', null)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
   if (state.customersSearch) q = q.or(`name.ilike.%${state.customersSearch}%,email.ilike.%${state.customersSearch}%,phone.ilike.%${state.customersSearch}%`);
+  if (custFilter === 'customers') {
+    // An empty engaged set with this filter means an empty page either way;
+    // in.() with an empty list is a PostgREST error, so give it an id that
+    // cannot match instead.
+    q = q.in('id', engagedIds.size ? [...engagedIds] : ['00000000-0000-0000-0000-000000000000']);
+  } else if (custFilter === 'prospects' && engagedIds.size) {
+    q = q.not('id', 'in', `(${[...engagedIds].join(',')})`);
+  }
   const { data, count, error } = await withFreshSession(() => q, { label: 'renderCustomers' });
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
   state.customers = data || [];
@@ -9110,6 +9140,10 @@ async function renderCustomers() {
       <input id="pecCustSearch" placeholder="Search name, email, phone…" value="${esc(state.customersSearch)}">
       <button class="pec-btn primary" id="pecCustNew">+ New Customer</button>
       <button class="pec-btn" id="pecCustImport">Import from CSV</button>
+    </div>
+    <div style="display:flex;gap:6px;margin:0 0 10px" title="Customers have at least one estimate or job; prospects are lead-originated people who have neither yet.">
+      ${[['all', 'All'], ['customers', 'Customers'], ['prospects', 'Prospects']].map(([k, l]) =>
+        `<button class="pec-btn sm ${custFilter === k ? 'primary' : 'ghost'}" data-custfilter="${k}">${l}${chipCounts.all ? ` (${chipCounts[k]})` : ''}</button>`).join('')}
     </div>
     <div class="pec-card">
       <table class="pec-table">
@@ -9137,6 +9171,9 @@ async function renderCustomers() {
     </div>
   `;
   $('pecCustSearch').addEventListener('input', debounce(e => { state.customersSearch = e.target.value.trim(); state.customersPage = 1; renderCustomers(); }, 250));
+  root.querySelectorAll('[data-custfilter]').forEach(b => b.addEventListener('click', () => {
+    state.customersFilter = b.dataset.custfilter; state.customersPage = 1; renderCustomers();
+  }));
   $('pecCustNew').addEventListener('click', () => openCustomerForm());
   $('pecCustImport').addEventListener('click', () => openCustomerImportModal());
 
@@ -25782,6 +25819,13 @@ const APPT_TYPES = [
   { key: 'other',               label: 'Other / busy',        accent: '#64748b' },
 ];
 const apptTypeInfo = (k) => APPT_TYPES.find(t => t.key === k) || APPT_TYPES[3];
+// The ONE auto-title format (prompt 89): "{Type label} for {Name}", derived
+// whenever a customer is linked. 'other' reads as plain "Appointment"
+// ("Other / busy for Bob" is nonsense); mirrored server-side in
+// pec-appt-intake.cjs. Customer-facing-safe wording: no em dashes.
+function apptAutoTitle(typeKey, name) {
+  return `${typeKey === 'other' ? 'Appointment' : apptTypeInfo(typeKey).label} for ${name}`;
+}
 
 // Per-member event color, stable by roster order (created_at then name would
 // reshuffle on renames; the loaded order is name-sorted, so color follows the
@@ -26245,6 +26289,24 @@ async function apptBookingSideEffects(appt) {
       }).catch(() => {});
     }
   } catch (_) { /* fire-and-forget */ }
+  // Pipeline advance (prompt 89): lives HERE now, not in the Schedule
+  // Estimate flow's onSaved, because the generic modal books customers (the
+  // lead resolves behind the scenes) and would otherwise never advance the
+  // pipeline. Fresh lead fetch, new/contacted guard: a second booking or a
+  // lead already past estimate_scheduled is a no-op, so the one caller that
+  // used to do this itself cannot double-fire.
+  if (appt.appt_type === 'on_site_estimate' && appt.lead_id && appt.status !== 'canceled') {
+    try {
+      const lr = await supabase.from('leads').select('*').eq('id', appt.lead_id).maybeSingle();
+      const lead = (!lr.error && lr.data) || null;
+      if (lead && !lead.deleted_at && !lead.archived_at && ['new', 'contacted'].includes(lead.stage)) {
+        await commitLeadStage(lead, 'estimate_scheduled');
+        showToast('Lead moved to Estimate Scheduled', { ttl: 2200 });
+      }
+    } catch (err) {
+      console.warn('[appointments] booking stage advance:', err && err.message || err);
+    }
+  }
 }
 
 // Cancel/delete side effect (prompt 59), best-effort by the same contract as
@@ -26309,17 +26371,22 @@ async function openAppointmentForm(existing, prefill = {}) {
   const leadId = a.lead_id || prefill.lead_id || null;
   const customerId = a.customer_id || prefill.customer_id || null;
 
-  // "Link to lead" picker only in the generic create (the lead flows arrive
-  // already linked). Open stages only; 200 newest is plenty for a picker.
-  let leadOpts = '';
-  if (isNew && !leadId) {
-    const lr = await supabase.from('leads').select('id,full_name,stage')
-      .is('deleted_at', null).is('archived_at', null)
-      .in('stage', ['new', 'contacted', 'estimate_scheduled', 'estimate_sent', 'presented'])
-      .order('created_at', { ascending: false }).limit(200);
-    if (!lr.error && (lr.data || []).length) {
-      leadOpts = `<option value="">No linked lead</option>` +
-        lr.data.map(l => `<option value="${esc(l.id)}">${esc(l.full_name || '(no name)')} · ${esc(l.stage)}</option>`).join('');
+  // Customer link (prompt 89, replacing the old lead dropdown): the modal
+  // links a CUSTOMER, the source of truth; the lead resolves FROM the
+  // customer at save time. Preload the linked customer for the picker chip; a
+  // legacy lead-only row resolves its customer through the lead, so old rows
+  // pick up the customer link (and the derived title) on their next save.
+  let curCustomer = null;   // { id, name }
+  let custChanged = false;  // any pick/unlink; save re-resolves the lead only then
+  if (customerId) {
+    const r = await supabase.from('customers').select('id,name').eq('id', customerId).maybeSingle();
+    if (!r.error && r.data) curCustomer = { id: r.data.id, name: r.data.name };
+  }
+  if (!curCustomer && leadId) {
+    const r = await supabase.from('leads').select('customer_id').eq('id', leadId).maybeSingle();
+    if (!r.error && r.data && r.data.customer_id) {
+      const cr = await supabase.from('customers').select('id,name').eq('id', r.data.customer_id).maybeSingle();
+      if (!cr.error && cr.data) curCustomer = { id: cr.data.id, name: cr.data.name };
     }
   }
 
@@ -26332,7 +26399,9 @@ async function openAppointmentForm(existing, prefill = {}) {
         <select id="afMember"><option value="">Unassigned</option>${members.map(m =>
           `<option value="${esc(m.id)}"${curMember === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`).join('')}</select></div>
     </div>
-    <div class="pec-field"><label>Title</label><input id="afTitle" value="${esc(a.title || prefill.title || '')}" placeholder="Customer or what this block is"></div>
+    <div class="pec-field"><label>Customer</label><div id="afCustWrap"></div></div>
+    <div class="pec-field"><label>Title</label><input id="afTitle" value="${esc(a.title || prefill.title || '')}" placeholder="What this block is (BNI, golf, ...)">
+      <div id="afTitleHint" style="font-size:.68rem;color:var(--muted);margin-top:3px;display:none">Comes from the customer and appointment type.</div></div>
     <div id="afPhoneRow" style="margin:-4px 0 10px;font-size:.82rem"></div>
     <div class="pec-row-2">
       <div class="pec-field"><label>Date</label><input type="date" id="afDate" value="${esc(apptDateInputVal(defStart))}"></div>
@@ -26350,7 +26419,6 @@ async function openAppointmentForm(existing, prefill = {}) {
       <div class="pec-field"><label>State</label><input id="afState" value="${esc(a.location_state || prefill.location_state || '')}" maxlength="2" placeholder="AZ"></div>
       <div class="pec-field"><label>Zip</label><input id="afZip" value="${esc(a.location_zip || prefill.location_zip || '')}" maxlength="10"></div>
     </div>
-    ${leadOpts ? `<div class="pec-field"><label>Link to lead (optional)</label><select id="afLead">${leadOpts}</select></div>` : ''}
     <div class="pec-field"><label>Job notes (customer sees)</label>
       <textarea id="afCustomerNotes" rows="2" placeholder="e.g. Please have the garage cleared out before we arrive">${esc(a.customer_notes || '')}</textarea>
       <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Added to the customer's appointment confirmation and reminder texts and emails.</div></div>
@@ -26378,6 +26446,101 @@ async function openAppointmentForm(existing, prefill = {}) {
     modal.querySelector('#afAllDay').addEventListener('change', e => {
       modal.querySelector('#afTimesRow').style.display = e.target.checked ? 'none' : '';
     });
+    // ---- Customer picker (prompt 89): type-ahead over name / phone /
+    // address (server-side ilike, debounced, seq-guarded — the
+    // openAttachToCustomer pattern), an inline "create customer" path so a
+    // walk-in never forces a trip to the Customers page, and a hard-derived
+    // title whenever a customer is linked.
+    const custWrap = modal.querySelector('#afCustWrap');
+    const titleInput = modal.querySelector('#afTitle');
+    const titleHint = modal.querySelector('#afTitleHint');
+    const syncTitle = () => {
+      if (curCustomer) {
+        titleInput.value = apptAutoTitle(val('afType'), curCustomer.name);
+        titleInput.readOnly = true;
+        titleInput.style.color = 'var(--muted)';
+        titleHint.style.display = '';
+      } else {
+        titleInput.readOnly = false;
+        titleInput.style.color = '';
+        titleHint.style.display = 'none';
+      }
+    };
+    modal.querySelector('#afType').addEventListener('change', syncTitle);
+    let custSeq = 0;
+    const renderCustPicker = () => {
+      if (curCustomer) {
+        custWrap.innerHTML = `
+          <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:7px 10px">
+            <strong style="flex:1">${esc(curCustomer.name)}</strong>
+            <button type="button" class="pec-btn ghost sm" id="afCustClear" title="Unlink this customer">&times;</button>
+          </div>`;
+        custWrap.querySelector('#afCustClear').addEventListener('click', () => {
+          curCustomer = null; custChanged = true; titleInput.value = '';
+          renderCustPicker(); syncTitle();
+        });
+        return;
+      }
+      custWrap.innerHTML = `
+        <input id="afCustQ" placeholder="Search name, phone, or address…" autocomplete="off">
+        <div id="afCustResults" style="margin-top:6px"></div>
+        <div id="afCustNew" style="display:none;margin-top:6px;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:8px">
+          <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">New customer</div>
+          <div class="pec-row-2">
+            <div class="pec-field"><label>Name</label><input id="afNewCustName"></div>
+            <div class="pec-field"><label>Phone</label><input id="afNewCustPhone" inputmode="tel"></div>
+          </div>
+          <button type="button" class="pec-btn sm" id="afNewCustSave">Create customer</button>
+          <span id="afNewCustErr" style="color:#dc2626;font-size:.75rem;margin-left:8px"></span>
+        </div>`;
+      const q = custWrap.querySelector('#afCustQ');
+      const results = custWrap.querySelector('#afCustResults');
+      const newBox = custWrap.querySelector('#afCustNew');
+      const pick = (c) => { curCustomer = c; custChanged = true; renderCustPicker(); syncTitle(); };
+      const search = async () => {
+        const term = (q.value || '').trim();
+        const mine = ++custSeq;
+        if (term.length < 2) { results.innerHTML = ''; newBox.style.display = 'none'; return; }
+        const digits = term.replace(/\D/g, '');
+        const ors = [`name.ilike.%${term}%`, `billing_address_line1.ilike.%${term}%`];
+        if (digits.length >= 4) ors.push(`phone_norm.ilike.%${digits}%`);
+        let rows = [];
+        try {
+          const r = await supabase.from('customers').select('id,name,phone,billing_city')
+            .is('archived_at', null).or(ors.join(',')).order('name').limit(12);
+          rows = (!r.error && r.data) || [];
+        } catch (_) { /* results stay empty; the New customer path remains */ }
+        if (mine !== custSeq) return; // a newer keystroke already fired
+        results.innerHTML = rows.map(c =>
+          `<button type="button" class="pec-btn ghost sm" data-pick="${esc(c.id)}" data-name="${esc(c.name)}"
+             style="display:block;width:100%;text-align:left;margin-bottom:4px">${esc(c.name)}${c.phone ? ' · ' + esc(typeof qoFmtPhone === 'function' ? qoFmtPhone(c.phone) : c.phone) : ''}${c.billing_city ? ' · ' + esc(c.billing_city) : ''}</button>`).join('')
+          || '<div style="font-size:.78rem;color:var(--muted)">No matching customers.</div>';
+        newBox.style.display = '';
+        const nameEl = custWrap.querySelector('#afNewCustName');
+        if (nameEl && !nameEl.value && !digits) nameEl.value = term;
+        results.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () =>
+          pick({ id: b.dataset.pick, name: b.dataset.name })));
+      };
+      let tmr = null;
+      q.addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(search, 220); });
+      custWrap.querySelector('#afNewCustSave').addEventListener('click', async () => {
+        const errN = custWrap.querySelector('#afNewCustErr');
+        const nm = (custWrap.querySelector('#afNewCustName').value || '').trim();
+        const ph = (custWrap.querySelector('#afNewCustPhone').value || '').replace(/\D/g, '');
+        if (!nm) { errN.textContent = 'Name is required.'; return; }
+        errN.textContent = '';
+        try {
+          const ins = await withFreshWrite(() => supabase.from('customers').insert({
+            token: randomToken(), name: nm,
+            phone: ph ? ph.slice(-10) : null,
+            lead_source: 'manual', company: 'prescott-epoxy',
+          }).select('id,name').single(), { label: 'appt-new-customer' });
+          if (ins.error) throw ins.error;
+          pick({ id: ins.data.id, name: ins.data.name });
+        } catch (err) { errN.textContent = (err && err.message) || 'Could not create.'; }
+      });
+    };
+    renderCustPicker(); syncTitle();
     // Customer phone (prompt 38): the appointment row stores no phone; fetch
     // it from the linked lead/customer and show tap-to-call + tap-to-text
     // read-only under the title. Best-effort and async so the form never
@@ -26459,9 +26622,27 @@ async function openAppointmentForm(existing, prefill = {}) {
         endAt = new Date(dateStr + 'T' + en + ':00');
         if (!(endAt > startAt)) { errEl.textContent = 'End time must be after the start time.'; return; }
       }
+      // Lead resolution (prompt 89): the picker deals in customers, but the
+      // pipeline effects and the cancel walk-back anchor on lead_id, so keep
+      // stamping it. Untouched picker keeps the original link; a picked or
+      // cleared customer re-resolves to its newest live lead (or none).
+      let saveLeadId = leadId;
+      if (custChanged) {
+        saveLeadId = null;
+        if (curCustomer) {
+          try {
+            const lr = await supabase.from('leads').select('id')
+              .eq('customer_id', curCustomer.id).is('deleted_at', null).is('archived_at', null)
+              .order('created_at', { ascending: false }).limit(1);
+            if (!lr.error && lr.data && lr.data[0]) saveLeadId = lr.data[0].id;
+          } catch (_) { /* unlinked is safe; the effects just skip */ }
+        }
+      }
       const row = {
         appt_type: val('afType'),
-        title: val('afTitle') || null,
+        // Linked customer -> the ONE derived format; no customer -> free text
+        // (the ad-hoc BNI/golf blocks).
+        title: curCustomer ? apptAutoTitle(val('afType'), curCustomer.name) : (val('afTitle') || null),
         sales_member_id: val('afMember') || null,
         start_at: startAt.toISOString(),
         end_at: endAt.toISOString(),
@@ -26473,8 +26654,8 @@ async function openAppointmentForm(existing, prefill = {}) {
         location_place_id: (modal.querySelector('#afAddress').dataset.placeId || a.location_place_id) || null,
         notes: val('afNotes') || null,
         customer_notes: val('afCustomerNotes') || null,
-        lead_id: (modal.querySelector('#afLead') ? (val('afLead') || null) : leadId),
-        customer_id: customerId,
+        lead_id: saveLeadId,
+        customer_id: curCustomer ? curCustomer.id : null,
       };
       const btn = modal.querySelector('#afSave');
       btn.disabled = true; btn.textContent = 'Saving…';
@@ -28381,10 +28562,10 @@ function moveLeadStage(leadId, toStage) {
 
 // "Schedule Estimate" (prompt 37, stage mapping reworked in prompt 59): opens
 // the appointment form prefilled from the lead (type on_site_estimate,
-// lead/customer link, name as title, address fields) and, on save, advances a
-// new/contacted lead to the estimate_scheduled stage (commitLeadStage stamps
-// estimate_scheduled_at and, for a NEW lead, contacted_at too). Anything at or
-// past estimate_sent keeps its stage (the at-or-past guard). estimate_sent
+// lead/customer link, name as title, address fields). The stage advance to
+// estimate_scheduled happens in apptBookingSideEffects (prompt 89: shared by
+// every booking path; commitLeadStage stamps estimate_scheduled_at and, for
+// a NEW lead, contacted_at too). estimate_sent
 // itself stays off limits here: it is stamped only when a real estimate
 // document goes out (estimateSentLeadEffects) and feeds conversion metrics
 // plus the drip kill-switch, so faking it from a booking would corrupt both.
@@ -28399,17 +28580,8 @@ function openScheduleEstimateFromLead(lead, onDone) {
     location_state: lead.state || null,
     location_zip: lead.zip || null,
     onSaved: async (appt) => {
-      // Type is editable in the form; if the rep switched it to an ad-hoc
-      // block, the lead should not advance off it.
-      if (appt && appt.appt_type === 'on_site_estimate' && (lead.stage === 'new' || lead.stage === 'contacted')) {
-        try {
-          await commitLeadStage(lead, 'estimate_scheduled');
-          showToast('Lead moved to Estimate Scheduled', { ttl: 2200 });
-        } catch (err) {
-          console.error('[leads] schedule-estimate stage move:', err);
-          showToast('Appointment booked, but the lead stage move failed: ' + (err && err.message ? err.message : err), { ttl: 6000 });
-        }
-      }
+      // The stage advance moved into apptBookingSideEffects (prompt 89), so
+      // every booking path shares it; this callback only refreshes callers.
       if (typeof onDone === 'function') { try { onDone(appt); } catch (_) {} }
     },
   });
@@ -28712,8 +28884,45 @@ function openNewLeadModal(prefill) {
       save.disabled = true; save.textContent = 'Saving…';
       try {
         const smsYes = modal.querySelector('#nlSms').checked;
+        // Customers are the source of truth (prompt 89): resolve the person
+        // to a customer row first (same-human rule: last-10 phone or exact
+        // email, mirroring _pec-lead-match.cjs), creating one when nobody
+        // matches, so the lead is born linked. Best-effort: a resolve
+        // failure leaves customer_id null rather than blocking the add.
+        let custId = null;
+        try {
+          const p10 = phone ? phone.slice(-10) : null;
+          const ors = [];
+          if (p10) ors.push(`phone.ilike.%${p10}`);
+          if (email) ors.push(`email.eq.${email}`);
+          if (ors.length) {
+            const m = await supabase.from('customers').select('id').is('archived_at', null)
+              .or(ors.join(',')).order('created_at', { ascending: false }).limit(1);
+            if (!m.error && m.data && m.data[0]) custId = m.data[0].id;
+          }
+          if (!custId) {
+            const ci = await supabase.from('customers').insert({
+              token: randomToken(),
+              name,
+              first_name: firstName || null,
+              last_name: lastName || null,
+              company_name: businessName || null,
+              email: email || null,
+              phone: p10,
+              billing_address_line1: val('nlAddress') || null,
+              billing_city: val('nlCity') || null,
+              billing_state: val('nlState') || null,
+              billing_zip: val('nlZip') || null,
+              lead_source: val('nlSource') || 'manual',
+              company: 'prescott-epoxy',
+            }).select('id').single();
+            if (!ci.error && ci.data) custId = ci.data.id;
+            else if (ci.error) console.warn('[leads] customer create for lead failed:', ci.error.message);
+          }
+        } catch (e) { console.warn('[leads] customer resolve failed (lead lands unlinked):', e && e.message); }
         const ins = await withFreshWrite(() => supabase.from('leads').insert({
           brand: 'PEC',
+          customer_id: custId,
           source: val('nlSource') || 'manual',
           first_name: firstName || null,
           last_name: lastName || null,
