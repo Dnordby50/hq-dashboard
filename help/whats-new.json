@@ -1,5 +1,15 @@
 [
   {
+    "id": "accept-slack-celebration",
+    "date": "2026-08-12",
+    "title": "Slack cheers when an estimate is accepted",
+    "summary": "The #epoxysales message for an accepted estimate is now a proper celebration: the customer, estimate number, total, and the salesperson who sold it, with a shout-out. You can turn just the accept post on or off without touching the view alerts.",
+    "howto": [
+      "Nothing to do; accepted estimates post to #epoxysales automatically.",
+      "To turn it off, open Settings > Estimates and untick the celebration box inside the Slack alert card."
+    ]
+  },
+  {
     "id": "estimator-autosave",
     "date": "2026-08-12",
     "title": "The estimator saves your work automatically",
