@@ -1,3 +1,23 @@
+## [2026-08-12 MST] Bug fix: job detail showed no schedule for TopCoat-native and manually-paired jobs (Robert Brass); the schedule bridge now falls back to the estimate stamp and the name+address key.
+
+By: Cowork
+
+Changed: index.html (renderJobDetailInner schedule-state block), help/whats-new.json (1 entry), features.json (Customers and jobs records entry amended), plus this entry. No schema change, no settings, no data repair needed.
+
+Why: Dylan reported Robert Brass scheduled on the production calendar but nothing showing on his job detail. Root cause from the code and live rows: the detail's schedule lookup bridged to pec_prod_jobs ONLY via jobs.dripjobs_deal_id (index.html ~15842). Robert's jobs row is source='native' (deal id NULL) and his calendar row is a MANUAL- entry (deal id NULL), so the bridge never resolved and the page stayed silent about 2 real schedule days (install 2026-08-24). The tell that proved it: jobs.status WAS 'scheduled', because runScheduleStatusSync bridges by the normalized name+address key (_nameAddrKey) and had synced the status, while the detail page could not see the same calendar. Both rows carry the same customer_id and byte-identical name/address. Every estimate-sourced TopCoat job (deal id NULL too) had the same blind spot, including Brian Hixson's job fixed earlier today.
+
+Fix: the schedule-state lookup resolves in three steps, stopping at the first hit. (1) dripjobs_deal_id, exact, semantics unchanged (including bridged-with-zero-rows for webhook jobs with no production record). (2) estimates.pec_prod_job_id, the accept path's stamp, exact; same fallback the BusyBusy clock-in number already used (index.html ~15394). (3) _nameAddrKey match over pec_prod_jobs rows sharing the job's customer_id; requires BOTH name and address non-blank, only bridges on an actual hit, and is the SAME canonical fallback the status sweep, the CRM-to-calendar status mirror, and Go to Job Costing use, so the detail page and the sweep can no longer disagree. A miss stays unbridged and silent (stored status left alone), exactly as before. Side effect, intended: the detail's status auto-sync (deriveJobStatus) now also runs for native/manual-paired jobs, which only aligns the detail with what the sweep was already doing to those jobs.
+
+Verified: all 8 inline script blocks extracted and node --check clean (the one failure is the type=importmap JSON block, not JS, pre-existing). Live data walk-through for Robert Brass (jobs ba85c379 / prod 8942ab57): deal id NULL -> no estimate row -> customer_id query returns his one prod row, name+address key matches, 2 schedule days load, install date 2026-08-24 renders, derived status 'scheduled' agrees with stored. Not verified here: a live browser render of the deployed page (needs the Netlify deploy of this commit).
+
+Files touched: index.html, help/whats-new.json, features.json, PROJECT-LOG.md
+
+Next steps: Netlify auto-deploys on push; commit is local only (Cowork does not push). Claude Code or Dylan pushes when ready.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: After the next push and a hard reload, open Robert Brass from the Jobs page: the header should show the 2026-08-24 install from the calendar. Brian Hixson's job picks up its schedule the same way via his estimate's stamp.
+
 ## [2026-08-12 MST] Bug fix: a signed whole-estimate CUSTOM estimate created a job with zero line items and a $0 detail page (Brian Hixson, EST-102098). Accept path fixed, live row repaired.
 
 By: Cowork

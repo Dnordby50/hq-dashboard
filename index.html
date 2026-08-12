@@ -15831,33 +15831,66 @@ async function renderJobDetailInner(id) {
   const flakeEst = (!estFlakeRes.error && Array.isArray(estFlakeRes.data) && estFlakeRes.data[0]) || null;
   const flakeBlends = ((!flakeColorsRes.error && flakeColorsRes.data) || []).filter(c => c.active !== false);
   // Real schedule state. The truth lives on the linked pec_prod_jobs row + its
-  // pec_prod_job_schedule_days (matched by dripjobs_deal_id); a job counts as
-  // scheduled if it has an install_date OR any schedule-day rows -- the same
-  // rule renderSchedule uses. We fetch as a LIST (NOT maybeSingle, which ERRORS
-  // on duplicate deal-id rows and falsely showed "Unscheduled") and pick the row
-  // with an install_date. Drives the header label, the colors-urgency banner,
-  // and the status auto-sync below. Misses are silent (manual entries, etc.).
+  // pec_prod_job_schedule_days; a job counts as scheduled if it has an
+  // install_date OR any schedule-day rows -- the same rule renderSchedule uses.
+  // We fetch as a LIST (NOT maybeSingle, which ERRORS on duplicate deal-id rows
+  // and falsely showed "Unscheduled") and pick the row with an install_date.
+  // Drives the header label, the colors-urgency banner, and the status
+  // auto-sync below. THE BRIDGE (2026-08-12 fix): dripjobs_deal_id only worked
+  // for DripJobs-sourced jobs; a TopCoat-native or manual pairing (deal id
+  // NULL on both sides) never resolved, so the detail said nothing about a job
+  // the calendar showed as scheduled (found on Robert Brass: jobs row 'native',
+  // prod row 'MANUAL-', same customer, 2 schedule days invisible here while
+  // the SWEEP's name+address bridge kept flipping jobs.status to scheduled).
+  // Resolution order, stopping at the first hit: (1) dripjobs_deal_id, exact,
+  // unchanged semantics including bridged-with-zero-rows meaning "webhook job
+  // with no production record". (2) estimates.pec_prod_job_id, the accept
+  // path's stamp, exact (same fallback the clock-in number uses). (3) the
+  // normalized name+address key over the job's customer_id rows -- the SAME
+  // _nameAddrKey rule the status sweep, the CRM->calendar mirror, and Go to
+  // Job Costing already use, so the detail can never disagree with the sweep
+  // again; requires both name AND address (blank never matches) and only
+  // bridges on an actual hit. Misses stay silent and unbridged (we cannot see
+  // this job's calendar, so the stored status is left alone).
   let scheduleState = { prodJob: null, isScheduled: false, scheduledDates: [], installDate: null, crewId: null, crewName: '' };
   let scheduleBridged = false;   // true only when we reliably know the schedule
-  if (job.dripjobs_deal_id) {
-    try {
-      const [pjRes, crewsRes] = await Promise.all([
-        supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback').eq('dripjobs_deal_id', job.dripjobs_deal_id),
-        supabase.from('pec_prod_crews').select('id,name'),
-      ]);
-      if (!pjRes.error) {
-        scheduleBridged = true;
-        const rows = pjRes.data || [];
-        const prodJob = rows.find(p => p.install_date) || rows[0] || null;
-        let days = [];
-        if (prodJob) {
-          const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
-          days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
-        }
-        scheduleState = deriveScheduleState(rows, days, crewsRes.error ? [] : (crewsRes.data || []));
+  try {
+    let prodRows = null;         // null = no bridge resolved; [] = bridged, empty
+    if (job.dripjobs_deal_id) {
+      const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback').eq('dripjobs_deal_id', job.dripjobs_deal_id);
+      if (!pjRes.error) prodRows = pjRes.data || [];
+    } else {
+      // (2) TopCoat-native: the accept path stamps estimates.pec_prod_job_id.
+      const estRes = await supabase.from('estimates').select('pec_prod_job_id').eq('job_id', id).not('pec_prod_job_id', 'is', null).limit(1);
+      const stampedId = (!estRes.error && (estRes.data || [])[0]?.pec_prod_job_id) || null;
+      if (stampedId) {
+        const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback').eq('id', stampedId);
+        if (!pjRes.error) prodRows = pjRes.data || [];
       }
-    } catch (_) { /* schedule lookup is best-effort */ }
-  }
+      // (3) Manual/native pairing: name+address key over the customer's rows.
+      if ((prodRows == null || !prodRows.length) && job.customer_id) {
+        const naKey = _nameAddrKey(job.customers && job.customers.name, job.address);
+        if (naKey) {
+          const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback,customer_name,address').eq('customer_id', job.customer_id);
+          if (!pjRes.error) {
+            const matches = (pjRes.data || []).filter(p => _nameAddrKey(p.customer_name, p.address) === naKey);
+            if (matches.length) prodRows = matches;
+          }
+        }
+      }
+    }
+    if (prodRows != null) {
+      scheduleBridged = true;
+      const crewsRes = await supabase.from('pec_prod_crews').select('id,name');
+      const prodJob = prodRows.find(p => p.install_date) || prodRows[0] || null;
+      let days = [];
+      if (prodJob) {
+        const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
+        days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
+      }
+      scheduleState = deriveScheduleState(prodRows, days, crewsRes.error ? [] : (crewsRes.data || []));
+    }
+  } catch (_) { /* schedule lookup is best-effort */ }
   const isScheduled = scheduleState.isScheduled;
   const jobInstallDate = scheduleState.installDate; // earliest scheduled date (urgency + header)
   const scheduleLabel = scheduleLabelFromState(scheduleState);

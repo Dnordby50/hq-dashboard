@@ -1,5 +1,16 @@
 [
   {
+    "id": "job-detail-schedule-bridge",
+    "date": "2026-08-12",
+    "title": "Job pages now show the install schedule for every kind of job",
+    "summary": "A job created in TopCoat or added by hand on the calendar now shows its scheduled install dates on the job page, matching the Job Schedule. Before, only jobs that came in through DripJobs could see their own schedule there.",
+    "howto": [
+      "Open any job from the Jobs page.",
+      "The header shows the scheduled install date pulled straight from the Job Schedule calendar.",
+      "If a job still reads Unscheduled, it has no calendar entry yet (or the calendar entry's name and address do not match the job)."
+    ]
+  },
+  {
     "id": "custom-estimate-job-line-items",
     "date": "2026-08-12",
     "title": "Custom estimate jobs now show their line items and price",
