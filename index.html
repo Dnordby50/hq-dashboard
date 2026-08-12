@@ -6481,6 +6481,10 @@ function notifTarget(n) {
   // Bad-review bells (prompt 60): land on the Reviews view. Whole-view
   // destination; the list shows the review (newest first).
   if (n.target_view === 'reviews') return { view: 'reviews', id: n.target_id || 'panel' };
+  // Google-sync reconnect bells (prompt 88): land on Settings > Appointments,
+  // where the Reconnect button lives. Settings is admin-only; for everyone
+  // else the row stays text-only (same posture as the birthday bells).
+  if (n.target_view === 'settings-appointments') return isAdmin() ? { view: 'settings', id: 'appointments' } : null;
   if (n.target_view && n.target_id) {
     if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
     if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
@@ -20454,7 +20458,10 @@ async function renderSettingsAppointments() {
           ${m.google_connected
             ? `<span style="font-size:.76rem;color:var(--muted)">Connected as ${esc(m.google_email || 'unknown')}${m.google_connected_at ? ' · ' + esc(new Date(m.google_connected_at).toLocaleDateString()) : ''}</span>
                <button class="pec-btn ghost sm danger" data-gdisc="${esc(m.id)}">Disconnect</button>`
-            : `<span style="font-size:.76rem;color:var(--muted)">Not connected</span>
+            : m.google_needs_reconnect
+              ? `<span style="font-size:.76rem;color:#b45309;font-weight:600">Sync stopped${m.google_email ? ' for ' + esc(m.google_email) : ''}. Google needs a fresh sign-in.</span>
+                 <button class="pec-btn sm" data-gconn="${esc(m.id)}">Reconnect</button>`
+              : `<span style="font-size:.76rem;color:var(--muted)">Not connected</span>
                <button class="pec-btn sm" data-gconn="${esc(m.id)}">Connect Google</button>`}
         </div>`).join('') : '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>'}
     </div>

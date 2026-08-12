@@ -117,6 +117,33 @@ async function saveTokenRow(sb, memberId, patch) {
   }
 }
 
+// A dead refresh token (Google's invalid_grant: expired, revoked, or the
+// OAuth app's Testing-mode 7-day lifetime) is permanent until the member
+// re-consents; silently returning null here is how two weeks of auth failure
+// went unnoticed (prompt 88). Flip the roster to an honest "needs reconnect"
+// state: google_connected=false stops the push/pull from hammering a dead
+// token, google_needs_reconnect=true makes Settings > Appointments show
+// "Reconnect" instead of "Not connected", and ONE shared bell row goes out
+// (the false->true transition is the once-guard; the flag is state, not a
+// setting, per rule 12). Best-effort: a failure here never breaks the caller.
+async function markNeedsReconnect(sb, memberId) {
+  try {
+    const rows = await sb('GET', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}&select=id,name,google_needs_reconnect&limit=1`);
+    const m = Array.isArray(rows) && rows[0];
+    if (!m || m.google_needs_reconnect) return; // already flagged (or gone): bell already rang
+    await sb('PATCH', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}`,
+      { google_connected: false, google_needs_reconnect: true });
+    await sb('POST', '/pec_notifications', {
+      type: 'google_sync_reconnect',
+      body: `Google Calendar sync stopped for ${m.name}: Google no longer accepts the saved connection. Reconnect from Settings > Appointments.`,
+      target_view: 'settings-appointments',
+    });
+    console.warn(`_pec-google: member ${memberId} (${m.name}) flagged needs-reconnect (invalid_grant)`);
+  } catch (e) {
+    console.error('_pec-google: markNeedsReconnect failed:', e && e.message || e);
+  }
+}
+
 // A valid access token for the member, refreshing through the refresh_token
 // when the stored one is stale (60s early-expiry margin). Null when the
 // member is not connected or the refresh is rejected (revoked in Google);
@@ -138,6 +165,10 @@ async function getFreshAccessToken(sb, memberId) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok || !body.access_token) {
     console.error(`_pec-google: refresh failed for member ${memberId} (${res.status}): ${JSON.stringify(body).slice(0, 200)}`);
+    // invalid_grant ONLY: a 500 or a network blip is transient and must not
+    // disconnect anyone; invalid_grant means this refresh token will never
+    // work again.
+    if (body && body.error === 'invalid_grant') await markNeedsReconnect(sb, memberId);
     return null;
   }
   await saveTokenRow(sb, memberId, {

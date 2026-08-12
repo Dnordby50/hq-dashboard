@@ -1781,12 +1781,14 @@ RLS: enabled · rows: 2
 | auth_user_id | uuid | yes |  |
 | name_aliases | text[] | no | '{}' |
 | salesask_email | text | yes |  |
+| google_needs_reconnect | boolean | no | false |
 
 PK: id
 FK: auth_user_id → auth.users.id
 Unique: (auth_user_id) WHERE auth_user_id IS NOT NULL — partial index uq_pec_sales_team_members_auth_user; one login maps to at most one member, any number of unmapped (NULL) rows allowed. Set from Settings > Sales Team; drives the estimator's current-user salesperson default (prompt 47).
 name_aliases (added 2026-07-28, prompt 54) is the commission rename safety net. Commission is attributed by FREE-TEXT lowercased name against pec_job_ar.salesperson, not by id, so a rename would otherwise orphan a rep's history. The BEFORE UPDATE trigger `pec_sales_capture_name_alias` captures the OLD name into this array on any rename, whatever path wrote it (People screen, the legacy Sales Team card, or Studio), and removes the current name from the array when a name is reused. renderCommission folds aliases into both the rate lookup and the excluded-names set, current names winning. The trigger is deliberately NOT gated on people_mirror_enabled: it is a safety net, not part of the mirror.
 salesask_email (2026-07-31 migration, applied 2026-08-08) is the rep's SalesAsk login override; the sync resolves salesask_email → people.email → google_email.
+google_needs_reconnect (2026-08-25 migration, applied 2026-08-12, prompt 88) is app-written STATE, never a setting: when a Google token refresh fails with invalid_grant, `markNeedsReconnect` (_pec-google.cjs) flips google_connected false and this true, and Settings > Appointments shows "Reconnect" (keeping google_email so the member knows which account died). Cleared by a successful oauth-callback or a disconnect. The false→true transition also inserts the ONE `google_sync_reconnect` bell row.
 
 ### pec_salesask_recordings
 RLS: enabled · rows: 0

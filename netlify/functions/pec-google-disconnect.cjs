@@ -38,7 +38,8 @@ exports.handler = async (event) => {
     }
     await sb('DELETE', `/pec_sales_member_google_tokens?sales_member_id=eq.${encodeURIComponent(memberId)}`);
     await sb('PATCH', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}`, {
-      google_connected: false, google_email: null,
+      google_connected: false, google_needs_reconnect: false,
+      google_email: null,
       google_calendar_id: null, google_connected_at: null,
     });
     console.log(`pec-google-disconnect: member ${memberId} disconnected by ${user.email || user.id}`);

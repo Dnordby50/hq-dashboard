@@ -71,6 +71,7 @@ exports.handler = async (event) => {
     });
     await sb('PATCH', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}`, {
       google_connected: true,
+      google_needs_reconnect: false, // a fresh consent heals the dead-token state (prompt 88)
       google_email: email,
       google_calendar_id: calendarId,
       google_connected_at: new Date().toISOString(),
