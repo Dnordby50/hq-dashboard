@@ -1,5 +1,5 @@
 import { idbPut } from './idb';
-import { enqueue } from './outbox';
+import { enqueue, listOps, removeOp } from './outbox';
 import { uuid } from './uuid';
 import type { PricingResult } from '../lib/calculator';
 import { composeCustomerAddress, composeCustomerName, type CustomerForm } from '../lib/customer';
@@ -310,6 +310,35 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     estimateRow.scope_edited_at = now;
     estimateRow.scope_stale = false;
   }
+
+  // Coalesce (prompt 87 Task D): autosave means many saves of the same
+  // estimate can queue between drains. Newest wins: before enqueueing this
+  // save's ops, drop every STILL-QUEUED op that belongs to this estimate
+  // (the parent by id; areas/line items/installments by row.estimate_id;
+  // materials by the dropped areas' ids), so the outbox holds at most one
+  // save's worth of rows per estimate and a driveway session cannot stack
+  // 40 upserts. FIFO is preserved: the fresh set enqueues below in parent-
+  // before-children order with new (later) opIds. Ops a drain already
+  // uploaded are gone from the queue and unaffected; the caller's online
+  // rules (performSave) keep a partially-synced estimate from re-saving
+  // offline, which is what makes this replacement safe. A dropped queued
+  // 'draft' parent op is also safe: estimates.status defaults to 'draft'
+  // on insert, so the row still births as a draft even when the replacing
+  // save omits the status key (prompt 84 shape).
+  try {
+    const queued = await listOps();
+    const droppedAreaIds = new Set<string>();
+    for (const op of queued) {
+      if (op.table === 'estimate_areas' && op.row.estimate_id === estimateId) droppedAreaIds.add(op.id);
+    }
+    for (const op of queued) {
+      const mine =
+        (op.table === 'estimates' && op.id === estimateId) ||
+        ((op.table === 'estimate_areas' || op.table === 'estimate_line_items' || op.table === 'estimate_installments') && op.row.estimate_id === estimateId) ||
+        (op.table === 'estimate_area_materials' && typeof op.row.estimate_area_id === 'string' && droppedAreaIds.has(op.row.estimate_area_id));
+      if (mine) await removeOp(op.opId);
+    }
+  } catch { /* coalescing is an optimization; a failed cleanup never blocks the save */ }
 
   await idbPut('estimates', estimateRow);
   await enqueue({ table: 'estimates', id: estimateId, row: estimateRow, client_updated_at: now });

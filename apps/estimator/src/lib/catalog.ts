@@ -68,6 +68,8 @@ export type PricingConfig = {
   lineSheetBreakpointPx: number;        // estimator_line_sheet_breakpoint_px: below it the line editor is a bottom sheet, above it a centered modal
   syncStuckThreshold: number; // sync_stuck_threshold_attempts: failed attempts before a queued save shows the red not-syncing state (prompt 48)
   syncStuckEscalationEnabled: boolean; // sync_stuck_escalation_enabled: report stuck saves to the office (bell notification) (prompt 48)
+  // Autosave (prompt 87 Task D). Default MUST match the migration seed: true.
+  estimateAutosaveEnabled: boolean; // estimate_autosave_enabled: debounced autosave + flush-on-close in the estimator
 };
 
 export type Catalog = {
@@ -144,6 +146,7 @@ export async function loadCatalog(): Promise<Catalog> {
         'sync_stuck_escalation_enabled',
         'estimate_line_generate_enabled',
         'estimator_line_sheet_breakpoint_px',
+        'estimate_autosave_enabled',
       ]),
   ]);
 
@@ -201,6 +204,7 @@ export async function loadCatalog(): Promise<Catalog> {
     // "broken": anything unparseable or < 1 falls back to 2.
     syncStuckThreshold: Math.max(1, num('sync_stuck_threshold_attempts', 2)) || 2,
     syncStuckEscalationEnabled: String(settings['sync_stuck_escalation_enabled'] ?? 'true').toLowerCase() !== 'false',
+    estimateAutosaveEnabled: String(settings['estimate_autosave_enabled'] ?? 'true').toLowerCase() !== 'false',
   };
 
   const catalog: Catalog = {

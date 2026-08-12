@@ -19834,7 +19834,7 @@ async function renderSettingsEstimates() {
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample', 'accept_celebration_enabled',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
-      'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px']),
+      'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -19876,6 +19876,10 @@ async function renderSettingsEstimates() {
   // catalog.ts and the migration seeds: true / 700.
   const lsGenOn = (map.estimate_line_generate_enabled || 'true') !== 'false';
   const lsBreak = Number(map.estimator_line_sheet_breakpoint_px) >= 320 ? Number(map.estimator_line_sheet_breakpoint_px) : 700;
+  // Autosave (prompt 87 Task D). Default MUST match the migration seed and
+  // catalog.ts (true). Deliberately behind Advanced: rule 12's kill switch,
+  // not an operating knob.
+  const autosaveOn = (map.estimate_autosave_enabled || 'true') !== 'false';
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -20001,6 +20005,14 @@ async function renderSettingsEstimates() {
         </label>
         <button type="button" class="pec-btn ghost sm" id="lsSave">Save</button>
       </div>
+    </div>
+    <div class="pec-card">
+      <details>
+        <summary style="cursor:pointer;font-weight:700">Advanced</summary>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.8rem">
+          <input type="checkbox" id="setEstAutosave" ${autosaveOn ? 'checked' : ''}> Estimator autosave (saves a couple of seconds after each change and when the app is closed; the Save button stays for an immediate save). Applies on the estimator's next open.
+        </label>
+      </details>
     </div>`;
   wireSettingsTabs(root);
 
@@ -20013,6 +20025,12 @@ async function renderSettingsEstimates() {
   wire('setEstViewDaily', 'estimate_view_notify_first_per_day', firstPerDayOn);
   wire('setEstViewSlack', 'estimate_view_slack_enabled', viewSlackOn);
   wire('setAcceptCelebrate', 'accept_celebration_enabled', celebrateOn);
+  $('setEstAutosave').addEventListener('change', async (e) => {
+    const cb = e.target; cb.disabled = true;
+    try { await saveSetting('estimate_autosave_enabled', cb.checked ? 'true' : 'false'); }
+    catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); cb.checked = !cb.checked; }
+    cb.disabled = false;
+  });
   $('setEstAcceptSlack').addEventListener('change', async (e) => {
     const cb = e.target; cb.disabled = true;
     try { await saveSetting('estimate_accept_slack_enabled', cb.checked ? 'true' : 'false'); }

@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-autosave",
+    "date": "2026-08-12",
+    "title": "The estimator saves your work automatically",
+    "summary": "Estimates now save themselves a couple of seconds after every change, and again the moment you switch apps or close the tab. The bar at the bottom shows the live status: Saving, All changes saved with the time, or Offline, saved on this device. The Save button is still there for an instant save. A brand new estimate first saves once it has a customer and at least one priced line, so empty drafts no longer appear in the list.",
+    "howto": [
+      "Just build the estimate; watch the bottom bar say All changes saved.",
+      "Offline in a driveway, the bar says saved on this device and it syncs when you get signal.",
+      "If the bar says Save failed or needs your OK, press Save."
+    ]
+  },
+  {
     "id": "estimator-declutter-pricing-panels",
     "date": "2026-08-12",
     "title": "A cleaner estimator screen",

@@ -531,6 +531,13 @@ export default function EstimatorScreen({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
+  // Autosave (prompt 87 Task D). lastSavedAt feeds the "All changes saved
+  // HH:MM" status line; autosaveHold names why the timer is deliberately NOT
+  // saving ('confirm' = a below-floor save needs the human's OK, 'offline' =
+  // an already-synced estimate cannot rewrite its child rows without a
+  // connection). Both clear on the next successful save.
+  const [lastSavedAt, setLastSavedAt] = useState('');
+  const [autosaveHold, setAutosaveHold] = useState<'' | 'confirm' | 'offline'>('');
   // Full queued ops, not just a count (prompt 48): the header needs attempt
   // counts and errors to tell "syncing" from "stuck". `pending` stays derived
   // so the quiet counter path is unchanged.
@@ -1548,6 +1555,18 @@ export default function EstimatorScreen({
   const saveDraft = useCallback(async () => {
     if (draftWriteRef.current || savedEstimateId || editing) return;
     if (!salesperson) return;
+    // Prompt 87 Task D: no more hollow-shell drafts. Nothing is written until
+    // the estimate is REAL: a customer (checked by draftReady below) AND at
+    // least one line with content. The auto-seeded Main area does not count
+    // (every new estimate has it); an area with square footage, any custom
+    // line, or (custom mode) a typed price or scope does.
+    const hasContent = isCustom
+      ? (customPrice != null || customScope.trim().length > 0)
+      : areas.some((a) => a.isCustom || Number(a.sqft) > 0);
+    if (!hasContent) {
+      draftTrigger.reset();
+      return;
+    }
     if (!draftReady({
       isCommercial: customer.isCommercial,
       company: customer.company,
@@ -1606,7 +1625,7 @@ export default function EstimatorScreen({
       draftTrigger.reset();
       draftWriteRef.current = false;
     }
-  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending]);
+  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customPrice, customSqft, areas, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending]);
   const saveDraftRef = useRef(saveDraft);
   useEffect(() => { saveDraftRef.current = saveDraft; }, [saveDraft]);
 
@@ -2125,7 +2144,31 @@ export default function EstimatorScreen({
   // The save, callable two ways: the Save button (opts omitted) and the
   // Regenerate flow (skipAutoScope, because it runs its own generation right
   // after). Returns the estimate id on success so callers can chain on it.
-  const performSave = useCallback(async (opts?: { skipAutoScope?: boolean }): Promise<string | null> => {
+  // ---- Autosave fingerprint (prompt 87 Task D) -----------------------------
+  // One string over everything a save writes. Dirty = the current fingerprint
+  // differs from the one captured at the last successful save (seeded from the
+  // mount state, so opening an estimate and reading it is never "dirty").
+  // Derived values (lineRows, totals, the snapshot) all flow from these
+  // inputs, so fingerprinting the inputs is fingerprinting the save.
+  const autosaveKey = useMemo(() => JSON.stringify([
+    customer, salesperson?.id ?? null, intake, areas, addonForms, overrideReason,
+    isCustom, customScope, customPrice, customSqft, crewNotes, clientNotes,
+    companyNotes, scheduleShared, scopeAnswers,
+  ]), [customer, salesperson, intake, areas, addonForms, overrideReason, isCustom,
+    customScope, customPrice, customSqft, crewNotes, clientNotes, companyNotes,
+    scheduleShared, scopeAnswers]);
+  const autosaveKeyRef = useRef(autosaveKey);
+  useEffect(() => { autosaveKeyRef.current = autosaveKey; }, [autosaveKey]);
+  // null until the mount snapshot seeds it (first render effect below).
+  const lastSavedKeyRef = useRef<string | null>(null);
+  useEffect(() => { if (lastSavedKeyRef.current === null) lastSavedKeyRef.current = autosaveKey; }, [autosaveKey]);
+  const [dirtyTick, setDirtyTick] = useState(0); // re-render signal when a save lands (refs alone don't repaint the bar)
+
+  const performSave = useCallback(async (opts?: { skipAutoScope?: boolean; auto?: boolean }): Promise<string | null> => {
+    const auto = opts?.auto === true;
+    // Captured at entry: state typed DURING the await stays dirty and re-arms
+    // the autosave timer instead of being silently marked saved.
+    const keyAtSave = autosaveKeyRef.current;
     // sellPrice non-null covers both modes: the typed custom price, or the
     // engine/override price. The engine snapshot is only required when a
     // calculator line exists (prompt 82): a custom-line-only estimate saves
@@ -2141,18 +2184,33 @@ export default function EstimatorScreen({
       return null;
     }
     if (editing && !online) {
+      // An autosave hitting this is expected in a driveway edit; it waits
+      // quietly for signal instead of painting the bar red every 2.5s.
+      if (auto) { setAutosaveHold('offline'); return null; }
       setSaveState('error');
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
       return null;
     }
     // Same-id upsert (prompt 47) means a SECOND full save of a new estimate
     // rewrites the same row's children, which needs the live delete below:
-    // same online rule as editing. (A draft-only row has no children, so the
-    // FIRST full save after an offline draft still works offline.)
+    // same online rule as editing. RELAXED by prompt 87 D's outbox
+    // coalescing: while NOTHING from the previous save has drained, the new
+    // save simply replaces the queued ops, so offline re-saving is safe. The
+    // outbox is FIFO parent-first and children are blocked behind a failed
+    // parent, so "the parent op is still queued" is exactly "no child row of
+    // this save reached the server", which is the only thing the live child
+    // delete exists to handle.
     if (!editing && savedEstimateId && !online) {
-      setSaveState('error');
-      setSaveError('Saving again rewrites this estimate\'s saved areas, which needs a connection. Reconnect and save again.');
-      return null;
+      let parentQueued = false;
+      try {
+        parentQueued = (await listOps()).some((op) => op.table === 'estimates' && op.id === savedEstimateId);
+      } catch { parentQueued = false; }
+      if (!parentQueued) {
+        if (auto) { setAutosaveHold('offline'); return null; }
+        setSaveState('error');
+        setSaveError('Saving again rewrites this estimate\'s saved areas, which needs a connection. Reconnect and save again.');
+        return null;
+      }
     }
     // Floor-GP guard (build 17, per-line since prompt 69): warn, do not
     // block. The confirmation NAMES the below-floor lines, not just the
@@ -2160,6 +2218,10 @@ export default function EstimatorScreen({
     // LINE force the confirm even when the combined GP clears the floor.
     const lineFloorConfirm = !isCustom && config.linePricingBlockBelowFloor === true && belowFloorLines.length > 0;
     if (belowFloor || lineFloorConfirm) {
+      // A timer must never pop a confirm (prompt 87 D): a below-floor save
+      // stays a deliberate human act. The status bar names the hold and the
+      // manual Save button is the confirm path.
+      if (auto) { setAutosaveHold('confirm'); return null; }
       const lineList = belowFloorLines.length
         ? ` Below the ${lineFloorPct}% line floor: ${belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.`
         : '';
@@ -2432,8 +2494,14 @@ export default function EstimatorScreen({
       // the materials rows cascade). Online-only, checked above. A re-save of
       // a NEW estimate (same draft id, prompt 47) needs the same rewrite; the
       // draft-only row wrote no children, so its first full save skips this.
-      if (editing) await deleteEstimateChildren(editing.id);
-      else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
+      // Online-only by the guards above except the coalescing path: offline
+      // with the parent op still queued means no child row ever reached the
+      // server, so there is nothing live to delete and the replacement set in
+      // the outbox is the whole story.
+      if (online) {
+        if (editing) await deleteEstimateChildren(editing.id);
+        else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
+      }
 
       const { id } = await saveEstimateOffline({
         // The screen's pre-minted id (or the edit's), NEVER a fresh one: the
@@ -2541,9 +2609,20 @@ export default function EstimatorScreen({
       await refreshPending();
       setSavedOffline(!navigator.onLine);
       setSaveState('saved');
-      if (embed) {
-        // The dashboard closes the modal, refreshes the lead, and opens the
-        // estimate page off this message (origin-checked on its side).
+      // Autosave bookkeeping: this form state is now on disk. Edits made
+      // while the save ran keep the CURRENT key different from keyAtSave, so
+      // the debounce re-arms on its own.
+      lastSavedKeyRef.current = keyAtSave;
+      setLastSavedAt(new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
+      setAutosaveHold('');
+      setDirtyTick((n) => n + 1);
+      if (embed && !auto) {
+        // The dashboard closes the modal / refreshes the page off this
+        // message (origin-checked on its side) — which is exactly why an
+        // AUTOSAVE must never send it: a background save that closed the
+        // estimator or re-rendered the page around the iframe every few
+        // seconds would be the bug, not the feature. Manual Save keeps the
+        // existing close-and-navigate behavior.
         postToParent({ type: 'pec-estimate-saved', estimate_id: id, estimate_number: syncedNumber });
       }
       return id;
@@ -2554,6 +2633,57 @@ export default function EstimatorScreen({
     }
   }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
+
+  // ---- Autosave engine (prompt 87 Task D) ----------------------------------
+  // Debounced 2.5s behind the last change, plus an immediate flush when the
+  // tab hides or the page unloads (visibilitychange covers phone pocketing
+  // and app switches; pagehide covers tab close and the embed iframe being
+  // torn down). It only ever fires through canSave, so the first save of a
+  // NEW estimate happens once the estimate is real (customer + a priced
+  // line): saveBlockers requires both, and the prompt-47 early draft has the
+  // same content gate now, so hollow-shell rows are gone in both paths. All
+  // writes are the same idempotent-by-id upserts as manual Save, and the
+  // outbox coalesces per estimate (newest wins), so a driveway session
+  // queues one save's worth of rows, not forty. Status never rides an
+  // autosave of an existing row (prompt 84), so a queued autosave can never
+  // regress a sent estimate; the DB trigger backstops even that.
+  const autosaveOn = config.estimateAutosaveEnabled !== false;
+  const dirty = lastSavedKeyRef.current !== null && autosaveKey !== lastSavedKeyRef.current;
+  void dirtyTick; // reading it ties the bar's repaint to save completions
+  // Each fingerprint gets ONE automatic attempt after a failure or a
+  // needs-confirm hold: without this, the error/hold render loop would retry
+  // the identical save every 2.5s forever. A new edit (new key) retries; the
+  // offline hold is exempt because `online` flipping true IS its retry signal.
+  const lastAutoAttemptKeyRef = useRef('');
+  useEffect(() => {
+    if (!autosaveOn) return;
+    if (!dirty || !canSave) return;
+    if ((saveState === 'error' || autosaveHold === 'confirm') && lastAutoAttemptKeyRef.current === autosaveKey) return;
+    const t = window.setTimeout(() => {
+      lastAutoAttemptKeyRef.current = autosaveKeyRef.current;
+      void performSave({ auto: true });
+    }, 2500);
+    return () => window.clearTimeout(t);
+    // `online` is a dep so an offline-held autosave retries when signal returns.
+  }, [autosaveOn, dirty, canSave, autosaveKey, dirtyTick, online, saveState, autosaveHold, performSave]);
+  // Flush refs: the unload listeners are mounted once and must see current
+  // state, not the closure from mount.
+  const flushRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    flushRef.current = () => {
+      if (autosaveOn && dirty && canSave) void performSave({ auto: true });
+    };
+  }, [autosaveOn, dirty, canSave, performSave]);
+  useEffect(() => {
+    const onVis = () => { if (document.hidden) flushRef.current(); };
+    const onPageHide = () => flushRef.current();
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, []);
 
   // Manual Regenerate (build 25): the only whole-estimate scope writer after
   // the first generation, now surfaced as "Regenerate scope" on the Line
@@ -2673,22 +2803,37 @@ export default function EstimatorScreen({
   // tooltip; Dylan hit this on a phone, where there is no hover). The custom
   // and standard rows used to be two near-identical copies inside their mode
   // gates; one helper means they cannot drift again.
+  // The row is a live STATUS INDICATOR now (prompt 87 Task D, the Google Docs
+  // pattern): Saving… / All changes saved HH:MM / Offline — saved on this
+  // device / Save failed — Retry, with the manual Save button kept as the
+  // immediate-flush (and confirm-path) escape hatch. Ordering matters:
+  // in-flight beats everything, a real failure beats a hold, a hold beats
+  // plain dirty, and the blocker line keeps explaining WHY a not-yet-real
+  // estimate has not written anything (the prompt-82 invariant, unchanged).
+  const saveNote = (() => {
+    if (saveState === 'saving') return <span className="save-note">Saving…</span>;
+    if (saveState === 'error') return <span className="save-note bad">{(saveError || 'Save failed')} — press Save to retry.</span>;
+    if (saveBlockers.length > 0) return <span className="save-note bad">{saveBlockers[0]}</span>;
+    if (autosaveHold === 'confirm') return <span className="save-note bad">Below-floor GP needs your OK — press Save.</span>;
+    if (autosaveHold === 'offline') return <span className="save-note bad">Offline — this estimate needs a connection to save again. Your edits stay on this screen; press Save once you have signal.</span>;
+    if (dirty) return <span className="save-note">{autosaveOn ? 'Unsaved changes — autosaving…' : 'Unsaved changes.'}</span>;
+    if (saveState === 'saved') {
+      return (
+        <span className="save-note ok">
+          {savedOffline
+            ? (isCustom ? 'Offline — saved on this device, syncs when back online.' : 'Offline — saved on this device, syncs when back online. The scope writes itself once connected.')
+            : `All changes saved${lastSavedAt ? ` ${lastSavedAt}` : ''}`}
+        </span>
+      );
+    }
+    return autosaveOn ? <span className="save-note">Autosaves as you work.</span> : null;
+  })();
   const saveRow = (
     <div className="save-row">
       <button type="button" className="save" disabled={!canSave} onClick={onSave}>
         {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
       </button>
-      {saveState === 'saved' && (
-        <span className="save-note ok">
-          {savedOffline
-            ? (isCustom ? 'Saved offline · will sync when online' : 'Saved offline · will sync when online · scope writes itself once connected (or from the estimate page)')
-            : 'Saved & synced'}
-        </span>
-      )}
-      {saveState === 'error' && <span className="save-note bad">{saveError || 'Save failed'}</span>}
-      {saveState !== 'saved' && saveState !== 'error' && saveBlockers.length > 0 && (
-        <span className="save-note bad">{saveBlockers[0]}</span>
-      )}
+      {saveNote}
     </div>
   );
 
