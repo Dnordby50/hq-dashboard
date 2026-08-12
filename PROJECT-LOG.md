@@ -42,6 +42,24 @@ Changed: this entry only. No code, no schema, no settings, no data. Nothing was 
 1. The only thing standing between this feature and "verified" is one real revoke. When you have five minutes: create a throwaway login yourself, sign into it on your phone, revoke it from your laptop, and watch the phone. Everything else is already proven.
 2. Watch item 2 above specifically. If the revoke returns a 502 mentioning the ban, the `876000h` duration is the culprit and it is a one-line fix in `pec-revoke-login.cjs`.
 3. Nothing in prod was changed by this session. There is no test row to clean up.
+## [2026-08-11 MST] Platform gaps review: prompt 90 (platform hardening) written and queued behind the three prompts arriving from Cowork; the no-session tasks handed to Cowork to run in parallel NOW.
+
+By: Claude Code
+
+Changed: claude-code-prompt-90-platform-hardening.md (new) plus this entry. No code, no schema, no settings.
+
+**Where this came from.** Dylan asked "what am I missing when building out TopCoat?" and agreed with all of the review's findings. The headline: nothing watches the machines. The review link was dead FROM LAUNCH until yesterday (silently 302ing customers to google.com's homepage) and only a human squinting at an email caught it; the same silent-failure class covers every scheduled function, drip, webhook, and Stripe event. A live Supabase security advisor scan added specifics: 21 SECURITY DEFINER functions executable by anon, 4 functions with mutable search_path, leaked-password protection off, no ERRORs. Other gaps: no staging rehearsal for risky migrations, backup/PITR tier never verified, money math in index.html without fixture tests, and the DripJobs bulk import still pending (blocking the manual-entries cleanup).
+
+**Prompt 90, four tasks in priority order.** A: a daily heartbeat function (scheduled-function heartbeats, webhook/send-failure scans, a live probe asserting the /r/ redirect still lands on Google, Stripe staleness, public-page probes) reporting into the existing derived Ops Queue pattern plus one Slack line, silent when green. B: the advisor cleanup (keep/revoke audit of the 21 anon RPCs with the table in the log, search_path pinning). C: extract the remaining payment/AR/installment math into production/*.cjs with parity fixtures, current behavior always winning the fixture. D: a new CLAUDE.md rule (money/auth/status migrations rehearse on a Supabase branch DB first) and a weekly scheduled health-report routine. Numbered 90 assuming the three inbound Cowork prompts take 87-89; the file says to renumber if needed.
+
+**The standing constraint written INTO the prompt.** Dylan is the bottleneck and must stop being one: every verification or input routes to Cowork or automation unless it literally requires Dylan; a check needing any human is a design failure if a scheduled function could do it. Future prompts should inherit this posture.
+
+**Parallel, not queued:** the Cowork prompt printed in chat this session covers the tasks needing NO Claude Code session, so they run while the prompt queue drains: enable leaked-password protection in Supabase Auth, verify the backup/PITR tier and rehearse a restore to a throwaway project, and close out the outstanding prompt-85/86 live checks. Results come back as PROJECT-LOG entries so no session ever re-asks Dylan.
+
+## Handoff to Cowork
+
+Run the parallel prompt printed in chat (2026-08-11 session): leaked-password toggle, PITR verification + restore rehearsal, and the outstanding 85/86 live checks. None of it waits on prompts 87-89.
+
 ## [2026-08-11 MST] Prompt 86 run: a login can now be revoked (and restored) without deleting a single record.
 
 By: Claude Code
