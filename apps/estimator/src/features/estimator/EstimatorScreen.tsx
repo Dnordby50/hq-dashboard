@@ -1318,18 +1318,15 @@ export default function EstimatorScreen({
     return () => { alive = false; };
   }, []);
 
-  // Comps key off the DOMINANT system. When the estimate spans systems the
-  // panel says so instead of pretending the comps cover the whole job.
+  // Comps key off the DOMINANT system. Since prompt 87 nothing here renders
+  // them; they feed the per-line AI inputs and the pricing_snapshot write,
+  // which the estimate detail page renders.
   const comps: CompsResult | null = useMemo(() => {
     if (!compCandidates || !dominantSystemId || !(totalSqft > 0)) return null;
     return buildComps({ candidates: compCandidates, systemTypeId: dominantSystemId, sqft: totalSqft, now: new Date(), minSample: config.compsMinSample });
   }, [compCandidates, dominantSystemId, totalSqft, config.compsMinSample]);
   const compsLabel = comps ? compsRuleLabel(comps, dominantSystem?.name ?? null) : '';
   const compsCaveat = comps ? compsGpCaveat(comps) : null;
-  const dominantSqft = systemsBySqft[0]?.sqft ?? 0;
-  const mixedCompsNote = mixedSystems
-    ? `This estimate spans ${systemsBySqft.length} systems; comps cover the dominant one (${dominantSystem?.name ?? 'unknown'}, ${Math.round(dominantSqft).toLocaleString()} of ${Math.round(totalSqft).toLocaleString()} sqft).`
-    : '';
 
   // ---- AI recommendation: automatic once system + sqft are present ---------
   // PER-LINE since prompt 70: one debounced call sends every line with ITS
@@ -3392,99 +3389,16 @@ export default function EstimatorScreen({
           {/* Payment schedule moved to the Settings tab below the columns
               (2026-08-10 phase 4), the DripJobs editor shape. */}
 
-          {/* Comps and the AI price read key off system + sqft, which a custom
-              estimate does not have; hidden rather than pretending. Both are
-              collapsed disclosures under the Money card since the phase-4
-              declutter: pricing intelligence stays one tap away in the rail,
-              never behind a tab a rep forgets, but stops eating the column. */}
-          {!isCustom && <details className="card comps">
-            <summary className="areas-head" style={{ cursor: 'pointer' }}><span>Comparable jobs</span></summary>
-            {!(totalSqft > 0) && <p className="hint">Comps appear once the square footage is set.</p>}
-            {totalSqft > 0 && compsFailed && (
-              <p className="hint">{online ? 'Could not load completed jobs to compare against.' : 'Comps need a connection; the price above works offline.'}</p>
-            )}
-            {totalSqft > 0 && !compsFailed && !comps && <p className="hint">Loading completed jobs…</p>}
-            {comps && comps.sample_size === 0 && <p className="hint">{compsLabel}.</p>}
-            {comps && comps.sample_size > 0 && (
-              <>
-                <div className="comps-median">
-                  Median {money2(comps.median_ppsf)}/sqft
-                  {comps.median_ppsf != null && totalSqft > 0 && (
-                    <span className="muted"> · {money(comps.median_ppsf * totalSqft)} at {Math.round(totalSqft)} sqft</span>
-                  )}
-                </div>
-                <p className="comps-rule">{compsLabel}</p>
-                {mixedCompsNote && <p className="warn">{mixedCompsNote}</p>}
-                <div className="comps-table-wrap">
-                  <table className="comps-table">
-                    <thead><tr><th>Customer</th><th>Sqft</th><th>Price</th><th>$/sqft</th><th>GP%</th></tr></thead>
-                    <tbody>
-                      {comps.rows.map((r) => (
-                        <tr key={r.id}>
-                          <td>{r.customer_name || '--'}</td>
-                          <td>{r.sqft != null ? Math.round(r.sqft).toLocaleString() : '--'}</td>
-                          <td>{money(r.price)}</td>
-                          <td>{r.ppsf != null ? `$${r.ppsf.toFixed(2)}` : '--'}</td>
-                          <td>{r.gp_pct != null ? `${(r.gp_pct * 100).toFixed(0)}%` : '--'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {compsCaveat && <p className="hint" style={{ marginTop: 6 }}>{compsCaveat}.</p>}
-              </>
-            )}
-          </details>}
-
-          {!isCustom && <details className="card ai-panel">
-            <summary className="areas-head" style={{ cursor: 'pointer' }}><span>AI price read</span></summary>
-            {config.estimateAiEnabled === false && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
-            {config.estimateAiEnabled !== false && !(totalSqft > 0 && hasPrice) && <p className="hint">Runs automatically once system and square footage are set.</p>}
-            {totalSqft > 0 && hasPrice && !online && ai?.status !== 'ready' && <p className="hint">Needs a connection; the calculated price and comps stand on their own.</p>}
-            {ai?.status === 'loading' && <p className="hint">Analyzing each line against its own comps…</p>}
-            {ai?.status === 'disabled' && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
-            {ai?.status === 'error' && <p className="warn">AI read failed: {ai.err}</p>}
-            {ai?.status === 'ready' && ai.rec && (
-              <>
-                <div className="ai-range">{money(ai.rec.recommended_low)} to {money(ai.rec.recommended_high)}</div>
-                <p className="ai-why">{ai.rec.why}</p>
-                {/* Per-line reads (prompt 70): each line's range, its why, and
-                    a SERVER-computed confidence chip (comps-backed / thin
-                    sample / no comps), never model-claimed. */}
-                {Array.isArray(ai.rec.lines) && ai.rec.lines.length > 0 && (
-                  <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
-                    {ai.rec.lines.map((l) => (
-                      <div key={l.line_key} style={{ borderTop: '1px solid rgba(128,128,128,.25)', paddingTop: 8 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700 }}>{l.label || l.line_key}</span>
-                          <span
-                            title={l.confidence === 'comps_backed' ? 'Enough same-system comps back this read.'
-                              : l.confidence === 'thin_sample' ? 'Fewer same-system comps than the minimum; treat as directional.'
-                              : 'No comparable jobs exist for this line.'}
-                            style={{
-                              fontSize: '.68rem', fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
-                              padding: '2px 8px', borderRadius: 999,
-                              background: l.confidence === 'comps_backed' ? 'rgba(22,163,74,.15)' : l.confidence === 'thin_sample' ? 'rgba(217,119,6,.15)' : 'rgba(128,128,128,.18)',
-                              color: l.confidence === 'comps_backed' ? '#15803d' : l.confidence === 'thin_sample' ? '#b45309' : 'inherit',
-                            }}
-                          >{l.confidence_label || l.confidence}</span>
-                        </div>
-                        <div style={{ fontWeight: 700, fontSize: '.9rem', marginTop: 2 }}>{money(l.recommended_low)} to {money(l.recommended_high)}</div>
-                        <p className="ai-why" style={{ marginTop: 4 }}>{l.why}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {ai.rec.history_available && ai.rec.intent_read && (
-                  <p className="ai-why"><strong>Customer signal:</strong> {ai.rec.intent_read}</p>
-                )}
-                {ai.rec.history_available === false && (
-                  <p className="hint">No call or text history on file for this customer.</p>
-                )}
-                <p className="calcver">The AI never sets the price; you do.</p>
-              </>
-            )}
-          </details>}
+          {/* The "Comparable jobs" and "AI price read" panels used to render
+              here as collapsed disclosures (the phase-4 declutter parked them
+              under the Money card). Prompt 87 (Dylan, 2026-08-12) reversed
+              that: reps never opened them and the column was still too busy,
+              so the panels moved OUT of the estimator entirely. The pipeline
+              behind them still runs silently — the comps computation, the
+              per-line AI fetch effect, and the pricing_snapshot write below
+              are all intact — and the estimate DETAIL page (index.html
+              renderEstimateDetail, snapAi.lines) is where the read lives now.
+              Do not re-add panels here without a new decision from Dylan. */}
         </div>
       </main>
 

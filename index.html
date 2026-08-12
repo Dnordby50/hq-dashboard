@@ -19962,7 +19962,7 @@ async function renderSettingsEstimates() {
     </div>
     <div class="pec-card">
       <div style="font-weight:700">Pricing intelligence</div>
-      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The comps table and the AI price read (prompt 70: comps never cross systems, and the AI reads each line against its own comps with a confidence flag). The minimum sample is the one knob both share: below it the comps widen to same-system any-size and a line's read is flagged as a thin sample.</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The comps computation and the AI price read (prompt 70: comps never cross systems, and the AI reads each line against its own comps with a confidence flag). Since prompt 87 these run silently while a rep estimates; nothing renders in the estimator. The result is saved with each new estimate and shows on the estimate detail page's pricing read. The minimum sample is the one knob both share: below it the comps widen to same-system any-size and a line's read is flagged as a thin sample.</div>
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">
           <input type="checkbox" id="piSetAiOn" ${aiOn ? 'checked' : ''}> AI price read on

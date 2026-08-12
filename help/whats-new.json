@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-declutter-pricing-panels",
+    "date": "2026-08-12",
+    "title": "A cleaner estimator screen",
+    "summary": "The Comparable jobs and AI price read boxes are gone from the estimator. The analysis still runs in the background on every new estimate, and the result shows on the estimate page in the office. Pricing in the estimator itself is unchanged.",
+    "howto": [
+      "Build estimates as usual; the screen just has less to scroll past.",
+      "To see the comps and the AI read for an estimate, open its estimate page from the Estimates list.",
+      "Settings > Estimates > Pricing intelligence still controls the background analysis."
+    ]
+  },
+  {
     "id": "accept-celebration",
     "date": "2026-08-12",
     "title": "Confetti when an estimate is accepted",
