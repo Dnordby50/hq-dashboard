@@ -6159,7 +6159,7 @@ function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
         if (reason) after.reason = reason;
         await logJobActivity(jobId, 'status_change', { status: fromStatus }, after);
         // Two-way sync: a manual move to Complete also completes the calendar row(s).
-        if (toStatus === 'completed') await mirrorProdStatus({ dealId: ctx.dealId, name: ctx.name, addr: ctx.addr }, 'completed');
+        if (toStatus === 'completed') await mirrorProdStatus({ crmJobId: jobId, dealId: ctx.dealId, name: ctx.name, addr: ctx.addr }, 'completed');
         closeModal();
         showToast('Status updated', { ttl: 2000 });
         // Prompt 60: every path that completes a job offers the review ask.
@@ -6839,24 +6839,38 @@ function _nameAddrKey(name, addr) {
 }
 
 // Two-way sync, CRM -> calendar. Mirror a status onto the bridged production
-// row(s) so the schedule agrees with the Pipeline / job detail. The reliable
-// bridge is dripjobs_deal_id; manual calendar entries have none, so fall back to
-// the same normalized name+address key the sweep uses. Best-effort: the public.
-// jobs write is the source of truth, this is a convenience mirror, so every
-// error is swallowed. Mirroring 'completed' is trigger-safe: prod 'completed'
-// maps back to CRM 'completed', and the trigger's status<>'completed' guard means
-// it will not re-touch (or unpin) the job we just set.
-async function mirrorProdStatus({ dealId, name, addr } = {}, prodStatus) {
+// row(s) so the schedule agrees with the Pipeline / job detail. The explicit
+// crm_job_id pairing (prompt 91) is checked first; then dripjobs_deal_id; then
+// the same normalized name+address key the sweep uses, which never touches a
+// row that is explicitly paired (to any job) or declared separate, so two open
+// jobs at one address can no longer complete each other. Best-effort: the
+// public.jobs write is the source of truth, this is a convenience mirror, so
+// every error is swallowed. Mirroring 'completed' is trigger-safe: prod
+// 'completed' maps back to CRM 'completed', and the trigger's
+// status<>'completed' guard means it will not re-touch (or unpin) the job we
+// just set.
+async function mirrorProdStatus({ crmJobId, dealId, name, addr } = {}, prodStatus) {
   try {
+    if (crmJobId) {
+      // Cheap existence probe first: if this job HAS an explicit prod pairing,
+      // mirror onto exactly those rows and stop; otherwise fall through to the
+      // legacy rungs (a probe failure also falls through, staying best-effort).
+      const probe = await supabase.from('pec_prod_jobs').select('id').eq('crm_job_id', crmJobId).limit(1);
+      if (!probe.error && (probe.data || []).length) {
+        await withFreshWriteRetry(() => supabase.from('pec_prod_jobs').update({ status: prodStatus }).eq('crm_job_id', crmJobId), { label: 'prod-status-mirror' });
+        return;
+      }
+    }
     if (dealId) {
       await withFreshWriteRetry(() => supabase.from('pec_prod_jobs').update({ status: prodStatus }).eq('dripjobs_deal_id', dealId), { label: 'prod-status-mirror' });
       return;
     }
     const key = _nameAddrKey(name, addr);
     if (!key) return; // no deal id and no usable name+address -> nothing to mirror
-    const res = await supabase.from('pec_prod_jobs').select('id,customer_name,address').is('dripjobs_deal_id', null);
+    const res = await supabase.from('pec_prod_jobs').select('id,customer_name,address,crm_job_id,crm_link_declined').is('dripjobs_deal_id', null);
     if (res.error) return;
     for (const p of res.data || []) {
+      if (p.crm_job_id || p.crm_link_declined) continue; // explicit pairing / declared separate: never fuzzy
       if (_nameAddrKey(p.customer_name, p.address) !== key) continue;
       await supabase.from('pec_prod_jobs').update({ status: prodStatus }).eq('id', p.id);
     }
@@ -6923,7 +6937,7 @@ async function runScheduleStatusSync({ force = false } = {}) {
     const [pjRes, dayRes, jobsRes] = await Promise.all([
       // ALL prod rows (incl. manual, deal-id-null), so manual calendar entries
       // are matched via the name+address fallback below.
-      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address,status,is_callback'),
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address,status,is_callback,crm_job_id,crm_link_declined'),
       supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
       // ALL non-archived, non-completed jobs (deal id optional; some match only
       // by name+address). customers(name) + address feed the fallback bridge.
@@ -6932,13 +6946,17 @@ async function runScheduleStatusSync({ force = false } = {}) {
     if (pjRes.error || jobsRes.error) return;
     const daysByProd = {};
     for (const d of (dayRes.data || [])) (daysByProd[d.job_id] ||= []).push(d.scheduled_date);
-    // EARLIEST and LATEST scheduled date by deal id AND by normalized name+
-    // address. The name+address maps aggregate every prod row sharing the same
-    // customer+address (almost always the same job split across a webhook row +
-    // a manual row), which is exactly what we want to reunite. We need both ends
-    // of the span: deriveJobStatus completes a job only the day AFTER its LAST
-    // scheduled day, so the latest date matters as much as the earliest.
-    const startByDeal = {}, startByNA = {}, endByDeal = {}, endByNA = {};
+    // EARLIEST and LATEST scheduled date by explicit crm_job_id (prompt 91),
+    // by deal id, AND by normalized name+address. The name+address maps
+    // aggregate every UNLINKED prod row sharing the same customer+address
+    // (almost always the same job split across a webhook row + a manual row),
+    // which is exactly what we want to reunite; explicitly-paired rows feed
+    // ONLY their own job's span and declared-separate rows feed no fuzzy map
+    // at all, so two open jobs at one address can no longer drive each
+    // other's status. We need both ends of the span: deriveJobStatus
+    // completes a job only the day AFTER its LAST scheduled day, so the
+    // latest date matters as much as the earliest.
+    const startById = {}, endById = {}, startByDeal = {}, startByNA = {}, endByDeal = {}, endByNA = {};
     const consider = (mapKey, startMap, endMap, ds) => {
       if (!mapKey || !ds.length) return;
       const sorted = ds.slice().sort();
@@ -6951,14 +6969,15 @@ async function runScheduleStatusSync({ force = false } = {}) {
       if (p.install_date) ds.push(p.install_date);
       for (const sd of (daysByProd[p.id] || [])) ds.push(sd);
       if (!ds.length) continue;
+      if (p.crm_job_id) { consider(p.crm_job_id, startById, endById, ds); continue; }
       if (p.dripjobs_deal_id) consider(p.dripjobs_deal_id, startByDeal, endByDeal, ds);
-      consider(_nameAddrKey(p.customer_name, p.address), startByNA, endByNA, ds);
+      if (!p.crm_link_declined) consider(_nameAddrKey(p.customer_name, p.address), startByNA, endByNA, ds);
     }
     let n = 0, scheduledTotal = 0, blocked = 0, firstErr = '';
     for (const j of (jobsRes.data || [])) {
       const naKey = _nameAddrKey(j.customers && j.customers.name, j.address);
-      const start = (j.dripjobs_deal_id && startByDeal[j.dripjobs_deal_id]) || startByNA[naKey] || null;
-      const end = (j.dripjobs_deal_id && endByDeal[j.dripjobs_deal_id]) || endByNA[naKey] || null;
+      const start = startById[j.id] || (j.dripjobs_deal_id && startByDeal[j.dripjobs_deal_id]) || startByNA[naKey] || null;
+      const end = endById[j.id] || (j.dripjobs_deal_id && endByDeal[j.dripjobs_deal_id]) || endByNA[naKey] || null;
       if (start) scheduledTotal++;
       // ONE rule for everyone: deriveJobStatus. Background sweeps NEVER clear a
       // manual pin (it returns null when pinned -> we leave the job alone); only
@@ -10445,7 +10464,7 @@ async function renderInvoicing() {
       supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
       // ALL prod rows (manual entries have no deal id and are matched by the
       // name+address fallback below, same as runScheduleStatusSync).
-      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address'),
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address,crm_job_id,crm_link_declined'),
       // One batched read of every schedule day; per-row queries are banned here.
       supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
     ]), { label: 'renderInvoicing' });
@@ -10462,25 +10481,29 @@ async function renderInvoicing() {
   const EPS = 0.005;
   const today = invToday();
 
-  // Schedule span per AR row, bridged the same two ways runScheduleStatusSync
-  // bridges (dripjobs_deal_id first; normalized name+address for manual prod
-  // rows with no deal id). Each prod row contributes its install_date plus its
-  // schedule days, and rows sharing a key aggregate, so the span matches what
-  // deriveJobStatus / the DB trigger see. Feeds sched_next (earliest day
-  // strictly after today) and sched_last (latest day) on each AR row.
+  // Schedule span per AR row, bridged the same way runScheduleStatusSync
+  // bridges (explicit crm_job_id first per prompt 91; then dripjobs_deal_id;
+  // normalized name+address for unlinked manual prod rows). Each prod row
+  // contributes its install_date plus its schedule days, and rows sharing a
+  // key aggregate, so the span matches what deriveJobStatus / the DB trigger
+  // see; explicitly-paired rows feed only their own job and declared-separate
+  // rows never feed the fuzzy map. Feeds sched_next (earliest day strictly
+  // after today) and sched_last (latest day) on each AR row.
   const daysByProd = {};
   for (const d of (dayRes && !dayRes.error && dayRes.data || [])) (daysByProd[d.job_id] ||= []).push(d.scheduled_date);
-  const schedByDeal = {}, schedByNA = {};
+  const schedById = {}, schedByDeal = {}, schedByNA = {};
   for (const p of (prodRes.data || [])) {
     const ds = (daysByProd[p.id] || []).slice();
     if (p.install_date) ds.push(p.install_date);
     if (!ds.length) continue;
+    if (p.crm_job_id) { (schedById[p.crm_job_id] ||= []).push(...ds); continue; }
     if (p.dripjobs_deal_id) (schedByDeal[p.dripjobs_deal_id] ||= []).push(...ds);
+    if (p.crm_link_declined) continue;
     const naKey = _nameAddrKey(p.customer_name, p.address);
     if (naKey) (schedByNA[naKey] ||= []).push(...ds);
   }
   const rows = (arRes.data || []).map(r => {
-    const sched = ((r.dripjobs_deal_id && schedByDeal[r.dripjobs_deal_id]) || schedByNA[_nameAddrKey(r.customer_name, r.address)] || []).slice().sort();
+    const sched = (schedById[r.id] || (r.dripjobs_deal_id && schedByDeal[r.dripjobs_deal_id]) || schedByNA[_nameAddrKey(r.customer_name, r.address)] || []).slice().sort();
     return {
       ...r,
       price: invNum(r.price),
@@ -13320,7 +13343,7 @@ async function markJobComplete(row) {
     // Complete left the prod record at scheduled/in_progress and the costing
     // list (gated on completed) never showed the job. Best-effort, same bridge
     // as the status-pick modal (dripjobs_deal_id, then name+address fallback).
-    try { await mirrorProdStatus({ dealId: row.dripjobs_deal_id, name: row.customer_name, addr: row.address }, 'completed'); } catch (_) {}
+    try { await mirrorProdStatus({ crmJobId: row.id, dealId: row.dripjobs_deal_id, name: row.customer_name, addr: row.address }, 'completed'); } catch (_) {}
     try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
     showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
     // Prompt 60: the close-out review ask rides every completion path.
@@ -15161,7 +15184,7 @@ async function openNewJobForm() {
   let loadErrMsg = '';
   try {
     const [custRes, sysRes] = await Promise.all([
-      supabase.from('customers').select('id,name,company,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+      supabase.from('customers').select('id,name,phone,email,company,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
         .is('archived_at', null).order('name'),
       supabase.from('pec_prod_system_types').select('id,name,active').order('name'),
     ]);
@@ -15211,6 +15234,7 @@ async function openNewJobForm() {
         </select>
       </div>
       <div class="pec-field"><label>Scope</label><textarea name="scope" rows="2"></textarea></div>
+      <div id="pecJobLinkAsk" style="display:none;margin:0 0 12px;padding:12px 14px;border:1px solid color-mix(in srgb, var(--accent,#D8531C) 45%, transparent);border-radius:8px;background:color-mix(in srgb, var(--accent,#D8531C) 10%, transparent);font-size:.8rem"></div>
       <div id="pecJobFormError" class="prod-msg-err" style="min-height:18px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
@@ -15230,7 +15254,15 @@ async function openNewJobForm() {
         addrInput.disabled = false;
       }
     };
-    custSel.addEventListener('change', syncAddress);
+    // Prompt 91 chooser state: null = not asked yet for this customer pick;
+    // { prodJobId } = link to that existing production job (no duplicate prod
+    // row is created); { separate: true } = Dylan declared it a separate job;
+    // { none: true } = asked, nothing open to link to. Changing the customer
+    // re-arms the ask.
+    let crmLinkChoice = null;
+    const linkAskEl = modal.querySelector('#pecJobLinkAsk');
+    const hideLinkAsk = () => { linkAskEl.style.display = 'none'; linkAskEl.innerHTML = ''; };
+    custSel.addEventListener('change', () => { crmLinkChoice = null; hideLinkAsk(); syncAddress(); });
     sameAsBilling.addEventListener('change', syncAddress);
     syncAddress();
 
@@ -15249,19 +15281,104 @@ async function openNewJobForm() {
         // now derived from the first area's system_type instead.
         const pickedForType = customers.find(c => c.id === fd.customer_id);
         fd.type = (pickedForType?.company === 'finishing-touch') ? 'paint' : 'epoxy';
+        const picked = customers.find(c => c.id === fd.customer_id);
+        const pickedIsPec = !!picked && (picked.company || 'prescott-epoxy') === 'prescott-epoxy';
+
+        // Creation-time ask (prompt 91): if this customer already has an OPEN
+        // production job with no explicit CRM pairing, ask BEFORE saving
+        // whether this is that job (link: stamp crm_job_id on the existing
+        // prod row, create no duplicate prod row) or a separate one (create
+        // the usual fresh pair). Same-human rule mirrors _pec-lead-match.cjs:
+        // last-10 phone or exact email (via twin customer rows), falling back
+        // to normalized name+address only when the customer has neither.
+        // Best-effort: a fetch hiccup never blocks creating the job.
+        if (pickedIsPec && !crmLinkChoice) {
+          let candidates = [];
+          try {
+            const phone10 = contactPhoneNorm(picked.phone);
+            const email = String(picked.email || '').trim().toLowerCase();
+            const prodRes = await supabase.from('pec_prod_jobs')
+              .select('id,proposal_number,customer_id,customer_name,address,status,install_date,revenue')
+              .is('archived_at', null).neq('status', 'completed')
+              .eq('is_callback', false).is('crm_job_id', null).eq('crm_link_declined', false);
+            if (!prodRes.error) {
+              // Twin customer rows (webhook duplicates) count as the same human.
+              const humanIds = new Set([picked.id]);
+              if (phone10 || email) {
+                for (const c of customers) {
+                  if (c.id === picked.id) continue;
+                  if ((phone10 && contactPhoneNorm(c.phone) === phone10)
+                    || (email && String(c.email || '').trim().toLowerCase() === email)) humanIds.add(c.id);
+                }
+              }
+              const naKey = (!phone10 && !email) ? window.jobNameAddrKey(picked.name, fd.address) : '';
+              candidates = (prodRes.data || []).filter(r => humanIds.has(r.customer_id)
+                || (naKey && window.jobNameAddrKey(r.customer_name, r.address) === naKey));
+            }
+          } catch (askErr) {
+            console.warn('[pec] create job: link-ask lookup failed (job creation proceeds):', askErr);
+          }
+          if (candidates.length) {
+            linkAskEl.style.display = '';
+            linkAskEl.innerHTML = `
+              <div style="font-weight:700;margin-bottom:6px">${esc(picked.name)} already has ${candidates.length === 1 ? 'an open production job' : candidates.length + ' open production jobs'}</div>
+              <div style="color:var(--muted);margin-bottom:10px">Is this the same job (link it, so ordering and costing read one card), or a separate new job for this customer?</div>
+              ${candidates.map(r => `
+                <button type="button" class="pec-btn sm pec-job-link-pick" data-id="${esc(r.id)}" style="display:block;width:100%;text-align:left;margin-bottom:6px">Link to ${esc([
+                  r.proposal_number ? '#' + r.proposal_number : '',
+                  r.address || '',
+                  r.revenue ? '$' + Math.round(Number(r.revenue)).toLocaleString() : '',
+                  r.install_date ? 'install ' + r.install_date : r.status || '',
+                ].filter(Boolean).join(' · '))}</button>`).join('')}
+              <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+                <button type="button" class="pec-btn ghost sm" id="pecJobLinkBack">Go back</button>
+                <button type="button" class="pec-btn sm" id="pecJobLinkSeparate">Separate new job</button>
+              </div>`;
+            const resubmit = () => modal.querySelector('#pecJobForm').requestSubmit();
+            linkAskEl.querySelectorAll('.pec-job-link-pick').forEach(btn => btn.addEventListener('click', () => {
+              crmLinkChoice = { prodJobId: btn.dataset.id };
+              hideLinkAsk(); resubmit();
+            }));
+            linkAskEl.querySelector('#pecJobLinkSeparate').addEventListener('click', () => {
+              crmLinkChoice = { separate: true };
+              hideLinkAsk(); resubmit();
+            });
+            linkAskEl.querySelector('#pecJobLinkBack').addEventListener('click', hideLinkAsk);
+            linkAskEl.scrollIntoView({ block: 'nearest' });
+            return;
+          }
+          crmLinkChoice = { none: true };
+        }
+
         const { data: job, error } = await supabase.from('jobs').insert(fd).select().single();
         if (error) throw error;
 
-        // Auto-bridge to pec_prod_jobs so the new job shows up in the PEC
-        // Job Schedule (Pending Jobs sidebar). Mirrors the proposal-accepted
-        // webhook's bridge (netlify/functions/pec-webhook-proposal-accepted.cjs).
-        // PEC-only: pec_prod_jobs is PEC-scoped; FTP jobs intentionally do
-        // not bridge (see docs/job-schedule-future-todos.md).
-        // dripjobs_deal_id stays null + proposal_number is prefixed MANUAL-
-        // so this row is identifiable as a manual entry (see CLAUDE.md
-        // "Manual job entries (temporary bridge)").
-        const picked = customers.find(c => c.id === fd.customer_id);
-        if (picked && (picked.company || 'prescott-epoxy') === 'prescott-epoxy') {
+        if (pickedIsPec && crmLinkChoice && crmLinkChoice.prodJobId) {
+          // Link: the existing production row IS this job. Stamp the explicit
+          // pairing instead of bridging a duplicate prod row. Fill-if-null so
+          // a race can never clobber a pairing made elsewhere. Non-fatal: the
+          // jobs row exists either way, and the stamp can be redone via the
+          // schedule side if it misses.
+          try {
+            const upd = await supabase.from('pec_prod_jobs')
+              .update({ crm_job_id: job.id })
+              .eq('id', crmLinkChoice.prodJobId).is('crm_job_id', null);
+            if (upd.error) console.error('[pec] create job: crm link stamp failed (non-fatal):', upd.error);
+          } catch (linkErr) {
+            console.error('[pec] create job: crm link stamp threw (non-fatal):', linkErr);
+          }
+        } else if (pickedIsPec) {
+          // Auto-bridge to pec_prod_jobs so the new job shows up in the PEC
+          // Job Schedule (Pending Jobs sidebar). Mirrors the proposal-accepted
+          // webhook's bridge (netlify/functions/pec-webhook-proposal-accepted.cjs).
+          // PEC-only: pec_prod_jobs is PEC-scoped; FTP jobs intentionally do
+          // not bridge (see docs/job-schedule-future-todos.md).
+          // dripjobs_deal_id stays null + proposal_number is prefixed MANUAL-
+          // so this row is identifiable as a manual entry (see CLAUDE.md
+          // "Manual job entries (temporary bridge)"). crm_job_id points at the
+          // fresh jobs row (prompt 91): the pair is explicit at birth, and a
+          // "Separate new job" answer can never be fuzzy-matched to some other
+          // card later because the explicit link outranks name+address.
           try {
             const n = new Date();
             const pad = x => String(x).padStart(2, '0');
@@ -15274,6 +15391,7 @@ async function openNewJobForm() {
               revenue: fd.price,
               status: 'unscheduled',
               notes: fd.scope || null,
+              crm_job_id: job.id,
             });
             if (bridgeRes.error) {
               console.error('[pec] create job: prod auto-bridge failed (non-fatal):', bridgeRes.error);
@@ -15873,10 +15991,17 @@ async function renderJobDetailInner(id) {
   let scheduleBridged = false;   // true only when we reliably know the schedule
   try {
     let prodRows = null;         // null = no bridge resolved; [] = bridged, empty
-    if (job.dripjobs_deal_id) {
+    // (0) Explicit pairing (prompt 91): pec_prod_jobs.crm_job_id names this
+    // job. Outranks every other rung; the only rung that can tell two open
+    // jobs at the same name+address apart.
+    {
+      const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback').eq('crm_job_id', id);
+      if (!pjRes.error && (pjRes.data || []).length) prodRows = pjRes.data;
+    }
+    if (prodRows == null && job.dripjobs_deal_id) {
       const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback').eq('dripjobs_deal_id', job.dripjobs_deal_id);
       if (!pjRes.error) prodRows = pjRes.data || [];
-    } else {
+    } else if (prodRows == null) {
       // (2) TopCoat-native: the accept path stamps estimates.pec_prod_job_id.
       const estRes = await supabase.from('estimates').select('pec_prod_job_id').eq('job_id', id).not('pec_prod_job_id', 'is', null).limit(1);
       const stampedId = (!estRes.error && (estRes.data || [])[0]?.pec_prod_job_id) || null;
@@ -15885,12 +16010,14 @@ async function renderJobDetailInner(id) {
         if (!pjRes.error) prodRows = pjRes.data || [];
       }
       // (3) Manual/native pairing: name+address key over the customer's rows.
+      // Rows carrying an explicit pairing to a DIFFERENT job, or the
+      // declared-separate marker, never fuzzy-match (prompt 91).
       if ((prodRows == null || !prodRows.length) && job.customer_id) {
         const naKey = _nameAddrKey(job.customers && job.customers.name, job.address);
         if (naKey) {
-          const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback,customer_name,address').eq('customer_id', job.customer_id);
+          const pjRes = await supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback,customer_name,address,crm_job_id,crm_link_declined').eq('customer_id', job.customer_id);
           if (!pjRes.error) {
-            const matches = (pjRes.data || []).filter(p => _nameAddrKey(p.customer_name, p.address) === naKey);
+            const matches = (pjRes.data || []).filter(p => !p.crm_job_id && !p.crm_link_declined && _nameAddrKey(p.customer_name, p.address) === naKey);
             if (matches.length) prodRows = matches;
           }
         }
@@ -16660,8 +16787,12 @@ async function renderJobDetailInner(id) {
       let prods = state.prodJobs || [];
       if (!prods.length) { try { await loadProdCore(); prods = state.prodJobs || []; } catch (_) {} }
       const naKey = _nameAddrKey(job.customers && job.customers.name, job.address);
-      const match = (job.dripjobs_deal_id && prods.find(p => p.dripjobs_deal_id === job.dripjobs_deal_id))
-        || (naKey ? prods.find(p => _nameAddrKey(p.customer_name, p.address) === naKey) : null);
+      // Explicit crm_job_id pairing first (prompt 91), then deal id, then the
+      // fuzzy key; explicitly-paired-elsewhere and declared-separate prod rows
+      // never fuzzy-match (two open Haley Construction jobs stay distinct).
+      const match = prods.find(p => p.crm_job_id === job.id)
+        || (job.dripjobs_deal_id && prods.find(p => p.dripjobs_deal_id === job.dripjobs_deal_id))
+        || (naKey ? prods.find(p => !p.crm_job_id && !p.crm_link_declined && _nameAddrKey(p.customer_name, p.address) === naKey) : null);
       if (!match) {
         try { showToast('No production record for this job yet.', { ttl: 4000 }); } catch (_) {}
         if (btn) { btn.disabled = false; btn.textContent = 'Go to Job Costing →'; }
@@ -18153,7 +18284,7 @@ function openReviewReassignModal(review) {
         const req = (!rq.error && rq.data) || null;
         let crewLead = req ? req.crew_lead : null, crewId = req ? req.crew_id : null;
         if (!crewLead) {
-          const prod = await resolveProdJobForReview({ dealId: null, name: job.customers?.name, addr: job.address });
+          const prod = await resolveProdJobForReview({ crmJobId: job.id, dealId: null, name: job.customers?.name, addr: job.address });
           if (prod) { crewLead = prod.crew_lead || null; crewId = prod.crew_id || null; }
         }
         const who = (state.adminUser && (state.adminUser.name || state.adminUser.email)) || 'staff';
@@ -25665,7 +25796,7 @@ function openPipelineMoveModal(row, target, onDone) {
           if (reason) after.reason = reason;
           await logJobActivity(row.id, 'status_change', { status: row.status }, after);
           // Two-way sync: dragging to Project Complete also completes the calendar row(s).
-          if (target.status === 'completed') await mirrorProdStatus({ dealId: row.dealId, name: row.customerName, addr: row.address }, 'completed');
+          if (target.status === 'completed') await mirrorProdStatus({ crmJobId: row.id, dealId: row.dealId, name: row.customerName, addr: row.address }, 'completed');
         }
         if (colorsChanges) {
           await logJobActivity(row.id, 'save', { colors_confirmed: curColors }, { colors_confirmed: target.colors });
@@ -25706,23 +25837,36 @@ async function loadPipelineData() {
   for (const d of state.scheduleDays || []) (daysByProdJob[d.job_id] ||= []).push(d);
   const crewNameById = Object.fromEntries((state.crews || []).map(c => [c.id, c.name]));
 
-  // Fallback bridge: jobs scheduled via a manual calendar row have no deal id,
-  // so also index every prod row's schedule by normalized customer name+address.
-  const naSched = {}; // key -> { dates:[], crew:'' }
+  // Explicit bridge (prompt 91): prod rows stamped with crm_job_id feed ONLY
+  // their own job's schedule. Fallback bridge: unlinked jobs scheduled via a
+  // manual calendar row have no deal id, so also index every unlinked,
+  // not-declared-separate prod row's schedule by normalized name+address.
+  const idSched = {};  // crm_job_id -> { dates:[], crew:'' }
+  const naSched = {};  // key -> { dates:[], crew:'' }
   for (const p of state.prodJobs || []) {
-    const k = _nameAddrKey(p.customer_name, p.address); if (!k) continue;
     const ds = [];
     if (p.install_date) ds.push(p.install_date);
     for (const d of daysByProdJob[p.id] || []) if (d.scheduled_date) ds.push(d.scheduled_date);
     if (!ds.length) continue;
+    if (p.crm_job_id) {
+      const e = (idSched[p.crm_job_id] ||= { dates: [], crew: '' });
+      e.dates.push(...ds);
+      if (!e.crew) e.crew = crewNameById[p.crew_id] || p.crew || '';
+      continue;
+    }
+    if (p.crm_link_declined) continue;
+    const k = _nameAddrKey(p.customer_name, p.address); if (!k) continue;
     const e = (naSched[k] ||= { dates: [], crew: '' });
     e.dates.push(...ds);
     if (!e.crew) e.crew = crewNameById[p.crew_id] || p.crew || '';
   }
 
-  // Earliest scheduled date + crew for a job: deal-id bridge first, then the
-  // name+address fallback (manual calendar entries).
-  const installInfo = (dealId, name, addr) => {
+  // Earliest scheduled date + crew for a job: explicit crm_job_id bridge
+  // first, then deal id, then the name+address fallback (manual calendar
+  // entries).
+  const installInfo = (jobId, dealId, name, addr) => {
+    const ex = jobId ? idSched[jobId] : null;
+    if (ex && ex.dates.length) { const ds = ex.dates.slice().sort(); return { start: ds[0], end: ds[ds.length - 1], crew: ex.crew }; }
     const rows = dealId ? (prodByDeal[dealId] || []) : [];
     const dates = [];
     let crew = '';
@@ -25751,7 +25895,7 @@ async function loadPipelineData() {
     // the VIEW; this client-side drop stays as the pre-migration defense (the
     // deploy can land before Cowork runs the migration) and costs nothing.
     if (extra.archived_at) continue;
-    const inst = installInfo(r.dripjobs_deal_id, r.customer_name, extra.address);
+    const inst = installInfo(r.id, r.dripjobs_deal_id, r.customer_name, extra.address);
     // Reconcile the pipeline column with the schedule calendar using the SAME
     // canonical rule (deriveJobStatus) the sweep will persist, so the column the
     // user sees always matches where the job is about to land. This covers the
@@ -27472,11 +27616,18 @@ async function enrollReviewDripClient(jobId) {
 }
 
 // Bridge public.jobs -> pec_prod_jobs for the crew-lead SNAPSHOT (decision 9):
-// dripjobs_deal_id first, else the same normalized name+address key the status
-// mirror uses. The snapshot is taken ONCE at ask time and frozen on the
-// request row; later schedule edits must not rewrite attribution history.
-async function resolveProdJobForReview({ dealId, name, addr } = {}) {
+// explicit crm_job_id first (prompt 91), then dripjobs_deal_id, else the same
+// normalized name+address key the status mirror uses (which skips
+// explicitly-paired and declared-separate rows). The snapshot is taken ONCE at
+// ask time and frozen on the request row; later schedule edits must not
+// rewrite attribution history.
+async function resolveProdJobForReview({ crmJobId, dealId, name, addr } = {}) {
   try {
+    if (crmJobId) {
+      const r = await supabase.from('pec_prod_jobs').select('id,crew_lead,crew_id')
+        .eq('crm_job_id', crmJobId).limit(1).maybeSingle();
+      if (!r.error && r.data) return r.data;
+    }
     if (dealId) {
       const r = await supabase.from('pec_prod_jobs').select('id,crew_lead,crew_id')
         .eq('dripjobs_deal_id', dealId).limit(1).maybeSingle();
@@ -27484,10 +27635,10 @@ async function resolveProdJobForReview({ dealId, name, addr } = {}) {
     }
     const key = _nameAddrKey(name, addr);
     if (!key) return null;
-    const res = await supabase.from('pec_prod_jobs').select('id,crew_lead,crew_id,customer_name,address')
+    const res = await supabase.from('pec_prod_jobs').select('id,crew_lead,crew_id,customer_name,address,crm_job_id,crm_link_declined')
       .is('dripjobs_deal_id', null);
     if (res.error) return null;
-    return (res.data || []).find(p => _nameAddrKey(p.customer_name, p.address) === key) || null;
+    return (res.data || []).find(p => !p.crm_job_id && !p.crm_link_declined && _nameAddrKey(p.customer_name, p.address) === key) || null;
   } catch (_) { return null; }
 }
 
@@ -27531,7 +27682,7 @@ async function openReviewAskModal(jobId, { source = 'completion', onDone = null 
   if (source === 'completion' && reqs.length) return;
 
   const defaultOn = !((setRes.data || [])[0] && setRes.data[0].value === 'false');
-  const prod = await resolveProdJobForReview({ dealId: job.dripjobs_deal_id, name: job.customers?.name, addr: job.address });
+  const prod = await resolveProdJobForReview({ crmJobId: job.id, dealId: job.dripjobs_deal_id, name: job.customers?.name, addr: job.address });
   const custName = job.customers?.name || 'this customer';
   // prompt 66 Part E (Dylan-approved 2026-08-03): pec_prod_jobs.crew_lead is a
   // dead column (0 of 93 rows populated, nothing writes it), so a snapshot
@@ -35458,6 +35609,12 @@ function openAddJobModal() {
       // One explicit "Add anyway" arms this for the CURRENT customer pick
       // only; changing the customer re-arms the duplicate guard below.
       let dupOverride = false;
+      // Prompt 91 chooser state: null = not asked yet for this customer pick;
+      // { link: <crm job id> } = this prod row IS that CRM job (stamped as
+      // crm_job_id at insert); { declined: true } = Dylan declared it separate
+      // (stamped as crm_link_declined, so it can never fuzzy-bridge later);
+      // { none: true } = asked, no open CRM job to offer.
+      let crmLinkChoice = null;
       const hideDupWarn = () => { dupWarnEl.style.display = 'none'; dupWarnEl.innerHTML = ''; };
 
       // Load PEC customers once. 1000-row ceiling is well above the current
@@ -35506,6 +35663,7 @@ function openAddJobModal() {
         draft.customer_id = cust.id;
         draft.customer_name = cust.name || '';
         dupOverride = false;
+        crmLinkChoice = null;
         hideDupWarn();
         queryEl.style.display = 'none';
         resultsEl.style.display = 'none';
@@ -35536,6 +35694,7 @@ function openAddJobModal() {
         draft.customer_query = '';
         draft.existing_job_id = '';
         dupOverride = false;
+        crmLinkChoice = null;
         hideDupWarn();
         queryEl.value = '';
         queryEl.style.display = '';
@@ -35665,6 +35824,77 @@ function openAddJobModal() {
           }
         }
 
+        // CREATION-TIME ASK (prompt 91, Dylan's feature): a new manual prod
+        // job for a customer who already has an OPEN CRM job (Jobs page side)
+        // is often that same job arriving by a second door. Ask BEFORE saving:
+        // "Link" stamps crm_job_id so Ordering / Costing / Budget read that
+        // job card with zero fuzzy matching; "Separate new job" stamps
+        // crm_link_declined so the row can NEVER fuzzy-bridge later, even at
+        // an identical name+address (the Haley Construction failure mode).
+        // Same-human rule mirrors _pec-lead-match.cjs: last-10 phone or exact
+        // email, falling back to name+address only when the customer carries
+        // neither. CRM jobs already explicitly paired to a prod row (by
+        // crm_job_id or deal id) are not offered; the reschedule path is
+        // exempt by definition. Best-effort: a lookup failure never blocks
+        // the save (the row simply stays unlinked, exactly as before).
+        if (!isReschedule && !crmLinkChoice) {
+          let crmCandidates = [];
+          try {
+            const pickedCust = pecCustomers.find(c => c.id === draft.customer_id) || {};
+            const phone10 = contactPhoneNorm(pickedCust.phone);
+            const email = String(pickedCust.email || '').trim().toLowerCase();
+            const jr = await supabase.from('jobs')
+              .select('id,status,address,price,dripjobs_deal_id,customer_id,customers(name,phone,email)')
+              .is('archived_at', null).in('status', ['signed', 'scheduled', 'in_progress']);
+            if (!jr.error) {
+              const pairedCrmIds = new Set((state.prodJobs || []).map(p => p.crm_job_id).filter(Boolean));
+              const pairedDeals = new Set((state.prodJobs || []).map(p => p.dripjobs_deal_id).filter(Boolean));
+              const naKey = (!phone10 && !email) ? window.jobNameAddrKey(draft.customer_name, address) : '';
+              crmCandidates = (jr.data || []).filter(j => {
+                if (pairedCrmIds.has(j.id)) return false;
+                if (j.dripjobs_deal_id && pairedDeals.has(j.dripjobs_deal_id)) return false;
+                const cust = j.customers || {};
+                if (j.customer_id && j.customer_id === draft.customer_id) return true;
+                if (phone10 && contactPhoneNorm(cust.phone) === phone10) return true;
+                if (email && String(cust.email || '').trim().toLowerCase() === email) return true;
+                return !!(naKey && window.jobNameAddrKey(cust.name, j.address) === naKey);
+              });
+            }
+          } catch (askErr) {
+            console.warn('[pec] add job: link-ask lookup failed (save proceeds unlinked):', askErr);
+          }
+          if (crmCandidates.length) {
+            dupWarnEl.style.display = '';
+            dupWarnEl.innerHTML = `
+              <div style="font-weight:700;margin-bottom:6px">${esc(draft.customer_name)} already has ${crmCandidates.length === 1 ? 'an open job' : crmCandidates.length + ' open jobs'} on the Jobs page</div>
+              <div style="color:var(--muted);margin-bottom:10px">Is this the same job (link it, so ordering and costing read that job card), or a separate new job for this customer?</div>
+              ${crmCandidates.map(j => `
+                <button type="button" class="pec-btn sm addjob-crm-link-pick" data-id="${esc(j.id)}" style="display:block;width:100%;text-align:left;margin-bottom:6px">Link to ${esc([
+                  j.address || '',
+                  j.price ? '$' + Math.round(Number(j.price)).toLocaleString() : '',
+                  (j.status || '').replace('_', ' '),
+                ].filter(Boolean).join(' · ') || j.id)}</button>`).join('')}
+              <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+                <button type="button" class="pec-btn ghost sm" id="addJobCrmLinkBack">Go back</button>
+                <button type="button" class="pec-btn sm" id="addJobCrmLinkSeparate">Separate new job</button>
+              </div>`;
+            dupWarnEl.querySelectorAll('.addjob-crm-link-pick').forEach(btn => btn.addEventListener('click', () => {
+              crmLinkChoice = { link: btn.dataset.id };
+              hideDupWarn();
+              modal.querySelector('#addJobSave').click();
+            }));
+            dupWarnEl.querySelector('#addJobCrmLinkSeparate').addEventListener('click', () => {
+              crmLinkChoice = { declined: true };
+              hideDupWarn();
+              modal.querySelector('#addJobSave').click();
+            });
+            dupWarnEl.querySelector('#addJobCrmLinkBack').addEventListener('click', hideDupWarn);
+            dupWarnEl.scrollIntoView({ block: 'nearest' });
+            return;
+          }
+          crmLinkChoice = { none: true };
+        }
+
         const saveBtn = modal.querySelector('#addJobSave');
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving…';
@@ -35717,6 +35947,10 @@ function openAddJobModal() {
               status: 'scheduled',
               crew_id: draft.crew_id,
               notes,
+              // The chooser's answer (prompt 91): explicit CRM pairing, or the
+              // declared-separate marker that forever blocks fuzzy bridging.
+              crm_job_id: (crmLinkChoice && crmLinkChoice.link) || null,
+              crm_link_declined: !!(crmLinkChoice && crmLinkChoice.declined),
             };
             jobId = await insertManualJob(jobRow);
           }
@@ -35991,22 +36225,25 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
   out.flakeColors = flakeColors;
   const areasByJob = {};
   for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
-  // Deal + name|address indexes of CRM job identities (first row wins).
-  const crmByDeal = {}, crmByNameAddr = {};
+  // Id + deal + name|address indexes of CRM job identities (first row wins
+  // on the non-unique keys; id is the PK so identById can never collide).
+  const crmIdentById = {}, crmByDeal = {}, crmByNameAddr = {};
   for (const row of (crmIdentRes.data || [])) {
     const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft, salesperson: row.salesperson || null, phone: (row.customers && row.customers.phone) || null };
+    crmIdentById[row.id] = ident;
     if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
     const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
     if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
   }
-  // Resolve prod job -> CRM job (deal first, then name+address; the ONE
-  // tested resolver) and collect the CRM ids whose areas we actually need.
-  // crmStatusByProd lets Job Costing trust the CRM job's status instead
-  // of the prod row's, which is usually stale at 'scheduled' for manual jobs.
+  // Resolve prod job -> CRM job (explicit crm_job_id first, then deal, then
+  // name+address; the ONE tested resolver) and collect the CRM ids whose
+  // areas we actually need. crmStatusByProd lets Job Costing trust the CRM
+  // job's status instead of the prod row's, which is usually stale at
+  // 'scheduled' for manual jobs.
   const resolvedByProd = {};
   const neededCrmIds = new Set();
   for (const job of (state.prodJobs || [])) {
-    const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
+    const ident = window.resolveCrmForProdJob(job, { identById: crmIdentById, byDeal: crmByDeal, byNameAddr: crmByNameAddr });
     if (ident) {
       resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
       out.crmIdByProd[job.id] = ident.id;
@@ -40352,9 +40589,12 @@ function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, 
 // but module scopes are isolated, so expose them on window (same pattern as
 // window.prodSwitchView). A past refactor moved these out of the CRM module;
 // this keeps the CRM callers working without duplicating the whole calculator.
-// Resolve a prod job to its CRM job card by deal id, else normalized
-// name+address (mirror of production/calculator.js; keep byte-identical). This
-// is what lets a MANUAL (deal-null) prod row find its CRM materials.
+// Resolve a prod job to its CRM job card: explicit crm_job_id (via identById),
+// else deal id, else normalized name+address (mirror of
+// production/calculator.js; keep byte-identical). The fuzzy last rung is
+// skipped for declared-separate rows (crm_link_declined) and for rows whose
+// explicit link misses the index; callers passing no identById behave exactly
+// as before the explicit rung existed.
 function jobNameAddrKey(name, addr) {
   const n = String(name == null ? '' : name).toLowerCase().replace(/\s+/g, ' ').trim();
   const a = String(addr == null ? '' : addr).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -40362,10 +40602,20 @@ function jobNameAddrKey(name, addr) {
 }
 function resolveCrmForProdJob(prodJob, indexes) {
   if (!prodJob) return null;
+  // A touch-up callback is a VISIT on an existing job, not a job: it never
+  // bridges to a CRM card (it would inherit its parent's areas and money).
+  if (prodJob.is_callback) return null;
+  const identById = (indexes && indexes.identById) || {};
   const byDeal = (indexes && indexes.byDeal) || {};
   const byNameAddr = (indexes && indexes.byNameAddr) || {};
+  if (prodJob.crm_job_id && identById[prodJob.crm_job_id]) return identById[prodJob.crm_job_id];
   const deal = prodJob.dripjobs_deal_id;
   if (deal && byDeal[deal]) return byDeal[deal];
+  // A declared-separate row never fuzzy-bridges. Neither does a row with an
+  // explicit link whose partner is missing from the index (archived CRM job):
+  // the pairing is KNOWN, so "unbridged" is honest and "borrow whichever job
+  // shares the address" is not.
+  if (prodJob.crm_link_declined || prodJob.crm_job_id) return null;
   const key = jobNameAddrKey(prodJob.customer_name, prodJob.address);
   return (key && byNameAddr[key]) || null;
 }
@@ -40807,42 +41057,76 @@ function _mergeAcrossAreas(areaPlans) {
   }
   // CRM job card areas for bridged jobs. The job card (job_areas +
   // job_area_materials, edited on the CRM job detail) is the source of truth
-  // for what a DripJobs-sourced job needs; pec_prod_areas for those jobs is a
+  // for what a CRM-paired job needs; pec_prod_areas for those jobs is a
   // schedule-modal stub with no product picks. Fetched per loadJobs so picks
-  // edited on the job card show up in Ordering on the next tab visit. Never
-  // throws: any failure degrades to the pec_prod_areas path with a warn, and
-  // the map is assigned ONCE at the end so a partial failure can never leave
-  // half-bridged state.
+  // edited on the job card show up in Ordering on the next tab visit.
+  //
+  // Prompt 91: every prod row (not just deal-carrying ones) resolves to its
+  // CRM card through the SAME window.resolveCrmForProdJob ladder Job Costing's
+  // buildProdEstimateFacts uses (explicit crm_job_id, then deal id, then
+  // legacy name+address), so Ordering can no longer be blind to a manual or
+  // estimate-sourced job's picks and the two surfaces cannot disagree about
+  // which card a job reads. Two phases replace the old single deal-keyed
+  // embed: a lightweight all-jobs identity read (the same weight
+  // runScheduleStatusSync already pays), then areas for only the resolved ids.
+  //
+  // Never throws: any failure degrades to the pec_prod_areas path with a
+  // warn, and the maps are assigned ONCE at the end so a partial failure can
+  // never leave half-bridged state.
   async function loadCrmAreas(jobs) {
-    const dealIds = [...new Set(jobs.map(j => j.dripjobs_deal_id).filter(Boolean))];
-    if (!dealIds.length) { state.crmAreasByProdJob = {}; state.crmColorsConfirmedByProdJob = {}; return; }
+    if (!(jobs || []).length) { state.crmAreasByProdJob = {}; state.crmColorsConfirmedByProdJob = {}; return; }
     try {
-      // Two-level embed (jobs -> job_areas -> job_area_materials). If
-      // PostgREST ever rejects it, replace with the sequential three-query
-      // chain inside this function only; callers are unaffected.
-      // colors_confirmed rides along so the pull can hold out bridged jobs the
+      // Phase 1: CRM identity for every non-archived job. created_at ASC keeps
+      // "first row wins" deterministic on the non-unique deal / name+address
+      // keys (oldest job claims the key, same as the old embed's order).
+      // colors_confirmed rides along so the pull can hold out paired jobs the
       // office has not confirmed colors on yet (Dylan's "ready to order" gate).
-      const { data, error } = await supabase
+      const identRes = await supabase
         .from('jobs')
-        .select('id,dripjobs_deal_id,colors_confirmed,areas:job_areas(*, materials:job_area_materials(*))')
-        .in('dripjobs_deal_id', dealIds)
+        .select('id,dripjobs_deal_id,colors_confirmed,address,customers(name)')
         .is('archived_at', null)
         .order('created_at', { ascending: true });
-      if (error) throw error;
-      const byDeal = {};
-      for (const row of (data || [])) {
-        if (byDeal[row.dripjobs_deal_id]) { console.warn('[prod] duplicate CRM jobs for deal', row.dripjobs_deal_id); continue; }
-        byDeal[row.dripjobs_deal_id] = row;
+      if (identRes.error) throw identRes.error;
+      const identById = {}, byDeal = {}, byNameAddr = {};
+      for (const row of (identRes.data || [])) {
+        identById[row.id] = row;
+        if (row.dripjobs_deal_id) {
+          if (byDeal[row.dripjobs_deal_id]) console.warn('[prod] duplicate CRM jobs for deal', row.dripjobs_deal_id);
+          else byDeal[row.dripjobs_deal_id] = row;
+        }
+        const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
+        if (naKey && !byNameAddr[naKey]) byNameAddr[naKey] = row;
+      }
+      // Phase 2: resolve each prod row (the resolver itself skips callbacks
+      // and declared-separate rows), then fetch areas for only the CRM ids
+      // that actually matched.
+      const resolved = {};
+      const neededIds = new Set();
+      for (const j of jobs) {
+        const crm = window.resolveCrmForProdJob(j, { identById, byDeal, byNameAddr });
+        if (!crm) continue;
+        resolved[j.id] = crm;
+        neededIds.add(crm.id);
+      }
+      const areasByCrmId = {};
+      if (neededIds.size) {
+        const areaRes = await supabase
+          .from('job_areas')
+          .select('*, materials:job_area_materials(*)')
+          .in('job_id', [...neededIds]);
+        if (areaRes.error) throw areaRes.error;
+        for (const a of (areaRes.data || [])) (areasByCrmId[a.job_id] ||= []).push(a);
       }
       const out = {};
       const colors = {};
       for (const j of jobs) {
-        if (!j.dripjobs_deal_id) continue;
-        const crm = byDeal[j.dripjobs_deal_id];
+        const crm = resolved[j.id];
         if (!crm) continue;
-        if ((crm.areas || []).length) out[j.id] = crm.areas;
-        // Record the flag for every bridged job that has a CRM row, even one
-        // with no areas, so resolveJobLines can hold it out explicitly.
+        const crmAreas = areasByCrmId[crm.id] || [];
+        if (crmAreas.length) out[j.id] = crmAreas;
+        // Record the flag for every paired job that has a CRM row, even one
+        // with no areas, so resolveJobLines can hold it out explicitly. One
+        // colors-confirmed rule for every source, exactly as before.
         colors[j.id] = crm.colors_confirmed === true;
       }
       state.crmAreasByProdJob = out;

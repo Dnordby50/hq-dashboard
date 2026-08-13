@@ -164,7 +164,7 @@ exports.handler = async (event) => {
     if (companyKey === 'prescott-epoxy') {
       try {
         if (deal_id) {
-          const existing = await sb('GET', `/pec_prod_jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id&limit=1`);
+          const existing = await sb('GET', `/pec_prod_jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id,crm_job_id&limit=1`);
           if (!existing.length) {
             const proposalNumber = String(deal_id);
             const created = await sb('POST', '/pec_prod_jobs', {
@@ -178,10 +178,19 @@ exports.handler = async (event) => {
               dripjobs_deal_id: deal_id,
               sales_team: salesperson || null,
               notes: cleanScope,
+              // Explicit prod->CRM pairing (prompt 91): this webhook writes
+              // both rows and knows both ids, so the link is stamped at birth
+              // and the resolver never needs the fuzzy name+address rung.
+              crm_job_id: job.id,
             }, true);
             prodJobId = created && created[0] ? created[0].id : null;
           } else {
             prodJobId = existing[0].id;
+            // Re-fire with a pre-prompt-91 prod row: heal the missing link
+            // (fill-if-null only; an already-stamped link is never rewritten).
+            if (!existing[0].crm_job_id) {
+              await sb('PATCH', `/pec_prod_jobs?id=eq.${encodeURIComponent(prodJobId)}&crm_job_id=is.null`, { crm_job_id: job.id });
+            }
           }
         }
       } catch (bridgeErr) {

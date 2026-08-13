@@ -2326,6 +2326,13 @@
       ]
     },
     {
+      "file": "2026-08-10_numeric_invoice_numbers.sql",
+      "date": "2026-08-10",
+      "hasHeader": true,
+      "none": "creates a sequence, a column default, and a data backfill; no new table, column, index, or setting",
+      "artifacts": []
+    },
+    {
       "file": "2026-08-10_prompt70_pricing_intelligence.sql",
       "date": "2026-08-10",
       "hasHeader": true,
@@ -2515,6 +2522,195 @@
           "name": "settings_rail_breakpoint_px"
         }
       ]
+    },
+    {
+      "file": "2026-08-17_invoice_terms.sql",
+      "date": "2026-08-17",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.jobs.invoice_terms"
+        },
+        {
+          "kind": "column",
+          "name": "public.jobs.invoice_due_date"
+        },
+        {
+          "kind": "setting",
+          "name": "invoice_terms_residential_default"
+        },
+        {
+          "kind": "setting",
+          "name": "invoice_terms_commercial_default"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-18_estimate_schedule_autoseed.sql",
+      "date": "2026-08-18",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimate_schedule_autoseed"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-19_prompt84_estimate_status_guard.sql",
+      "date": "2026-08-19",
+      "hasHeader": true,
+      "none": "creates a function (public.estimate_status_guard) and a BEFORE UPDATE trigger (trg_estimate_status_guard on public.estimates); triggers/functions are not expressible in the four artifact kinds",
+      "artifacts": []
+    },
+    {
+      "file": "2026-08-20_estimate_notes.sql",
+      "date": "2026-08-20",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.client_notes"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.company_notes"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-21_revoke_login.sql",
+      "date": "2026-08-21",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.admin_users.login_revoked_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.admin_users.login_revoked_by"
+        },
+        {
+          "kind": "setting",
+          "name": "login_revoked_poll_seconds"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-22_prompt87_accept_slack_setting.sql",
+      "date": "2026-08-22",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimate_accept_slack_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-23_prompt87_accept_celebration_setting.sql",
+      "date": "2026-08-23",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "accept_celebration_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-24_prompt87_estimate_autosave_setting.sql",
+      "date": "2026-08-24",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimate_autosave_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-25_prompt88_google_needs_reconnect.sql",
+      "date": "2026-08-25",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.google_needs_reconnect"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-26_prompt89_customer_backfill.sql",
+      "date": "2026-08-26",
+      "hasHeader": true,
+      "none": "data-only backfill (no schema objects created)",
+      "artifacts": []
+    },
+    {
+      "file": "2026-08-27_prompt90_heartbeats.sql",
+      "date": "2026-08-27",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_heartbeats"
+        },
+        {
+          "kind": "setting",
+          "name": "system_health_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "system_health_stale_hours"
+        },
+        {
+          "kind": "setting",
+          "name": "system_health_slack_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "system_health_stripe_stale_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-28_prompt90_security_hardening.sql",
+      "date": "2026-08-28",
+      "hasHeader": true,
+      "none": "privilege revokes + search_path pins (no table/column/index/setting)",
+      "artifacts": []
+    },
+    {
+      "file": "2026-08-29_prompt91_crm_job_link.sql",
+      "date": "2026-08-29",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.crm_job_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.crm_link_declined"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_prod_jobs_crm_job_id"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -2551,6 +2747,7 @@
     "pec_email_senders",
     "pec_email_templates",
     "pec_estimate_views",
+    "pec_heartbeats",
     "pec_invoice_installments",
     "pec_lead_sources",
     "pec_notifications",

@@ -1503,7 +1503,15 @@ async function ensureJobCreated(est) {
       sales_team: intake.salesperson_name || null,
       standalone_mvb: est.mvb === 'standalone',
       notes: noteLines.length ? noteLines.join('\n') : null,
+      // Explicit prod->CRM pairing (prompt 91): both ids are deterministic
+      // from the estimate, so the link is stamped at birth and the resolver
+      // never needs the fuzzy name+address rung for estimate-sourced jobs.
+      crm_job_id: jobId,
     }, true);
+  } else {
+    // Crash-heal / pre-prompt-91 rows: fill the missing link. Fill-if-null
+    // only, same value every run, so a re-fired accept is a no-op.
+    await sb('PATCH', `/pec_prod_jobs?id=eq.${prodJobId}&crm_job_id=is.null`, { crm_job_id: jobId });
   }
   // pec_prod_areas is the RECIPE side (its sqft and system_type_id are NOT
   // NULL): it drives the material plan, which a custom line contributes

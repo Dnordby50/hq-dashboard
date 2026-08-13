@@ -1028,21 +1028,40 @@ export function flakeProductSaveError(payload) {
 }
 
 /**
- * Resolve a production job (pec_prod_jobs) to its CRM job card identity. The
- * reliable bridge is dripjobs_deal_id, but a MANUAL "+ Add Job" prod row has
- * none (deal NULL) even when the same customer exists as a bridged CRM job (the
- * two-parallel-job-tables shape). So we fall back to a normalized name+address
- * match. Deal match takes priority. Returns the CRM identity or null.
+ * Resolve a production job (pec_prod_jobs) to its CRM job card identity.
+ * The ladder, most-explicit rung first (prompt 91):
+ *   1. crm_job_id: the explicit stamped pairing, via identById. Two real open
+ *      jobs at the same name+address (the Haley Construction case) can only
+ *      be told apart here, so this rung sits ABOVE the deal id.
+ *   2. dripjobs_deal_id: the webhook-era bridge, via byDeal.
+ *   3. Normalized name+address, via byNameAddr: the legacy FUZZY fallback for
+ *      rows born before the explicit column. First row wins, so it cannot
+ *      distinguish repeat customers; skipped entirely when the row carries
+ *      crm_link_declined (Dylan answered "Separate new job" at creation).
+ * Touch-up callbacks (is_callback) never bridge at all: a callback is a visit
+ * on an existing job, not a job. Callers that pass no identById behave
+ * byte-for-byte as before that rung existed (the index defaults to {}, so
+ * rung 1 never fires). Returns the CRM identity or null.
  *
- * @param {Object} prodJob  { dripjobs_deal_id, customer_name, address }
- * @param {Object} indexes  { byDeal: {dealId->ident}, byNameAddr: {key->ident} }
+ * @param {Object} prodJob  { is_callback, crm_job_id, crm_link_declined, dripjobs_deal_id, customer_name, address }
+ * @param {Object} indexes  { identById: {crmJobId->ident}, byDeal: {dealId->ident}, byNameAddr: {key->ident} }
  */
 export function resolveCrmForProdJob(prodJob, indexes) {
   if (!prodJob) return null;
+  // A touch-up callback is a VISIT on an existing job, not a job: it never
+  // bridges to a CRM card (it would inherit its parent's areas and money).
+  if (prodJob.is_callback) return null;
+  const identById = (indexes && indexes.identById) || {};
   const byDeal = (indexes && indexes.byDeal) || {};
   const byNameAddr = (indexes && indexes.byNameAddr) || {};
+  if (prodJob.crm_job_id && identById[prodJob.crm_job_id]) return identById[prodJob.crm_job_id];
   const deal = prodJob.dripjobs_deal_id;
   if (deal && byDeal[deal]) return byDeal[deal];
+  // A declared-separate row never fuzzy-bridges. Neither does a row with an
+  // explicit link whose partner is missing from the index (archived CRM job):
+  // the pairing is KNOWN, so "unbridged" is honest and "borrow whichever job
+  // shares the address" is not.
+  if (prodJob.crm_link_declined || prodJob.crm_job_id) return null;
   const key = jobNameAddrKey(prodJob.customer_name, prodJob.address);
   return (key && byNameAddr[key]) || null;
 }

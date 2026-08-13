@@ -554,6 +554,45 @@ assertThrows(() => {
     resolveCrmForProdJob({ dripjobs_deal_id: null, customer_name: 'Lisa Santana', address: '' }, indexes),
     null, 'blank address never matches');
   assertEq(jobNameAddrKey('Name', ''), '', 'jobNameAddrKey requires both fields');
+
+  // --- Explicit crm_job_id rung (prompt 91) ---------------------------------
+  // The Haley Construction case: two real open jobs at the same name+address.
+  // The fuzzy rung can only ever return one of them (first row wins); the
+  // explicit link tells them apart and outranks even the deal id.
+  const haleyA = { id: 'crm-haley-a', price: 9000 };
+  const haleyB = { id: 'crm-haley-b', price: 4200 };
+  const idx91 = {
+    identById: { 'crm-haley-a': haleyA, 'crm-haley-b': haleyB, 'crm-1': crmBridged },
+    byDeal: { '2776218-other': crmBridged },
+    byNameAddr: { [jobNameAddrKey('Haley Construction', '55 Quarry Rd')]: haleyA },
+  };
+  assertEq(
+    resolveCrmForProdJob({ crm_job_id: 'crm-haley-b', dripjobs_deal_id: null, customer_name: 'Haley Construction', address: '55 Quarry Rd' }, idx91),
+    haleyB, 'explicit crm_job_id beats the name+address rung (second Haley job resolves to its own card)');
+  assertEq(
+    resolveCrmForProdJob({ crm_job_id: 'crm-haley-a', dripjobs_deal_id: '2776218-other', customer_name: 'X', address: 'Y' }, idx91),
+    haleyA, 'explicit crm_job_id outranks the deal id');
+  // A stamped link whose partner is missing from the index (archived CRM job)
+  // resolves UNBRIDGED, never through the fuzzy rung.
+  assertEq(
+    resolveCrmForProdJob({ crm_job_id: 'crm-archived', dripjobs_deal_id: null, customer_name: 'Haley Construction', address: '55 Quarry Rd' }, idx91),
+    null, 'explicit link with a missing partner never falls through to fuzzy');
+  // Declared-separate rows (crm_link_declined) never fuzzy-bridge...
+  assertEq(
+    resolveCrmForProdJob({ crm_link_declined: true, dripjobs_deal_id: null, customer_name: 'Haley Construction', address: '55 Quarry Rd' }, idx91),
+    null, "crm_link_declined skips the name+address rung");
+  // ...but the exact deal rung still works for them (declined only opts out of fuzz).
+  assertEq(
+    resolveCrmForProdJob({ crm_link_declined: true, dripjobs_deal_id: '2776218-other', customer_name: 'X', address: 'Y' }, idx91),
+    crmBridged, 'crm_link_declined leaves the exact deal rung intact');
+  // Touch-up callbacks are visits, not jobs: they never bridge by any rung.
+  assertEq(
+    resolveCrmForProdJob({ is_callback: true, crm_job_id: 'crm-haley-a', dripjobs_deal_id: '2776218-other', customer_name: 'Haley Construction', address: '55 Quarry Rd' }, idx91),
+    null, 'is_callback rows never bridge');
+  // Callers passing no identById see the legacy ladder unchanged.
+  assertEq(
+    resolveCrmForProdJob({ crm_job_id: 'crm-haley-b', dripjobs_deal_id: '2776218-other', customer_name: 'X', address: 'Y' }, indexes),
+    crmBridged, 'no identById passed: deal rung resolves exactly as before');
 }
 
 // --- slot_kind regression: choice/text slots never affect the material plan --

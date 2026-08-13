@@ -1,5 +1,16 @@
 [
   {
+    "id": "job-link-chooser",
+    "date": "2026-08-12",
+    "title": "Creating a job for a repeat customer now asks: same job, or a new one?",
+    "summary": "When you add a job for a customer who already has an open job on the other side of the system, a chooser appears before saving. Pick Link to connect the two records so ordering, costing, and the budget all read one job card, or pick Separate new job to keep them fully independent. Linked jobs stay correctly matched even when a customer has two jobs at the same name and address.",
+    "howto": [
+      "Add a job from the Job Schedule (+ Add Job) or the Jobs page (New Job) as usual.",
+      "If that customer already has an open job on the other side, the chooser lists each one. Pick Link to existing if it is the same job.",
+      "Pick Separate new job if it really is a second job. It will never be mixed up with the other one, even at the same address."
+    ]
+  },
+  {
     "id": "estimate-communications-card",
     "date": "2026-08-12",
     "title": "See every text, call, and email right on the estimate",
