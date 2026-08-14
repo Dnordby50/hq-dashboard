@@ -17868,11 +17868,7 @@ async function renderJobDetailInner(id) {
     const queryEl = $('ccProjQuery'), resultsEl = $('ccProjResults'), selectedEl = $('ccProjSelected'),
       selectedNameEl = $('ccProjSelectedName'), status = $('ccStatus'), gal = $('ccPhotos');
     if (!queryEl || !gal) return;
-    const ccApi = async (qs) => {
-      const { data } = await supabase.auth.getSession();
-      const tok = data?.session?.access_token || '';
-      return fetch(`/.netlify/functions/pec-companycam?${qs}`, { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json());
-    };
+    const ccApi = pecCcApi; // shared token fetch (prompt 83 dedup)
     const searchProjects = (q) => ccApi(`action=projects&query=${encodeURIComponent(q)}`);
     const showPhotos = async (projectId) => {
       if (!projectId) { gal.innerHTML = ''; return; }
@@ -20202,7 +20198,9 @@ async function renderSettingsEstimates() {
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample', 'accept_celebration_enabled',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
-      'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled']),
+      'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
+      'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
+      'companycam_name_match_min_score', 'companycam_max_customer_photos']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -20248,6 +20246,12 @@ async function renderSettingsEstimates() {
   // catalog.ts (true). Deliberately behind Advanced: rule 12's kill switch,
   // not an operating knob.
   const autosaveOn = (map.estimate_autosave_enabled || 'true') !== 'false';
+  // CompanyCam on estimates (prompt 83). Defaults MUST match the migration
+  // seeds and the card/public-page fallbacks: true / true / 80 / 24.
+  const ccEstOn = (map.companycam_estimate_photos_enabled || 'true') !== 'false';
+  const ccCustOn = (map.companycam_customer_photos_enabled || 'true') !== 'false';
+  const ccMinScore = Number(map.companycam_name_match_min_score) > 0 ? Number(map.companycam_name_match_min_score) : 80;
+  const ccMaxPhotos = Number(map.companycam_max_customer_photos) > 0 ? Number(map.companycam_max_customer_photos) : 24;
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -20374,6 +20378,23 @@ async function renderSettingsEstimates() {
         <button type="button" class="pec-btn ghost sm" id="lsSave">Save</button>
       </div>
     </div>
+    ${toggleCard('CompanyCam photos on estimates', ccEstOn,
+      'Shows the linked CompanyCam project\'s photos on the estimate page while you price, auto-matched by customer name. Ticked photos ship on the customer proposal, frozen at send.', 'setCcEstPhotos',
+      `<label style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:.8rem">
+        <input type="checkbox" id="setCcCustPhotos" ${ccCustOn ? 'checked' : ''}> Show the ticked photos on the customer proposal (off keeps them internal only)
+      </label>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <label style="font-size:.72rem;color:var(--muted)">Auto-match threshold (0-100 name similarity)
+            <input type="number" id="ccSetMinScore" min="1" max="100" value="${ccMinScore}" style="width:70px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <label style="font-size:.72rem;color:var(--muted)">Max photos on the proposal
+            <input type="number" id="ccSetMaxPhotos" min="1" max="100" value="${ccMaxPhotos}" style="width:70px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <button type="button" class="pec-btn ghost sm" id="ccSetSave">Save</button>
+        </div>
+      </details>`)}
     <div class="pec-card">
       <details>
         <summary style="cursor:pointer;font-weight:700">Advanced</summary>
@@ -20404,6 +20425,25 @@ async function renderSettingsEstimates() {
     try { await saveSetting('estimate_accept_slack_enabled', cb.checked ? 'true' : 'false'); }
     catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); cb.checked = !cb.checked; }
     cb.disabled = false;
+  });
+  wire('setCcEstPhotos', 'companycam_estimate_photos_enabled', ccEstOn);
+  $('setCcCustPhotos').addEventListener('change', async (e) => {
+    const cb = e.target; cb.disabled = true;
+    try { await saveSetting('companycam_customer_photos_enabled', cb.checked ? 'true' : 'false'); }
+    catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); cb.checked = !cb.checked; }
+    cb.disabled = false;
+  });
+  $('ccSetSave').addEventListener('click', async () => {
+    const btn = $('ccSetSave'); btn.disabled = true;
+    const ms = Math.floor(Number($('ccSetMinScore').value));
+    const mp = Math.floor(Number($('ccSetMaxPhotos').value));
+    if (!Number.isFinite(ms) || ms < 1 || ms > 100) { showToast('The match threshold must be between 1 and 100.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!Number.isFinite(mp) || mp < 1 || mp > 100) { showToast('Max photos must be between 1 and 100.', { ttl: 4000 }); btn.disabled = false; return; }
+    try {
+      await saveSetting('companycam_name_match_min_score', ms);
+      await saveSetting('companycam_max_customer_photos', mp);
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
   });
   $('setHotSave').addEventListener('click', async () => {
     const btn = $('setHotSave'); btn.disabled = true;
@@ -24029,6 +24069,215 @@ async function mountEstimateSalesAsk(container, est) {
     // Pre-migration or transient failure: render nothing rather than an error
     // card on a page the rep is trying to price from.
     console.warn('[estimates] salesask:', e && e.message);
+    container.innerHTML = '';
+  }
+}
+
+// ============================================================
+// CompanyCam on estimates (prompt 83, built 2026-08-13). Photos were job-side
+// only, but a jobs row exists only AFTER accept; this card brings the linked
+// project to the estimate while it is being priced. Shared low-level proxy
+// fetch (pecCcApi) is the dedup point across the three CompanyCam consumers;
+// the job-detail picker and schedule-modal gallery keep their own wiring on
+// purpose (their interaction shapes differ enough that a forced merge risked
+// two working surfaces to save ~40 lines; noted in the PROJECT-LOG entry).
+
+async function pecCcApi(qs) {
+  const { data } = await supabase.auth.getSession();
+  const tok = data?.session?.access_token || '';
+  return fetch(`/.netlify/functions/pec-companycam?${qs}`, { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json());
+}
+
+// 0-100 Dice coefficient on character bigrams of the normalized names. Chosen
+// over token overlap because customer names are short (typos and swapped
+// first/last still score high) and the scale is easy to threshold in Settings.
+function pecCcNameScore(a, b) {
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const grams = (s) => { const g = []; const t = norm(s).replace(/ /g, ''); for (let i = 0; i < t.length - 1; i++) g.push(t.slice(i, i + 2)); return g; };
+  const ga = grams(a), gb = grams(b);
+  if (!ga.length || !gb.length) return 0;
+  const counts = {};
+  for (const g of ga) counts[g] = (counts[g] || 0) + 1;
+  let hits = 0;
+  for (const g of gb) { if (counts[g] > 0) { counts[g]--; hits++; } }
+  return Math.round((2 * hits / (ga.length + gb.length)) * 100);
+}
+
+async function mountEstimateCompanyCam(container, est) {
+  if (!container) return;
+  try {
+    const setRes = await supabase.from('settings').select('key,value')
+      .in('key', ['companycam_estimate_photos_enabled', 'companycam_name_match_min_score', 'companycam_max_customer_photos']);
+    const smap = Object.fromEntries((setRes.data || []).map(r => [r.key, r.value]));
+    if (String(smap.companycam_estimate_photos_enabled ?? 'true') === 'false') { container.innerHTML = ''; return; }
+    const minScore = Number(smap.companycam_name_match_min_score) > 0 ? Number(smap.companycam_name_match_min_score) : 80;
+    const maxCustomer = Number(smap.companycam_max_customer_photos) > 0 ? Number(smap.companycam_max_customer_photos) : 24;
+
+    const custName = String(est.customer_name || (est.customers && est.customers.name) || (est.leads && est.leads.full_name) || '').trim();
+    let excluded = new Set(Array.isArray(est.companycam_excluded) ? est.companycam_excluded.map(String) : []);
+    let projectId = est.companycam_project_id || null;
+
+    // The first proxy call doubles as the availability check: token missing or
+    // caller unauthorized renders NOTHING, same contract as the job detail.
+    let firstRes;
+    try {
+      firstRes = await (projectId
+        ? pecCcApi(`action=photos&project_id=${encodeURIComponent(projectId)}`)
+        : (custName.length >= 2 ? pecCcApi(`action=projects&query=${encodeURIComponent(custName)}`) : pecCcApi('action=projects')));
+    } catch (_) { container.innerHTML = ''; return; }
+    if (!firstRes || firstRes.error) { container.innerHTML = ''; return; }
+
+    container.innerHTML = `
+      <div class="pec-card" id="estCcCardInner">
+        <h3>CompanyCam photos</h3>
+        <div id="estCcSelected" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <span id="estCcSelectedName" style="font-size:.82rem;font-weight:600"></span>
+          <button class="pec-btn sm ghost" id="estCcUnlink" type="button">Change</button>
+          <span id="estCcStatus" style="font-size:.72rem;color:var(--muted)"></span>
+        </div>
+        <input id="estCcQuery" placeholder="Search CompanyCam projects" style="display:none;width:100%;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;font-size:.85rem;background:transparent;color:inherit">
+        <div id="estCcResults" style="display:none;border:1px solid var(--rd-line,var(--border));border-radius:8px;margin-top:4px;max-height:220px;overflow-y:auto"></div>
+        <div id="estCcCount" style="font-size:.76rem;color:var(--muted);margin:8px 0 6px"></div>
+        <div id="estCcPhotos" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px"></div>
+      </div>`;
+    const q = (sel) => container.querySelector(sel);
+    const queryEl = q('#estCcQuery'), resultsEl = q('#estCcResults'), selectedEl = q('#estCcSelected'),
+      selectedNameEl = q('#estCcSelectedName'), statusEl = q('#estCcStatus'), countEl = q('#estCcCount'), gal = q('#estCcPhotos');
+
+    const flash = (msg) => { statusEl.textContent = msg; setTimeout(() => { statusEl.textContent = ''; }, 1500); };
+    const saveEstPatch = async (patch) => {
+      const { error } = await supabase.from('estimates').update(patch).eq('id', est.id);
+      if (error) { flash('Save failed'); return false; }
+      Object.assign(est, patch);
+      return true;
+    };
+
+    const renderCount = (photos) => {
+      const ticked = photos.filter(p => !excluded.has(String(p.id))).length;
+      const showing = Math.min(ticked, maxCustomer);
+      countEl.textContent = photos.length
+        ? `${showing} of ${photos.length} photos will show on the proposal.${ticked > maxCustomer ? ` (Capped at ${maxCustomer}; untick some or raise the cap in Settings.)` : ''}`
+        : '';
+    };
+
+    const renderGallery = (photos) => {
+      renderCount(photos);
+      gal.innerHTML = photos.length ? photos.map((p, i) => `
+        <div class="pec-gallery-item" style="position:relative">
+          <img src="${esc(p.thumb || p.url)}" alt="" loading="lazy" data-idx="${i}" style="${excluded.has(String(p.id)) ? 'opacity:.35' : ''}">
+          <input type="checkbox" data-ccid="${esc(String(p.id))}" ${excluded.has(String(p.id)) ? '' : 'checked'}
+            title="Ticked photos show on the customer proposal"
+            style="position:absolute;top:6px;left:6px;width:18px;height:18px;accent-color:var(--rd-accent,#2563eb);cursor:pointer">
+        </div>`).join('')
+        : '<div class="pec-empty" style="grid-column:1/-1">No photos in this CompanyCam project</div>';
+      const fulls = photos.map(p => p.url || p.thumb);
+      gal.querySelectorAll('img').forEach(img => img.addEventListener('click', () => openLightbox(fulls, Number(img.dataset.idx) || 0)));
+      gal.querySelectorAll('input[type=checkbox]').forEach(cb => cb.addEventListener('change', async () => {
+        const pid = String(cb.dataset.ccid);
+        const next = new Set(excluded);
+        if (cb.checked) next.delete(pid); else next.add(pid);
+        const prev = excluded; excluded = next;
+        const ok = await saveEstPatch({ companycam_excluded: Array.from(next) });
+        if (!ok) { excluded = prev; cb.checked = !cb.checked; renderCount(photos); return; }
+        const img = cb.parentElement.querySelector('img');
+        if (img) img.style.opacity = cb.checked ? '' : '.35';
+        renderCount(photos);
+        flash('Saved');
+      }));
+    };
+
+    const showPhotos = async (pid, preloaded) => {
+      gal.innerHTML = '<div class="pec-empty" style="grid-column:1/-1">Loading photos…</div>';
+      try {
+        const res = preloaded || await pecCcApi(`action=photos&project_id=${encodeURIComponent(pid)}`);
+        if (res.error) { gal.innerHTML = `<div class="pec-empty" style="grid-column:1/-1">${esc(res.error)}</div>`; return; }
+        renderGallery(res.photos || []);
+      } catch (_) { gal.innerHTML = '<div class="pec-empty" style="grid-column:1/-1">CompanyCam unavailable</div>'; }
+    };
+
+    const showSelected = (label) => {
+      queryEl.style.display = 'none'; resultsEl.style.display = 'none'; resultsEl.innerHTML = '';
+      selectedEl.style.display = 'flex'; selectedNameEl.textContent = label;
+    };
+    const showSearch = () => {
+      selectedEl.style.display = 'none'; queryEl.style.display = '';
+      resultsEl.style.display = 'none'; resultsEl.innerHTML = '';
+      countEl.textContent = ''; gal.innerHTML = '';
+    };
+    const link = async (pid, label) => {
+      statusEl.textContent = 'Saving…';
+      const ok = await saveEstPatch({ companycam_project_id: pid });
+      if (!ok) return;
+      projectId = pid;
+      flash('Linked');
+      showSelected(label);
+      showPhotos(pid);
+    };
+    const renderResults = (list) => {
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = list.length ? list.map(p => `
+        <div class="est-cc-row" data-id="${esc(p.id)}" data-name="${esc(p.name)}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--rd-line,var(--border));font-size:.85rem">
+          <div style="font-weight:600">${esc(p.name)}</div>
+          <div style="font-size:.7rem;color:var(--muted)">${esc(p.address || 'No address on file')}</div>
+        </div>`).join('')
+        : '<div style="padding:10px 12px;font-size:.78rem;color:var(--muted)">No matching CompanyCam projects.</div>';
+      resultsEl.querySelectorAll('.est-cc-row').forEach(row => row.addEventListener('click', () => link(row.dataset.id, row.dataset.name)));
+    };
+
+    q('#estCcUnlink').addEventListener('click', async () => {
+      statusEl.textContent = 'Saving…';
+      const ok = await saveEstPatch({ companycam_project_id: null });
+      if (!ok) return;
+      projectId = null;
+      flash('Unlinked');
+      showSearch();
+      queryEl.value = custName;
+      queryEl.focus();
+    });
+
+    let ccDebounce = null, ccSeq = 0;
+    queryEl.addEventListener('input', () => {
+      const text = queryEl.value.trim();
+      clearTimeout(ccDebounce);
+      if (text.length < 2) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+      ccDebounce = setTimeout(async () => {
+        const seq = ++ccSeq;
+        try {
+          const res = await pecCcApi(`action=projects&query=${encodeURIComponent(text)}`);
+          if (seq !== ccSeq || !res || res.error) return;
+          renderResults(res.projects || []);
+        } catch (_) { /* keep the last results */ }
+      }, 300);
+    });
+
+    if (projectId) {
+      showSelected(`Linked project ${projectId}`);
+      showPhotos(projectId, firstRes);
+      // Best-effort friendly name for the chip; never blocks photos.
+      if (custName.length >= 2) {
+        pecCcApi(`action=projects&query=${encodeURIComponent(custName)}`)
+          .then(r => { const m = ((r && r.projects) || []).find(p => p.id === projectId); if (m) showSelected(m.name); })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // Fuzzy auto-match (locked decision 1): exactly ONE candidate at or above
+    // the threshold auto-links; two or more high scorers, or none, shows the
+    // picker with the name pre-seeded.
+    const candidates = (firstRes.projects || []).map(p => ({ ...p, score: pecCcNameScore(custName, p.name) }));
+    const winners = custName.length >= 2 ? candidates.filter(p => p.score >= minScore) : [];
+    if (winners.length === 1) {
+      await link(winners[0].id, winners[0].name);
+      return;
+    }
+    showSearch();
+    if (custName.length >= 2) {
+      queryEl.value = custName;
+      renderResults(candidates);
+    }
+  } catch (e) {
+    console.warn('[estimates] companycam:', e && e.message);
     container.innerHTML = '';
   }
 }
@@ -31047,80 +31296,18 @@ async function renderEstimateDetail(estimateId) {
             })() : ''}
           `}
         </div>
-        <div class="pec-card">
-          <h3>Pricing logic</h3>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;font-size:.82rem">
-            ${detailRow('Calculated price', est.calc_price != null ? fmtMoney(est.calc_price) : '(not recorded)')}
-            ${detailRow('Sold price', fmtMoney(est.price))}
-            ${overridden ? detailRow('Override', `<span style="color:#b45309">${overrideDelta < 0 ? '' : '+'}${fmtMoney(overrideDelta)}</span>`) : ''}
-            ${detailRow('Materials', est.materials_cost != null ? fmtMoney(est.materials_cost) : null)}
-            ${detailRow('Labor budget', est.labor_budget != null ? fmtMoney(est.labor_budget) + (est.budgeted_hours != null ? ` · ${Number(est.budgeted_hours).toFixed(1)}h` : '') : null)}
-            ${detailRow('Commission', est.commission_dollars != null ? fmtMoney(est.commission_dollars) : null)}
-            ${detailRow('Gross profit', est.gp_dollars != null ? fmtMoney(est.gp_dollars) + (gpPctTxt ? ` (${gpPctTxt})` : '') : null)}
-            ${detailRow('Target GP', est.target_gp_pct != null ? Number(est.target_gp_pct).toFixed(1).replace(/\.0$/, '') + '%' : null)}
-            ${detailRow('GP / hour', est.gp_per_hour != null ? fmtMoney(est.gp_per_hour) : null)}
-          </div>
-          ${overridden ? `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:10px;font-size:.8rem">
-            <div style="color:#b45309;font-weight:600">Price manually overridden</div>
-            ${est.price_override_reason ? `<div style="margin-top:2px">Reason: ${esc(est.price_override_reason)}</div>` : ''}
-            ${est.price_overridden_at ? `<div style="color:var(--muted);font-size:.72rem;margin-top:2px">${esc(new Date(est.price_overridden_at).toLocaleString())}</div>` : ''}
-          </div>` : ''}
-          <div style="color:var(--muted);font-size:.68rem;margin-top:8px">Estimates include a 2% sundries and disposables cost baked into the price. Internal only; the customer sees the total.</div>
-        </div>
         ${/* Prompt 71 Part D: the SalesAsk visit for this estimate mounts
-            here, directly ABOVE Pricing intelligence: what the customer asked
-            for in the room is context for how the estimate got priced. The
+            here (2026-08-13: the Pricing logic and Pricing intelligence cards
+            that used to surround it were removed from this page at Dylan's
+            request; the pricing/comps/AI-read backend and their snapshots are
+            untouched, and the Settings > Estimates card still tunes them). The
             container renders nothing when no recording exists (one muted line
             when a past visit went unrecorded). */''}
         <div id="estSalesAskCard"></div>
-        <div class="pec-card">
-          <h3>Pricing intelligence</h3>
-          ${snapComps ? `
-            <div style="font-weight:700">${snapComps.median_ppsf != null ? 'Median $' + Number(snapComps.median_ppsf).toFixed(2) + '/sqft' : 'Comps'}</div>
-            <div style="color:var(--muted);font-size:.75rem;margin-bottom:8px">${esc(snapComps.rule_label || '')}</div>
-            ${Array.isArray(snapComps.rows) && snapComps.rows.length ? `
-              <div class="pec-table-wrap" style="max-height:220px;overflow-y:auto"><table class="pec-table" style="font-size:.78rem">
-                <thead><tr><th>Customer</th><th style="text-align:right">Sqft</th><th style="text-align:right">Price</th><th style="text-align:right">$/sqft</th><th style="text-align:right">GP%</th></tr></thead>
-                <tbody>${snapComps.rows.map(r => `<tr>
-                  <td>${esc(r.customer_name || '--')}</td>
-                  <td style="text-align:right">${r.sqft != null ? Math.round(r.sqft).toLocaleString() : '--'}</td>
-                  <td style="text-align:right">${fmtMoney(r.price)}</td>
-                  <td style="text-align:right">${r.ppsf != null ? '$' + Number(r.ppsf).toFixed(2) : '--'}</td>
-                  <td style="text-align:right">${r.gp_pct != null ? (Number(r.gp_pct) * 100).toFixed(0) + '%' : '--'}</td>
-                </tr>`).join('')}</tbody>
-              </table></div>
-              ${(() => {
-                // Prefer the caveat stored at pricing time (old snapshots keep
-                // their old wording on purpose: they record what the rep saw);
-                // fall back to recomputing coverage from the snapshot rows for
-                // estimates saved before the caveat was stored. Wording matches
-                // production/comps.js compsGpCaveat (prompt 66 Part C).
-                if (snapComps.gp_caveat) return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">${esc(snapComps.gp_caveat)}.</div>`;
-                const withGp = snapComps.rows.filter(r => r.gp_pct != null);
-                if (!withGp.length) return '';
-                return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">GP% shown for ${withGp.length} of ${snapComps.rows.length} comps.</div>`;
-              })()}` : ''}
-          ` : '<div style="color:var(--muted);font-size:.82rem">No comps snapshot on this estimate.</div>'}
-          <div style="border-top:1px solid var(--rd-line,var(--border));margin-top:12px;padding-top:12px">
-            ${snapAi ? `
-              <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">AI price read</div>
-              <div style="font-weight:800">${fmtMoney(snapAi.recommended_low)} to ${fmtMoney(snapAi.recommended_high)}</div>
-              <div style="font-size:.84rem;line-height:1.5;margin-top:6px">${esc(snapAi.why || '')}</div>
-              ${Array.isArray(snapAi.lines) && snapAi.lines.length ? snapAi.lines.map(l => `
-                <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
-                  <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap">
-                    <span style="font-weight:700;font-size:.82rem">${esc(l.label || l.line_key || 'Line')}</span>
-                    <span style="font-size:.62rem;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:${l.confidence === 'comps_backed' ? 'rgba(22,163,74,.15)' : l.confidence === 'thin_sample' ? 'rgba(217,119,6,.15)' : 'rgba(128,128,128,.18)'};color:${l.confidence === 'comps_backed' ? '#15803d' : l.confidence === 'thin_sample' ? '#b45309' : 'inherit'}">${esc(l.confidence_label || l.confidence || '')}</span>
-                  </div>
-                  <div style="font-weight:700;font-size:.82rem;margin-top:2px">${fmtMoney(l.recommended_low)} to ${fmtMoney(l.recommended_high)}</div>
-                  <div style="font-size:.8rem;line-height:1.5;margin-top:3px">${esc(l.why || '')}</div>
-                </div>`).join('') : ''}
-              ${snapAi.history_available && snapAi.intent_read ? `<div style="font-size:.84rem;line-height:1.5;margin-top:6px"><strong>Customer signal (from Quo calls/texts):</strong> ${esc(snapAi.intent_read)}</div>` : ''}
-              ${snapAi.history_available === false ? '<div style="color:var(--muted);font-size:.78rem;margin-top:6px">No call or text history on file for this customer.</div>' : ''}
-              <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${snapAi.generated_at ? 'Generated ' + esc(fmtRelativeTime(snapAi.generated_at)) + ' · ' : ''}the AI never set this price; the rep did.</div>
-            ` : '<div style="color:var(--muted);font-size:.82rem">No AI read stored for this estimate.</div>'}
-          </div>
-        </div>
+        ${/* Prompt 83: CompanyCam photos while pricing; ticked photos ship on
+            the proposal. Self-mounting, renders nothing when the proxy errors
+            or the feature is off. */''}
+        <div id="estCcCard"></div>
         <div class="pec-card">
           <h3>Activity</h3>
           ${trail.length ? trail.map(([ts, txt]) => `<div style="padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.82rem">
@@ -31141,6 +31328,9 @@ async function renderEstimateDetail(estimateId) {
 
   // SalesAsk visit card (prompt 71 Part D): self-contained, best-effort.
   mountEstimateSalesAsk($('estSalesAskCard'), est).catch(err => console.warn('[estimates] salesask card:', err && err.message));
+
+  // CompanyCam photos card (prompt 83): self-contained, best-effort.
+  mountEstimateCompanyCam($('estCcCard'), est).catch(err => console.warn('[estimates] companycam card:', err && err.message));
 
   // Communications card: texts + calls + emails for this estimate's contact,
   // with the Call/Text chip. Self-contained, best-effort.
@@ -32043,7 +32233,42 @@ async function markEstimateSent(est) {
   if (upd.error) throw upd.error;
   estimateSentLeadEffects(est, nowIso); // best-effort, no await needed
   est.sent_at = nowIso; est.status = 'sent';
+  // Prompt 83: freeze the CompanyCam snapshot at send (both channels funnel
+  // through this flip, so one hook covers email, text, and combined sends).
+  // FAILURE POLICY, explicit: the send already succeeded and MUST stand; a
+  // CompanyCam hiccup logs, leaves the previous snapshot alone, and shows a
+  // non-blocking note. A proposal without pictures beats an estimate that
+  // never went out.
+  try { await pecCcSnapshotAtSend(est); }
+  catch (err) {
+    console.warn('[estimates] companycam snapshot skipped:', err && err.message);
+    showToast('Estimate sent. CompanyCam photos could not be refreshed for the proposal; it shows the previous set (or none).', { ttl: 5000 });
+  }
   return nowIso;
+}
+
+// Write estimates.companycam_photos: live project photos minus the rep's
+// exclusions, capped by companycam_max_customer_photos, in display order.
+// Re-sending overwrites (re-snapshot by design). No linked project writes
+// null so a stale set from a since-unlinked project can never ship.
+async function pecCcSnapshotAtSend(est) {
+  if (!est.companycam_project_id) {
+    if (est.companycam_photos != null) {
+      await supabase.from('estimates').update({ companycam_photos: null }).eq('id', est.id);
+      est.companycam_photos = null;
+    }
+    return;
+  }
+  const setRes = await supabase.from('settings').select('key,value').eq('key', 'companycam_max_customer_photos');
+  const cap = Number(setRes.data && setRes.data[0] && setRes.data[0].value) > 0 ? Number(setRes.data[0].value) : 24;
+  const res = await pecCcApi(`action=photos&project_id=${encodeURIComponent(est.companycam_project_id)}`);
+  if (!res || res.error) throw new Error((res && res.error) || 'CompanyCam unavailable');
+  const excluded = new Set(Array.isArray(est.companycam_excluded) ? est.companycam_excluded.map(String) : []);
+  const snapshot = (res.photos || []).filter(p => !excluded.has(String(p.id))).slice(0, cap)
+    .map(p => ({ id: String(p.id), url: p.url || p.thumb, thumb: p.thumb || p.url, captured_at: p.captured_at || null }));
+  const upd = await supabase.from('estimates').update({ companycam_photos: snapshot }).eq('id', est.id);
+  if (upd.error) throw upd.error;
+  est.companycam_photos = snapshot;
 }
 
 // Text the estimate link via Quo (prompt 38: a NEW channel, mirroring the
@@ -34984,10 +35209,7 @@ function openScheduleModal(jobId) {
           }
           ccBody.innerHTML = '<div class="pec-empty">Loading photos…</div>';
           try {
-            const { data: sess } = await supabase.auth.getSession();
-            const tok = sess?.session?.access_token || '';
-            const res = await fetch(`/.netlify/functions/pec-companycam?action=photos&project_id=${encodeURIComponent(pid)}`,
-              { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json());
+            const res = await pecCcApi(`action=photos&project_id=${encodeURIComponent(pid)}`);
             if (res.error) { ccBody.innerHTML = `<div class="pec-empty">${esc(res.error)}</div>`; return; }
             const photos = res.photos || [];
             if (!photos.length) { ccBody.innerHTML = '<div class="pec-empty">No photos in this CompanyCam project</div>'; return; }

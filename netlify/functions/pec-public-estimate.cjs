@@ -739,6 +739,7 @@ function estimatePage(est, brand, opts) {
 
     ${financingBlock}${termsBlock}${signedBlock}
     ${actions}
+    ${ccPhotosBlockHtml(opts && opts.ccPhotos)}
     ${literatureBlockHtml(opts && opts.literature, b.accent_color)}
 
     <div class="noprint" style="text-align:center;margin-top:24px">
@@ -1055,6 +1056,56 @@ const SECTION_KIND_LABELS = {
   why_us: 'Why choose us', process: 'How the work happens',
   gallery: 'Our work', financing: 'Ways to pay',
 };
+
+// ---------------------------------------------------------------------------
+// CompanyCam photos (prompt 83). THE CUSTOMER PAGE NEVER CALLS COMPANYCAM:
+// the token render reads ONLY estimates.companycam_photos, the snapshot the
+// dashboard froze at send. The staff-authenticated preview MAY read the live
+// project (minus the rep's exclusions, capped) so Dylan can preview before
+// the first send, when no snapshot exists yet; the preview block says which
+// set it rendered. Gate: companycam_customer_photos_enabled (missing = on).
+// ---------------------------------------------------------------------------
+async function loadCcCustomerPhotos(est, { preview } = {}) {
+  try {
+    const rows = await sb('GET', '/settings?key=eq.companycam_customer_photos_enabled&select=value&limit=1');
+    const enabled = String((Array.isArray(rows) && rows[0] && rows[0].value) ?? 'true') !== 'false';
+    if (!enabled) return null;
+    const snapshot = Array.isArray(est.companycam_photos) ? est.companycam_photos.filter(p => p && (p.url || p.thumb)) : [];
+    if (snapshot.length) return { photos: snapshot, source: 'snapshot' };
+    if (!preview || !est.companycam_project_id) return null;
+    const token = process.env.COMPANYCAM_API_TOKEN;
+    if (!token) return null;
+    const capRows = await sb('GET', '/settings?key=eq.companycam_max_customer_photos&select=value&limit=1');
+    const cap = Number(Array.isArray(capRows) && capRows[0] && capRows[0].value) > 0 ? Number(capRows[0].value) : 24;
+    const res = await fetch(`https://api.companycam.com/v2/projects/${encodeURIComponent(est.companycam_project_id)}/photos?per_page=100`, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const excluded = new Set(Array.isArray(est.companycam_excluded) ? est.companycam_excluded.map(String) : []);
+    const photos = (Array.isArray(data) ? data : []).map((ph) => {
+      const byType = {};
+      for (const u of (Array.isArray(ph.uris) ? ph.uris : [])) byType[u.type] = u.uri;
+      const url = byType.web || byType.original || byType.thumbnail || '';
+      return { id: String(ph.id), url, thumb: byType.thumbnail || byType.web || url, captured_at: ph.captured_at || null };
+    }).filter(p => p.url && !excluded.has(p.id)).slice(0, cap);
+    return photos.length ? { photos, source: 'live' } : null;
+  } catch (_) { return null; }
+}
+
+function ccPhotosBlockHtml(cc) {
+  const photos = cc && Array.isArray(cc.photos) ? cc.photos : [];
+  if (!photos.length) return '';
+  return `
+    <div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">Your project</div>
+      <h3 class="sec">Photos from your site visit</h3>
+      ${cc.source === 'live' ? '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">Preview: showing the live CompanyCam set (ticked photos only). The set freezes when the estimate is sent.</div>' : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:10px">
+        ${photos.map((p) => `<img src="${esc(p.url || p.thumb)}" alt="" loading="lazy" style="width:100%;height:160px;object-fit:cover;border-radius:10px;background:#eef0f3">`).join('')}
+      </div>
+    </div>`;
+}
 
 function literatureBlockHtml(literature, accent) {
   const sections = literature && Array.isArray(literature.sections) ? literature.sections : [];
@@ -1383,6 +1434,10 @@ async function ensureJobCreated(est) {
       signed_date: phoenixToday(),
       source: 'estimate',
       system_type_id: est.system_type_id || null,
+      // Prompt 83: the estimate's CompanyCam link rides to the job so the job
+      // detail's existing picker opens already linked. The estimate keeps its
+      // own columns as the record of what the customer signed against.
+      companycam_project_id: est.companycam_project_id || null,
       // The signed document's included lines become the invoice line items
       // (jobs.line_items shape: name/description/price, see pec-public-invoice).
       line_items: included.map(li => ({
@@ -1992,14 +2047,15 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimateById(qs.preview);
       if (!est) return notFoundPage();
-      const [brand, areas, financing, literature, installments] = await Promise.all([
+      const [brand, areas, financing, literature, installments, ccPhotos] = await Promise.all([
         loadBrand(est.brand),
         loadAreas(est.id),
         loadFinancingSettings(sb),
         loadLiterature(est.brand),
         loadInstallments(est.id),
+        loadCcCustomerPhotos(est, { preview: true }),
       ]);
-      return estimatePage(est, brand, { preview: true, print: String(qs.print || '') === '1', financing, literature, areas, installments });
+      return estimatePage(est, brand, { preview: true, print: String(qs.print || '') === '1', financing, literature, areas, installments, ccPhotos });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -2012,13 +2068,14 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
-    const [brand, areas, financing, literature, installments, acceptedPay] = await Promise.all([
+    const [brand, areas, financing, literature, installments, acceptedPay, ccPhotos] = await Promise.all([
       loadBrand(est.brand),
       loadAreas(est.id),
       loadFinancingSettings(sb),
       loadLiterature(est.brand),
       loadInstallments(est.id),
       loadAcceptedPay(est),
+      loadCcCustomerPhotos(est),
     ]);
     // Await (not fire-and-forget): the lambda may freeze the instant the
     // response returns, which would drop an un-awaited insert.
@@ -2031,7 +2088,7 @@ exports.handler = async (event) => {
     // log for the same reason: it is not a customer view and must not light
     // the bell. Same hand-add reasoning applies.
     if (String(qs.present || '') !== '1' && String(qs.print || '') !== '1') await logEstimateView(est, event);
-    return estimatePage(est, brand, { print: String(qs.print || '') === '1', financing, literature, areas, installments, acceptedPay });
+    return estimatePage(est, brand, { print: String(qs.print || '') === '1', financing, literature, areas, installments, acceptedPay, ccPhotos });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();

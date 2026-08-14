@@ -178,13 +178,19 @@ async function completePending(emailMap) {
 }
 
 exports.handler = async () => {
-  if (!SALESASK_API_KEY) {
-    return json(200, { ok: true, skipped: true, note: 'no SALESASK_API_KEY; sync idle' });
-  }
   try {
     const enabled = await getSetting('salesask_sync_enabled', 'false');
     if (String(enabled) !== 'true') {
       return json(200, { ok: true, skipped: true, note: 'salesask_sync_enabled is off' });
+    }
+    if (!SALESASK_API_KEY) {
+      // Enabled-but-unconfigured is a MISCONFIGURATION, not a gated no-op:
+      // ok:false withholds the heartbeat so the staleness monitor surfaces it
+      // instead of reading green forever. (Found 2026-08-13: the setting was
+      // on with no key set, the table stayed empty, and the heartbeat stamped
+      // healthy the whole time.) The off-toggle path above still stamps.
+      console.error('pec-salesask-sync: salesask_sync_enabled is true but SALESASK_API_KEY is unset; sync cannot run');
+      return json(200, { ok: false, error: 'salesask_sync_enabled is true but SALESASK_API_KEY is unset' });
     }
     const windowDays = Math.max(1, parseInt(await getSetting('salesask_push_window_days', '14'), 10) || 14);
     const lookbackDays = Math.max(1, parseInt(await getSetting('salesask_pull_lookback_days', '3'), 10) || 3);

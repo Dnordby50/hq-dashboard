@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-13 (Claude Code) after applying two migrations live via MCP: (1) `2026-08-30_salesask_uid.sql`: `pec_sales_team_members.salesask_uid` (text, nullable), the SalesAsk Firebase uid the pull-direction matcher resolves recordings through (see the pec_sales_team_members note; both reps backfilled). (2) `2026-08-31_prompt83_companycam_estimates.sql`: `estimates.companycam_project_id` (text), `estimates.companycam_excluded` (jsonb NOT NULL '[]', EXCLUSION list of photo ids the rep unticked; exclusions not inclusions so photos shot after the last card open still default to customer-visible), `estimates.companycam_photos` (jsonb, the frozen [{id,url,thumb,captured_at}] snapshot written at send; the public page renders ONLY this), plus four settings keys `companycam_estimate_photos_enabled` ('true'), `companycam_customer_photos_enabled` ('true'), `companycam_name_match_min_score` ('80', 0-100 Dice bigram similarity), `companycam_max_customer_photos` ('24'). Only those sections changed.
 Refreshed 2026-08-12 (Claude Code, prompt 91) after applying `2026-08-29_prompt91_crm_job_link.sql` live via MCP: `pec_prod_jobs.crm_job_id` (uuid, nullable, FK jobs.id ON DELETE SET NULL, partial index `idx_pec_prod_jobs_crm_job_id` where not null) is the EXPLICIT prod-to-CRM job pairing, the top rung of resolveCrmForProdJob's ladder (above dripjobs_deal_id); `pec_prod_jobs.crm_link_declined` (boolean, NOT NULL default false) marks a job Dylan declared "separate" at creation so the resolver's fuzzy name+address rung skips it forever. Only the pec_prod_jobs section changed.
 Refreshed 2026-08-12 (Claude Code, prompt 87) after applying three data-only migrations live via MCP: settings keys `estimate_accept_slack_enabled` ('true'; the Slack accept celebration post in pec-public-estimate.cjs notifyOffice, a checkbox inside the Slack card in Settings > Estimates), `accept_celebration_enabled` ('true'; the staff-dashboard confetti + toast on acceptance, front-of-card in Settings > Estimates, read once per page life by pecStartRevokedLoginWatch), and `estimate_autosave_enabled` ('true'; the estimator's debounced autosave + flush-on-close, behind the Estimates tab's new Advanced disclosure, read by catalog.ts). No table or column changed. Live settings count at refresh: 105 rows (the documented 98 had drifted by 4 before these three seeds; the live schema wins).
 Refreshed 2026-08-08 (Claude Code, prompt 77 Part 0) after applying the two stranded migrations live via MCP: (1) `2026-07-31_salesask_integration.sql`: new `pec_salesask_recordings` table (RLS staff-read, service-role write), `pec_appointments.salesask_synced_at` / `salesask_sync_hash`, `pec_sales_team_members.salesask_email`, and three `salesask_*` settings keys (sync ships 'false'); (2) `2026-08-14_prompt75_notification_targeting.sql`: `pec_notifications.target_user_id` (uuid, FK admin_users.id on delete set null; NULL = shared row, a display filter not a security boundary) + its index and three estimate-view settings keys. Also documented here for the first time: the two prompt-76 keys (`estimate_line_generate_enabled`, `estimator_line_sheet_breakpoint_px`) applied by the prompt 76 session on 2026-08-07. Settings 89 rows to 95. Only those sections changed.
@@ -362,6 +363,9 @@ RLS: enabled · rows: 9
 | custom_scope | text | yes |  |
 | custom_price | numeric | yes |  |
 | price_all_options | numeric | yes |  |
+| companycam_project_id | text | yes |  |
+| companycam_excluded | jsonb | no | '[]' |
+| companycam_photos | jsonb | yes |  |
 
 PK: id
 FK: customer_id → customers.id; job_id → jobs.id; lead_id → leads.id; pec_prod_job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id
@@ -1799,12 +1803,14 @@ RLS: enabled · rows: 2
 | name_aliases | text[] | no | '{}' |
 | salesask_email | text | yes |  |
 | google_needs_reconnect | boolean | no | false |
+| salesask_uid | text | yes |  |
 
 PK: id
 FK: auth_user_id → auth.users.id
 Unique: (auth_user_id) WHERE auth_user_id IS NOT NULL — partial index uq_pec_sales_team_members_auth_user; one login maps to at most one member, any number of unmapped (NULL) rows allowed. Set from Settings > Sales Team; drives the estimator's current-user salesperson default (prompt 47).
 name_aliases (added 2026-07-28, prompt 54) is the commission rename safety net. Commission is attributed by FREE-TEXT lowercased name against pec_job_ar.salesperson, not by id, so a rename would otherwise orphan a rep's history. The BEFORE UPDATE trigger `pec_sales_capture_name_alias` captures the OLD name into this array on any rename, whatever path wrote it (People screen, the legacy Sales Team card, or Studio), and removes the current name from the array when a name is reused. renderCommission folds aliases into both the rate lookup and the excluded-names set, current names winning. The trigger is deliberately NOT gated on people_mirror_enabled: it is a safety net, not part of the mirror.
 salesask_email (2026-07-31 migration, applied 2026-08-08) is the rep's SalesAsk login override; the sync resolves salesask_email → people.email → google_email.
+salesask_uid (2026-08-30 migration, applied 2026-08-13) is the rep's SalesAsk Firebase uid, the ONLY identity the live recording document carries (no email field exists on it; 2026-08-08 Cowork audit). The pull-direction matcher resolves uid → member through loadRepEmailMap's byUid; salesask_email remains the push-direction chain. Backfilled 2026-08-13: Dylan = dqEGy6... (proven by the Kellogg Patton recording's email draft signature), Aron = YZGohJ0... (by elimination, the only other rep).
 google_needs_reconnect (2026-08-25 migration, applied 2026-08-12, prompt 88) is app-written STATE, never a setting: when a Google token refresh fails with invalid_grant, `markNeedsReconnect` (_pec-google.cjs) flips google_connected false and this true, and Settings > Appointments shows "Reconnect" (keeping google_email so the member knows which account died). Cleared by a successful oauth-callback or a disconnect. The false→true transition also inserts the ONE `google_sync_reconnect` bell row.
 
 ### pec_salesask_recordings

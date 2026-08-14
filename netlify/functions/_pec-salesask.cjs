@@ -35,29 +35,50 @@ async function saFetch(method, path, body) {
   return res.json().catch(() => null);
 }
 
-// Rep email resolution. pec_sales_team_members has NO plain email column, so
-// the chain is: salesask_email (explicit override, set in Settings) ->
-// people.email (the unified person record) -> google_email (calendar-sync
-// identity, usually the same Google account the rep logs into SalesAsk with).
-// Returns { byMemberId: {id -> email}, byEmail: {lowercased email -> id} } so
-// the push (id -> email) and the match fallback (email -> id) share one load.
+// Rep resolution. The live recording document identifies its rep ONLY by
+// `uid`, a Firebase UID (2026-08-08 Cowork audit, mismatch 2): no email field
+// exists on it at all. So the primary key is pec_sales_team_members.salesask_uid
+// (filled per rep), and email stays as the fallback chain for the PUSH
+// direction and any payload that does carry one: salesask_email (explicit
+// override, set in Settings) -> people.email (the unified person record) ->
+// google_email (calendar-sync identity). Returns { byMemberId: {id -> email},
+// byEmail: {lowercased email -> id}, byUid: {salesask uid -> id} } so the
+// push (id -> email) and the match fallbacks share one load. Inactive members
+// stay in the maps on purpose: old recordings still need to resolve.
 async function loadRepEmailMap() {
   const [members, people] = await Promise.all([
-    sb('GET', '/pec_sales_team_members?select=id,name,active,salesask_email,google_email'),
+    sb('GET', '/pec_sales_team_members?select=id,name,active,salesask_email,salesask_uid,google_email'),
     sb('GET', '/people?sales_team_member_id=not.is.null&select=sales_team_member_id,email'),
   ]);
   const personEmail = {};
   for (const p of (people || [])) {
     if (p.email) personEmail[p.sales_team_member_id] = p.email;
   }
-  const byMemberId = {}, byEmail = {};
+  const byMemberId = {}, byEmail = {}, byUid = {};
   for (const m of (members || [])) {
+    if (m.salesask_uid) byUid[String(m.salesask_uid)] = m.id;
     const email = m.salesask_email || personEmail[m.id] || m.google_email || null;
     if (!email) continue;
     byMemberId[m.id] = email;
     byEmail[email.toLowerCase()] = m.id;
   }
-  return { byMemberId, byEmail };
+  return { byMemberId, byEmail, byUid };
+}
+
+// SalesAsk timestamps arrive in three shapes depending on source: ISO strings,
+// epoch numbers, or Firestore {_seconds,_nanoseconds} objects on REST GET
+// documents. new Date() on the Firestore shape is Invalid Date, which is how
+// occurred_at stayed null on every REST-fetched doc and broke two of the three
+// appointment matchers (2026-08-08 Cowork audit, mismatch 1).
+function tsToIso(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'object' && !(v instanceof Date)) {
+    const secs = v._seconds != null ? v._seconds : v.seconds;
+    if (secs != null && isFinite(Number(secs))) return new Date(Number(secs) * 1000).toISOString();
+    return null;
+  }
+  const d = new Date(v);
+  return isNaN(d) ? null : d.toISOString();
 }
 
 // Upsert a pec_salesask_recordings row keyed on the SalesAsk recording id:
@@ -102,21 +123,38 @@ function extractRecordingFields(doc) {
   if (notes) fields.notes = Array.isArray(notes) ? notes.join('\n') : String(notes);
   if (doc.actionItems != null) fields.action_items = doc.actionItems;
   if (doc.coaching != null) fields.coaching = doc.coaching;
-  if (doc.tags != null) fields.tags = doc.tags;
-  const url = pick('recording', 'meetingUrl', 'recordingUrl', 'url');
+  // doc.tags carries tag UUIDs on the live document; the human-readable labels
+  // live in salesInsights.tags (2026-08-08 Cowork audit, mismatch 3). Prefer
+  // labels, keep the UUIDs only when no labels exist.
+  const tagLabels = doc.salesInsights && Array.isArray(doc.salesInsights.tags) && doc.salesInsights.tags.length
+    ? doc.salesInsights.tags : null;
+  if (tagLabels) fields.tags = tagLabels;
+  else if (doc.tags != null) fields.tags = doc.tags;
+  const url = pick('recording', 'meetingUrl', 'recordingUrl', 'url')
+    || (doc.urls && (doc.urls.mp3 || doc.urls.original)) || null;
   if (url && typeof url === 'string') fields.recording_url = url;
   // SalesAsk durations are milliseconds (per docs); tolerate seconds if the
   // value is implausibly small for ms (< 1000 would be a sub-second call).
   const dur = Number(pick('duration', 'durationMs'));
   if (dur > 0) fields.duration_seconds = dur >= 1000 ? Math.round(dur / 100) / 10 : dur;
-  const when = pick('createdAt', 'startedAt', 'occurredAt', 'date');
-  if (when) { const d = new Date(when); if (!isNaN(d)) fields.occurred_at = d.toISOString(); }
+  const when = tsToIso(pick('createdAt', 'startedAt', 'occurredAt', 'date'));
+  if (when) fields.occurred_at = when;
   const repEmail = pick('userEmail', 'user_email', 'repEmail')
     || (doc.user && (doc.user.email || doc.user.userEmail)) || (doc.owner && doc.owner.email) || null;
   if (repEmail) fields.rep_email = String(repEmail);
   if (doc.processFollowed != null) fields.process_followed = Number(doc.processFollowed);
   if (doc.processMissed != null) fields.process_missed = Number(doc.processMissed);
   if (doc.processTotal != null) fields.process_total = Number(doc.processTotal);
+  // The live document has no flat process counts; the rubric lives in
+  // process.answers[] as {question, answer: "yes"|"no", coaching} entries
+  // (2026-08-08 Cowork audit, mismatch 4). Score = yes count over total.
+  const answers = doc.process && Array.isArray(doc.process.answers) ? doc.process.answers : null;
+  if (fields.process_total == null && answers && answers.length) {
+    const yes = answers.filter(a => a && String(a.answer).toLowerCase() === 'yes').length;
+    fields.process_followed = yes;
+    fields.process_missed = answers.length - yes;
+    fields.process_total = answers.length;
+  }
   return fields;
 }
 
@@ -153,13 +191,22 @@ async function matchRecordingToAppointment(rec, eventId, emailMap) {
 
   let appt = null, method = 'unmatched';
 
+  // Rep resolution, uid first (the only identity the live document carries;
+  // it rides in the row's raw jsonb), then the email fallback for payloads
+  // that do have one.
+  const rawUid = rec.raw && rec.raw.uid ? String(rec.raw.uid) : null;
+  const repMemberId = (emailMap && (
+    (rawUid && emailMap.byUid && emailMap.byUid[rawUid]) ||
+    (rec.rep_email && emailMap.byEmail[String(rec.rep_email).toLowerCase()])
+  )) || null;
+
   if (eventId && UUID_RE.test(eventId)) {
     const rows = await sb('GET', `/pec_appointments?id=eq.${encodeURIComponent(eventId)}&select=${APPT_SELECT}&limit=1`);
     if (Array.isArray(rows) && rows[0]) { appt = rows[0]; method = 'event_id'; }
   }
 
-  if (!appt && rec.occurred_at && rec.rep_email && emailMap) {
-    const memberId = emailMap.byEmail[String(rec.rep_email).toLowerCase()];
+  if (!appt && rec.occurred_at && repMemberId) {
+    const memberId = repMemberId;
     if (memberId) {
       const occ = new Date(rec.occurred_at).getTime();
       const startLte = new Date(occ + 3600 * 1000).toISOString();      // start_at <= occurred + 1h
@@ -197,6 +244,9 @@ async function matchRecordingToAppointment(rec, eventId, emailMap) {
     if (appt.customer_id) patch.customer_id = appt.customer_id;
     if (appt.sales_member_id) patch.sales_member_id = appt.sales_member_id;
   }
+  // Even unmatched, stamp the rep when the uid/email resolved one: the row
+  // then filters by rep on every surface without an appointment bridge.
+  if (!patch.sales_member_id && repMemberId) patch.sales_member_id = repMemberId;
   await sb('PATCH', `/pec_salesask_recordings?id=eq.${encodeURIComponent(rec.id)}`, patch);
   return { ...rec, ...patch };
 }
@@ -248,6 +298,7 @@ async function getSetting(key, fallback) {
 module.exports = {
   SALESASK_API_KEY,
   saFetch,
+  tsToIso,
   loadRepEmailMap,
   upsertRecording,
   extractRecordingFields,

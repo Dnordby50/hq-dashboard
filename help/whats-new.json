@@ -1,5 +1,37 @@
 [
   {
+    "id": "companycam-estimate-photos",
+    "date": "2026-08-13",
+    "title": "CompanyCam photos on estimates and proposals",
+    "summary": "Estimates now show the job's CompanyCam photos while you price, matched automatically by customer name. Every photo starts ticked; ticked photos appear on the customer's proposal in a Photos from your site visit section, and the set freezes when you send. New photos taken before the send are included automatically.",
+    "howto": [
+      "Open an estimate. The CompanyCam photos card links the matching project by itself, or search and pick one.",
+      "Untick any photo the customer should not see. The count line shows how many will go out.",
+      "Send the estimate as usual. The proposal carries the ticked photos, frozen at that moment.",
+      "Tune it under Settings, Estimates, CompanyCam photos on estimates."
+    ]
+  },
+  {
+    "id": "new-estimate-defaults",
+    "date": "2026-08-13",
+    "title": "New estimates: options start unticked, payment schedule fills itself in",
+    "summary": "Two defaults changed for newly started estimates. Optional line items now start unselected on the proposal, so customers add what they want instead of removing what they do not. And the payment schedule now appears automatically with the standard 50 percent deposit, which had stopped happening on estimates started from the dashboard.",
+    "howto": [
+      "Start an estimate as usual. The payment schedule card is already filled in with the default deposit; edit or remove it if the job needs different terms.",
+      "Mark a line Optional and it lands in Options to add, unticked. Use the Starts selected checkbox on the line if you want it pre-picked.",
+      "The old pre-selected default is one switch away under Settings, Estimates, Optional lines."
+    ]
+  },
+  {
+    "id": "estimate-page-cleanup",
+    "date": "2026-08-13",
+    "title": "Cleaner estimate page",
+    "summary": "The Pricing logic and Pricing intelligence boxes are gone from the estimate page. All the numbers behind them are still calculated and stored; the page just no longer shows those two cards.",
+    "howto": [
+      "Open any estimate. The right column now goes from the job info to sales visit recording, CompanyCam photos, activity, and communications."
+    ]
+  },
+  {
     "id": "print-customer-docs",
     "date": "2026-08-13",
     "title": "Print the customer proposal or invoice right from the dashboard",

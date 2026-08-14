@@ -1240,21 +1240,29 @@ export default function EstimatorScreen({
     setSaveState('idle');
   };
 
-  // Auto-seed (2026-08-18): every NEW estimate starts with the default
-  // schedule, so the customer proposal always shows a payment plan (Dylan's
-  // locked decision; the seeded shape is deposit percent + remaining balance
-  // at completion, which passes the send gate by construction). Edits NEVER
-  // auto-seed: zero rows on an existing estimate means the rep removed it.
+  // Auto-seed (2026-08-18, widened 2026-08-13): every NEW estimate starts
+  // with the default schedule, so the customer proposal always shows a
+  // payment plan (Dylan's locked decision; the seeded shape is deposit
+  // percent + remaining balance at completion, which passes the send gate by
+  // construction). The original `editing` bail made this dead code on the
+  // normal path: since prompt 61 the dashboard pre-inserts the draft row and
+  // mounts the estimator with ?estimate_id=, so editing is non-null for
+  // essentially every real estimate and nothing ever seeded. The seed now
+  // also applies to a loaded UNSENT DRAFT with zero saved installments (a
+  // pre-minted draft never had a schedule to remove); a sent/signed estimate
+  // or one carrying saved rows keeps the original never-auto-seed contract.
   // While untouched, a dominant-system change re-seeds so that system's own
   // deposit_pct is honored; the first hand edit or Remove schedule ends all
   // auto behavior for this session.
   const scheduleAutoseedOn = scheduleEnabled && config.estimateScheduleAutoseed !== false;
   const hasOpeningTotal = totalPrice != null && totalPrice > 0;
+  const seedableEstimate = !editing
+    || (editing.status === 'draft' && editing.sentAt == null && (editing.installments ?? []).length === 0);
   useEffect(() => {
-    if (editing || !scheduleAutoseedOn || scheduleTouched || scheduleRemoved || !hasOpeningTotal) return;
+    if (!seedableEstimate || !scheduleAutoseedOn || scheduleTouched || scheduleRemoved || !hasOpeningTotal) return;
     seedSchedule();
     setScheduleOpen(true);
-  }, [editing, scheduleAutoseedOn, scheduleTouched, scheduleRemoved, hasOpeningTotal, seedSchedule]);
+  }, [seedableEstimate, scheduleAutoseedOn, scheduleTouched, scheduleRemoved, hasOpeningTotal, seedSchedule]);
 
   // ---- Pricing-logic panel values (INTERNAL only, never on the public page) --
   const pricePerSqft = totalPrice != null && totalSqft > 0 ? totalPrice / totalSqft : null;
