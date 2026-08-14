@@ -12640,7 +12640,7 @@ async function renderJobInvoice(jobId) {
         <div style="position:relative">
           <button class="pec-btn sm" id="pecInvMore" aria-haspopup="true">More actions &#9662;</button>
           <div id="pecInvMoreMenu" hidden style="position:absolute;right:0;top:calc(100% + 4px);z-index:1000;background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.16);min-width:200px;display:flex;flex-direction:column;padding:6px;gap:2px">
-            ${menuBtn('pecInvDownloadPdf', 'Download PDF')}
+            ${menuBtn('pecInvDownloadPdf', 'Print / Save as PDF')}
             ${menuBtn('pecInvCustomerView', 'Customer view')}
             ${menuBtn('pecInvCopyLink', 'Copy public link')}
             ${menuBtn('pecInvCharge', 'Charge card')}
@@ -12787,7 +12787,14 @@ async function renderJobInvoice(jobId) {
   const invOpenEst = $('pecInvOpenEstimate');
   if (invOpenEst) invOpenEst.addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.jobDetailTabFor = jobId; state.jobDetailTab = 'estimate'; state.openInvoiceJobId = null; switchView('jobs'); });
   const chargeB = $('pecInvCharge'); if (chargeB) chargeB.addEventListener('click', () => openChargeCardModal(row));
-  const invPdfB = $('pecInvDownloadPdf'); if (invPdfB) invPdfB.addEventListener('click', () => pecDownloadInvoicePdf(row, payments));
+  // Print / Save as PDF: opens the CUSTOMER-FACING /pay/ page with ?print=1
+  // (auto-fires the print dialog), so what staff print is exactly what the
+  // customer sees. The old internal-format doc survives only as the fallback
+  // for rows with no public_token, which used to dead-end entirely.
+  const invPdfB = $('pecInvDownloadPdf'); if (invPdfB) invPdfB.addEventListener('click', () => {
+    if (row.public_token) window.open(`${location.origin}/pay/${row.public_token}?print=1`, '_blank');
+    else pecDownloadInvoicePdf(row, payments);
+  });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
   // Email invoice: opens a small modal (pre-filled with the customer's email),
@@ -30851,6 +30858,7 @@ async function renderEstimateDetail(estimateId) {
         <button class="pec-btn sm" id="estEdit" title="Opens the estimator right here on the page; saving edits this estimate in place">Edit</button>
         <button class="pec-btn sm" id="estPreview" title="See exactly what the customer will get, without sending">Preview</button>
         <button class="pec-btn sm" id="estPresent" title="Full-screen on-site presentation: your story, process, photos, and reviews, ending on this estimate. The customer can sign right on your device.">Present</button>
+        <button class="pec-btn sm ghost" id="estPrint" title="Print or save the customer proposal as a PDF. Works before sending too.">Print / PDF</button>
         ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
         ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
         <button class="pec-btn sm ghost" id="estCopyLink" ${est.sent_at ? '' : 'disabled title="The link is private (404) until the estimate is sent. Send it first."'}>Copy link</button>
@@ -31202,6 +31210,37 @@ async function renderEstimateDetail(estimateId) {
       frame.srcdoc = html;
     } catch (err) {
       showToast('Could not load preview: ' + esc(err.message || String(err)), { ttl: 5000 });
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
+  // Print / PDF: opens the CUSTOMER-FACING render with ?print=1 so the print
+  // dialog auto-fires (Save as PDF lives in that dialog). Sent estimates use
+  // the live /e/ page directly; unsent ones 404 there by design, so we fetch
+  // the staff ?preview= render (same page, JWT-gated) and write it into a
+  // window we opened SYNCHRONOUSLY, before any await, or popup blockers eat it.
+  $('estPrint').addEventListener('click', async () => {
+    if (est.sent_at && est.public_token) {
+      window.open(`${location.origin}/e/${est.public_token}?print=1`, '_blank');
+      return;
+    }
+    const win = window.open('', '_blank');
+    if (!win) { showToast('Allow pop-ups to print the proposal.', { ttl: 5000 }); return; }
+    const btn = $('estPrint'); const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Loading…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session && session.access_token;
+      if (!token) throw new Error('Not signed in.');
+      const res = await fetch(`/.netlify/functions/pec-public-estimate?preview=${encodeURIComponent(est.id)}&print=1`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const html = await res.text();
+      if (!res.ok) throw new Error('Load failed (' + res.status + ')');
+      win.document.open(); win.document.write(html); win.document.close();
+    } catch (err) {
+      try { win.close(); } catch (_) {}
+      showToast('Could not load the proposal: ' + esc(err.message || String(err)), { ttl: 5000 });
     } finally {
       btn.disabled = false; btn.textContent = label;
     }

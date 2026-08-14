@@ -1,3 +1,27 @@
+## [2026-08-13 MST] Staff can print the CUSTOMER-FACING proposal and invoice from the dashboard: a Print / PDF button on the estimate detail page, and the invoice's PDF item now prints the customer's /pay/ page.
+
+By: Claude Code
+
+Changed: netlify/functions/pec-public-estimate.cjs and pec-public-invoice.cjs (new `?print=1` param), index.html (estPrint button + handler on the estimate detail toolbar; pecInvDownloadPdf rewired), features.json (3 entries), help/whats-new.json (1 entry).
+
+Why: Dylan asked to print / save-as-PDF the customer-facing proposal and invoice from the pages staff work in. The public pages already had a bottom "Print / Save as PDF" button (kept), but the dashboard's own Download PDF buttons produced a bare internal format, not the branded customer document.
+
+**How it works.** `?print=1` on either public render appends one onload script that auto-opens the browser print dialog (Save as PDF lives in that dialog), 350ms delayed so webfonts settle (same delay pecOpenPrintDoc uses). That is its ONLY effect; the render is byte-identical. On the estimate side it also skips the customer-view log, same non-customer-view reasoning as `present=1`, so staff printing never lights the view bell. The dashboard's new estPrint button opens `/e/<token>?print=1` for SENT estimates; unsent ones 404 there by design, so the handler reuses the Preview mechanics: it opens a blank window SYNCHRONOUSLY (before any await, or popup blockers eat it; blocked case toasts), fetches the JWT-gated `?preview=` render with `&print=1`, and document.writes it in. The invoice More-actions item (relabeled "Print / Save as PDF", id kept so bindings and anchors hold) opens `/pay/<token>?print=1`; the old internal-format pecDownloadInvoicePdf survives only as the fallback for rows with no public_token, which previously dead-ended with a toast, so that edge now degrades to a working print instead of two competing invoice formats.
+
+Print-output cleanups riding along: the staff PREVIEW banner and the actions card (Accept & sign / decline buttons) on the estimate page are now `noprint`, so neither appears on paper. That second one improves the customer's own printouts too.
+
+Decision, documented: the job-detail Estimate toolbar's estDownloadPdf stays on the internal areas-based format. That toolbar serves DripJobs-sourced jobs with no `estimates` row, hence no token and no customer render to print; switching it would break those jobs. Rule 12 judged: no tunable parameter exists here (a stateless navigation/print action), so no settings row and no Settings card. No schema change.
+
+Verified: node --check clean on both edited functions; all 7 inline index.html script blocks extracted and node --check clean; full npm test suite green (estimatePage signature unchanged, `_internals` harness untouched). Not verified here: the live print dialogs in a real browser (needs the Netlify deploy; walkthrough steps in the Dylan handoff).
+
+Files touched: netlify/functions/pec-public-estimate.cjs, netlify/functions/pec-public-invoice.cjs, index.html, features.json, help/whats-new.json, PROJECT-LOG.md
+
+Next steps: Netlify auto-deploys on push.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: After deploy, open any SENT estimate and click Print / PDF: the customer proposal opens in a new tab with the print dialog up (choose Save as PDF for a file). Try a DRAFT estimate too: same thing via a popup (allow pop-ups if your browser blocks it; you'll get a toast). On an invoice, More actions > Print / Save as PDF now prints the customer's invoice page.
+
 ## [2026-08-12 MST] Prompt 91: explicit job links. Every production row can name its CRM job card (pec_prod_jobs.crm_job_id); creating a duplicate asks first; 40 live rows backfilled.
 
 By: Claude Code

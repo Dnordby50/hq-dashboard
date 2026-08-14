@@ -484,6 +484,7 @@ function invoicePage(row, brand, payments, opts) {
       <div class="meta">${[b.address_line, b.phone, b.license_number ? 'License ' + b.license_number : ''].filter(Boolean).map(esc).join(' &middot; ')}</div>
     </div>
   </div>
+  ${o.print ? `<script>window.addEventListener('load',function(){setTimeout(function(){try{window.print()}catch(e){}},350);});<\/script>` : ''}
 </body></html>`);
 }
 
@@ -563,8 +564,11 @@ exports.handler = async (event) => {
     } catch (_) { /* no ACH treatment */ }
     const pendingSum = round2(pendingRows.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0));
     const paidParam = (event.queryStringParameters && event.queryStringParameters.paid) || '';
+    // print=1: staff opened this page from the dashboard to print it. Only
+    // effect is auto-opening the print dialog on load; render is identical.
+    const printParam = (event.queryStringParameters && event.queryStringParameters.print) || '';
     const financing = await loadFinancingSettings(sb);
-    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', pendingRows, pendingSum, achFailed, ask, financing });
+    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', print: printParam === '1', pendingRows, pendingSum, achFailed, ask, financing });
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);

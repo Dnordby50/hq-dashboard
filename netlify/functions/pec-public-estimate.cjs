@@ -432,6 +432,10 @@ function estimatePage(est, brand, opts) {
   // PREVIEW MODE (15c): staff sees the EXACT customer page from this same
   // renderer, but nothing is live. Faithful preview or none.
   const preview = !!(opts && opts.preview);
+  // PRINT MODE: staff opened this render to print it (estPrint on the
+  // dashboard, or /e/<token>?print=1). Only effect: auto-open the print
+  // dialog once the page loads. Render is otherwise byte-identical.
+  const printMode = !!(opts && opts.print);
   // TICKING: the checkboxes are live and the recalc script runs. True on any
   // open estimate, including a staff preview, because a rep demoing the page
   // needs to see the price move. False on accepted / rejected / lost, where
@@ -523,7 +527,7 @@ function estimatePage(est, brand, opts) {
     : ['#334155', 'For your review'];
 
   const actions = !(state.live || preview) ? '' : `
-    <div class="card pad" style="margin-top:18px" id="actionsCard">
+    <div class="card pad noprint" style="margin-top:18px" id="actionsCard">
       <div class="eyebrow">Your decision</div>
       <h3 class="sec">Ready to move forward?</h3>
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
@@ -675,7 +679,7 @@ function estimatePage(est, brand, opts) {
   }
 </style></head>
 <body>
-  ${preview ? `<div style="position:sticky;top:0;z-index:10;background:${accent};color:#fff;text-align:center;padding:10px 16px;font-size:13.5px;font-weight:700;letter-spacing:.02em">PREVIEW &middot; this is exactly what the customer will see. It has not been sent. You can tick options to watch the price move, and the accept, change and decline buttons stay disabled.</div>` : ''}
+  ${preview ? `<div class="noprint" style="position:sticky;top:0;z-index:10;background:${accent};color:#fff;text-align:center;padding:10px 16px;font-size:13.5px;font-weight:700;letter-spacing:.02em">PREVIEW &middot; this is exactly what the customer will see. It has not been sent. You can tick options to watch the price move, and the accept, change and decline buttons stay disabled.</div>` : ''}
   <div class="wrap">
     ${preview ? '' : state.banner}
     <div class="card">
@@ -892,6 +896,7 @@ ${interactive ? `
 ` : ''}
 })();
 <\/script>`}
+${printMode ? `<script>window.addEventListener('load',function(){setTimeout(function(){try{window.print()}catch(e){}},350);});<\/script>` : ''}
 </body></html>`);
 }
 
@@ -1994,7 +1999,7 @@ exports.handler = async (event) => {
         loadLiterature(est.brand),
         loadInstallments(est.id),
       ]);
-      return estimatePage(est, brand, { preview: true, financing, literature, areas, installments });
+      return estimatePage(est, brand, { preview: true, print: String(qs.print || '') === '1', financing, literature, areas, installments });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -2022,8 +2027,11 @@ exports.handler = async (event) => {
     // and must not light the bell mid-presentation. The param's ONLY effect is
     // skipping this log; render, buttons, and the action path are identical.
     // A customer who hand-added the param would only skip a convenience log.
-    if (String(qs.present || '') !== '1') await logEstimateView(est, event);
-    return estimatePage(est, brand, { financing, literature, areas, installments, acceptedPay });
+    // print=1 (staff printing the sent proposal from the dashboard) skips the
+    // log for the same reason: it is not a customer view and must not light
+    // the bell. Same hand-add reasoning applies.
+    if (String(qs.present || '') !== '1' && String(qs.print || '') !== '1') await logEstimateView(est, event);
+    return estimatePage(est, brand, { print: String(qs.print || '') === '1', financing, literature, areas, installments, acceptedPay });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();

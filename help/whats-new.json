@@ -1,5 +1,16 @@
 [
   {
+    "id": "print-customer-docs",
+    "date": "2026-08-13",
+    "title": "Print the customer proposal or invoice right from the dashboard",
+    "summary": "You can now print or save a PDF of the exact proposal or invoice your customer sees, without leaving the dashboard. The estimate page has a new Print / PDF button that works even before the estimate is sent, and the invoice's More actions menu item now prints the customer's invoice page.",
+    "howto": [
+      "Open an estimate and click Print / PDF in the toolbar. The customer proposal opens with the print window ready.",
+      "On an invoice, open More actions and choose Print / Save as PDF.",
+      "In the print window, pick your printer to print, or choose Save as PDF to keep a file."
+    ]
+  },
+  {
     "id": "job-link-chooser",
     "date": "2026-08-12",
     "title": "Creating a job for a repeat customer now asks: same job, or a new one?",
