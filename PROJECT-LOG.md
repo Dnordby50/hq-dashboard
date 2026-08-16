@@ -1,3 +1,56 @@
+## [2026-08-16 MST] Prompt 94 browser verification: all five tasks pass, but only after a hard reload (the inline estimator was serving a STALE bundle), the send gate had to be exercised through a different door than the handoff assumed, and the estimator's own blank-warning banner is WRONG for tokens.
+By: Cowork
+Changed: No code, schema, or settings. Created and archived one throwaway estimate (EST-102168, TEST Prompt94); appended and then reverted a sentence on the Concrete Polishing scope template; set and cleared one sold_on_site_override. PROJECT-LOG.md only.
+Why: The prompt 94 entry below shipped code, tests, and deploy verified, but left the whole interactive walk unverified because exercising it mints real estimate records. Dylan uses this flow daily.
+
+**READ THIS FIRST: the inline estimator was serving a stale bundle, and that is a live risk for Dylan.** Task 1 initially FAILED. The default Main line had system Standard Flake pre-set and an EMPTY "Description (customer reads this)", badge "NO SCOPE YET", and the placeholder still read "...Generate fills it from the system template" (copy from the removed button). The cause was not the code: the iframe `.pec-estimator-inline` had loaded `/estimator/assets/index-D0JaDek5.js` from HTTP cache while the server was serving `/estimator/assets/index-DGQuCoDg.js` (fetched `/estimator/index.html` with `cache:'reload'` to compare). **No service worker was involved** (`navigator.serviceWorker.controller` was null in the dashboard tab), so this is plain HTTP caching of `/estimator/index.html` inside the iframe, NOT the PWA precache. After cmd+shift+R the iframe picked up index-DGQuCoDg.js and every symptom vanished. The standalone PWA at /estimator/ DOES have a service worker (`/estimator/sw.js`) and was already serving the current bundle. Consequence for Dylan: a browser that has the old estimator cached shows prompt 94 as simply not working, exactly the confusion pattern from the 2026-08-10 estimator lesson.
+
+**Task 1 (template drops on system pick): PASS** on the correct bundle. Opening a brand-new estimate, the Main line's description already held 2,007 characters, byte-length identical to `pec_prod_system_types.scope_template` for Standard Flake (2,007), with nothing pressed. Placeholder now reads "The scope of work for this line. Picking a system fills it from that system's template, or type your own."
+
+**Task 2 (confirm protects typed text): PASS on both surfaces.** Exact dialog text seen, verbatim: **"Replace the scope you wrote with the Quartz template?"** and **"Replace the scope you wrote with the Metallic template?"**. Cancel kept "MY OWN SCOPE TEXT" intact while the system still changed to Quartz / Metallic; OK replaced it with the Quartz template at exactly 1,318 chars (matching the stored template length). Identical on the standalone PWA on a second throwaway draft (that draft was never saved, so no second estimate was minted).
+- Method note, stated plainly: the dialog is a native `window.confirm` (apps/estimator/src/features/estimator/EstimatorScreen.tsx:1810), and a native modal freezes the browser-automation channel. `window.confirm` was therefore replaced with a recorder that captures the message and returns the chosen boolean, so both branches ran against the real call site. What that does NOT prove is Chrome painting the dialog; the string, the invocation, and both outcomes are proven.
+- Structural note: the dashboard's estimator is the SAME bundle inside an iframe, so "both surfaces" is one code path in two mounts, not an independent second implementation.
+
+**Task 3 (token form + send gate): PASS, but the acceptance criterion was written against the wrong door.** Appending "Install begins {{install_date}} with {{test_field}}." to the Concrete Polishing template (chosen because it is active with a template and ZERO estimate lines) produced the preview **"Fill-in fields the rep will see: install_date (date), test_field"**. Re-picking that system on the line dropped the 2,732-char template with no confirm (correct: the prior text was a verbatim system template, i.e. machine text). Two inputs appeared under the description, "Install date" as a real date picker and "Test field" as text; picking 2026-09-03 substituted as prose: "Install begins September 3, 2026 with {{test_field}}."
+- **Pressing "Send to customer" does NOT block; it opens the compose modal.** That is by design, not a bug: `estimateSendGateOk` runs on the compose modal's *Send estimate* submit (index.html:32744), after the recipient and subject checks. The handoff assumed the gate sits on the toolbar button.
+- Clicking *Send estimate* could not be used to test the gate, because if the gate ever failed the click completes a real send. The same `estimateSendGateOk` was therefore exercised through **Present > Open for signing** (index.html:32484), which calls it BEFORE its confirm, so a block has no side effect and a pass only raises a dialog. **Send-gate blocker wording, verbatim:**
+  - Heading: "This estimate cannot be sent yet"
+  - Line-level: `"Concrete Polishing floor coating system" still has an unfilled field in its scope: "Install begins September 3, 2026 with {{test_field}}.". Fill it in on the line editor, then send.`
+  - Estimate-level: `The scope of work still has a blank: "Install begins September 3, 2026 with {{test_field}}.". Fix the line scopes in the estimator, then send.`
+  - No confirm was reached and nothing went live. After filling Test field with "a two person crew" (commits on Enter/blur) and saving, both token blockers disappeared; the only remaining blocker was the unrelated "This estimate has no priced lines yet", a test artifact because Concrete Polishing has no target GP so the line priced at $0.
+- **NOT verified:** the compose modal's own *Send estimate* submit path. It cannot be exercised without completing a send. The gate call is one line above the send in the same handler, so the risk is low, but it is untested.
+
+**DEFECT FOUND (not fixed, per instructions). The estimator's blank-warning banner is wrong for tokens.**
+- Surface: the estimator scope card, both the dashboard iframe and the standalone PWA.
+- Steps: put a template containing an unfilled `{{token}}` on a line, with no BLANK and no `___` anywhere in the scope (verified: `/\bBLANK\b/` false, `/_{3,}/` false, and the DB confirmed `scope_of_work` had no BLANK).
+- Expected: wording naming the unfilled fill-in field, mirroring the dashboard gate's "still has an unfilled field in its scope".
+- Seen: **"The word BLANK is still in the scope. You will not be able to send this estimate until it is filled in. Answer the scope questions below, or edit the line descriptions."**
+- Anchor: apps/estimator/src/features/estimator/EstimatorScreen.tsx:3329-3330, rendered when `scopeContainsBlank(scopeText)` is true; the detector was widened for tokens in prompt 94 but this message string was not. Two problems in one sentence: it names a word that is not present, and it points the rep at the scope-questions/answers card that prompt 94 REMOVED.
+
+**Minor copy debt spotted while testing (same family, worth folding into the same fix):** the dashboard blocker modal row "Tap to open this line and type or generate its scope →" still says "generate" though the Generate button is gone; and the estimate-level blocker calls an unfilled token a "blank". Also cosmetic: the Sold-on-site drilldown shows "—" for the customer on EST-102094 and EST-102046.
+
+**Task 4 (cleanup): PASS.** Concrete Polishing `scope_template` is byte-identical to its pre-task state: md5 `b7d9097e48423ba7e6aaa433383b7551`, length 2,679, `scope_template_mvb` still null; the preview under the textarea returned to "No fill-in fields: the template lands ready to send." EST-102168 archived through the UI. Final residue query: `overrides_left` 0, `active_test_estimates` 0, `est102168_archived` 1.
+
+**Task 5 (sold-on-site surfaces): PASS in full.**
+- EST-102156: box TICKED, note "Rule: matched your Aug 14, 3:00 PM on-site estimate; accepted Aug 14, 3:43 PM."
+- EST-102046: box UNTICKED, note "Rule: nearest on-site estimate started Aug 3, 8:00 AM, accepted Aug 5, 9:35 AM, outside the window."
+- Ticking EST-102046 changed the note to "Set by hand. The rule would say no: nearest on-site estimate started Aug 3, 8:00 AM, accepted Aug 5, 9:35 AM, outside the window." and wrote `sold_on_site_override = true` with the stamped `sold_on_site` untouched at false. Unticking cleared the override back to null and restored the "Rule:" note.
+- **SQL row values after the untick (exactly as predicted):** `102046 | false | null` and `102156 | true | null`.
+- Metrics with Custom 2026-08-05 to 2026-08-16: the **Sold on site card reads 33% 2/6**. The drilldown lists exactly six estimates, with EST-102163 (Brad Dalling, 8/15) and EST-102156 (Karen Adams, 8/14) as **Yes** and 102101, 102098, 102094, 102046 as No, footer "6 estimates / 2 sold on site".
+- Navigation note for future sessions: an accepted estimate's deep link `?v=estimates&estimate=<id>` redirects to the JOB card; the estimate page is reached from the job's "Open estimate page" button.
+
+Records left behind on purpose: the lead/customer "TEST Prompt94" still exists (the New estimate form requires a lead source, so it was created with source "Manual entry"). Only the estimate was archived.
+
+Files touched: PROJECT-LOG.md
+Next steps: a Claude Code session should fix the estimator banner wording (and the two copy-debt strings) and, if it wants belt-and-braces, add a unit test asserting the token path produces token wording on the estimator banner as well as the dashboard gate.
+Handoff to Cowork: None.
+Handoff to Dylan:
+1. **Before your next in-home estimate, hard-reload TopCoat on the device you will use** (cmd+shift+R on a Mac, or pull-to-refresh twice on the phone). The template flow is correct on the current bundle, but a cached older estimator makes it look completely broken.
+2. The template flow itself is safe to use: the template lands by itself, changing a system over text you typed asks first and Cancel keeps your words, and an unfilled fill-in field hard-blocks the send.
+3. Your five open items from the prompt 94 entry are unchanged: Polydeck System (no template, zero recipe slots), MVB templates (only Standard Flake has one), tokenizing the six live templates (they still use BLANK / ___; the Quartz one still reads "quartz coating BLANK AREA" and will block every send until it is tokenized or filled), the estimate_line_generate_enabled AI-off flip, and EST-102098 / EST-102101 which had no matching on-site appointment and read as not sold.
+
+---
+
 ## [2026-08-16 MST] Prompt 94: scope templates replace Generate Scope (system pick fills the line, {{token}} fill-ins, send gate extended), the mobile Generate bug diagnosed, and the sold-on-site metric.
 
 By: Claude Code
