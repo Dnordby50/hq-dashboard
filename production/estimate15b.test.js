@@ -194,6 +194,27 @@ await section('scope: stem walls resolved BOTH ways from the estimate data', asy
   }
 });
 
+await section('scope: prompt 94 gate: estimate_line_generate_enabled=false refuses cleanly, writes nothing, zero model calls', async () => {
+  const db = scopeDb({ stemWallsIntake: true });
+  db.settings = [{ key: 'estimate_line_generate_enabled', value: 'false' }];
+  let modelCalls = 0;
+  global.fetch = async () => { modelCalls++; return modelResponse({ lines: [] }); };
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1', force: true }));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.success === true && body.generated === false, 'gated off: success + generated:false, never an error');
+  ok(/turned off/i.test(String(body.reason || '')), 'the reason says the writer is off');
+  ok(modelCalls === 0, 'no model call was made');
+  ok(db.estimate_line_items.every((l) => l.description == null) && db.estimates[0].scope_of_work == null, 'nothing was written');
+  // The same db with the flag 'true' generates normally, proving the gate is
+  // the only thing that stopped it.
+  db.settings[0].value = 'true';
+  global.fetch = async () => modelResponse({ lines: [{ line_item_id: 'li-area', scope: 'generated scope' }] });
+  const mod2 = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res2 = await mod2.handler(bearerEvent({ estimate_id: 'e1' }));
+  ok(res2.statusCode === 200 && JSON.parse(res2.body).generated === true, 'flag true: the same estimate generates');
+});
+
 await section('scope: a stem-walls ADD-ON on the estimate also counts as included', async () => {
   const db = scopeDb({ stemWallsIntake: false, stemAddon: true });
   let capturedPrompt = '';

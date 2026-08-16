@@ -720,6 +720,24 @@ export default function EstimatorScreen({
     return scopeOpenQuestions(sources, scopeAnswers);
   }, [pricedAreas, systemTypes, addonForms, addonCatalog, scopeAnswers]);
   const setScopeAnswer = (key: string, value: string) => setScopeAnswers((prev) => ({ ...prev, [key]: value }));
+  // Prompt 94: with the writer gated off, committing an answer (blur/Enter)
+  // substitutes it straight into every line description still carrying that
+  // BLANK, which is what the server's next generation used to do. The keys
+  // match because the dropped template text is byte-identical to the
+  // template the question was detected from (same stableKey context).
+  const commitScopeAnswer = (key: string) => {
+    const v = String(scopeAnswers[key] ?? '').trim();
+    if (!v) return;
+    setAreas((cur) => cur.map((a, idx) => {
+      if (a.isCustom || !a.lineDescription.trim()) return a;
+      const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+      const next = scopeApplyAnswers(a.lineDescription, { [key]: v }, sys?.name ?? null);
+      if (next === a.lineDescription) return a;
+      lineDescEditedRef.current.add(idx);
+      return { ...a, lineDescription: next };
+    }));
+    setSaveState('idle');
+  };
 
   // Instant local preview for the proposal panel: the same templates, the
   // same BLANK substitution (shared production/scope.cjs), assembled in the
@@ -3417,6 +3435,8 @@ export default function EstimatorScreen({
                   <input
                     value={scopeAnswers[q.key] ?? ''}
                     onChange={(e) => setScopeAnswer(q.key, e.target.value)}
+                    onBlur={() => commitScopeAnswer(q.key)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitScopeAnswer(q.key); } }}
                     placeholder="Fill in the blank"
                   />
                 </label>
