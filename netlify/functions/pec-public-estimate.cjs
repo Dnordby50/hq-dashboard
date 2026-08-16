@@ -50,6 +50,10 @@ const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.
 const { depositOwed } = require('../../production/deposits.cjs');
 const { resolveDefaultTerms } = require('./_pec-invoice-terms.cjs');
 const { maybeCreateBusybusyProject } = require('./_pec-busybusy.cjs');
+// Prompt 94 C: sold-on-site derivation, stamped in the accept PATCH (never
+// derived live on a metrics render, so appointment edits cannot rewrite
+// history). Shared module; the dashboard's manual Mark accepted mirrors it.
+const { deriveSoldOnSite, parseApptTypes } = require('../../production/sold-on-site.cjs');
 // Optional-lines rules (prompt 72): the same module the estimator bundles,
 // so the accept guard and the job-side filters share one implementation.
 const {
@@ -1923,6 +1927,35 @@ async function handleAccept(est, body, event) {
   const schedRows = await loadInstallments(est.id);
   const frozenSched = schedRows.length ? freezeSchedule(schedRows, Math.round(total * 100)) : null;
 
+  // Prompt 94 C2: derive sold-on-site BEFORE the CAS so the winner stamps it
+  // atomically with the accept. Appointment match: lead_id first, else
+  // customer_id (no estimate_id exists on pec_appointments; this indirect
+  // join is the existing precedent). Best-effort: a failed read stamps null
+  // (unknown), which the override column or a human can correct later, and
+  // never blocks the accept. Disabled setting also stamps null, not false.
+  let soldOnSite = null;
+  try {
+    const set = await sb('GET', '/settings?key=in.(sold_on_site_enabled,sold_on_site_grace_minutes,sold_on_site_appt_types,sold_on_site_lookback_hours)&select=key,value');
+    const cfg = Object.fromEntries((Array.isArray(set) ? set : []).map((r) => [r.key, r.value]));
+    if (String(cfg.sold_on_site_enabled || 'true') !== 'false') {
+      const apptSel = 'select=id,appt_type,status,start_at,end_at';
+      let appts = [];
+      if (est.lead_id) {
+        appts = await sb('GET', `/pec_appointments?lead_id=eq.${encodeURIComponent(est.lead_id)}&${apptSel}`);
+      }
+      if ((!Array.isArray(appts) || !appts.length) && est.customer_id) {
+        appts = await sb('GET', `/pec_appointments?customer_id=eq.${encodeURIComponent(est.customer_id)}&${apptSel}`);
+      }
+      soldOnSite = deriveSoldOnSite({
+        acceptedAt: nowIso,
+        appointments: Array.isArray(appts) ? appts : [],
+        graceMinutes: cfg.sold_on_site_grace_minutes,
+        lookbackHours: cfg.sold_on_site_lookback_hours,
+        apptTypes: parseApptTypes(cfg.sold_on_site_appt_types),
+      }).sold;
+    }
+  } catch (_) { /* null = unknown; the accept must never fail on this */ }
+
   // Compare-and-swap: only a row still in an open status flips to accepted,
   // so exactly ONE request wins the signature. The signed total becomes the
   // estimate's price (it is what the job and the win metrics read); the frozen
@@ -1942,6 +1975,7 @@ async function handleAccept(est, body, event) {
         ...(frozenSched ? { schedule: frozenSched } : {}),
       },
       price: total,
+      ...(soldOnSite == null ? {} : { sold_on_site: soldOnSite }),
     }, true);
 
   let fresh;

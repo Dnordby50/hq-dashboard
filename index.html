@@ -13610,7 +13610,7 @@ async function renderMetrics() {
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
-      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate', 'review_bonus_min_stars', ...COSTING_BONUS_SETTING_KEYS]),
+      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate', 'review_bonus_min_stars', 'sold_on_site_enabled', ...COSTING_BONUS_SETTING_KEYS]),
       qoStaffNames(),
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
@@ -13643,12 +13643,17 @@ async function renderMetrics() {
       // Crew roster for crew-lead attribution (prompt 66 Part A): PEC crews
       // are named for their leads, so crew name == crew lead.
       supabase.from('pec_prod_crews').select('id,name'),
+      // Sold-on-site (prompt 94 C3): accepted estimates with their STAMPED
+      // flag + override (never re-derived here; the accept stamped it so
+      // later appointment edits cannot rewrite history). Degrades
+      // independently pre-migration.
+      supabase.from('estimates').select('id,estimate_number,price,accepted_at,sold_on_site,sold_on_site_override,intake,customers(name)').eq('status', 'accepted').is('deleted_at', null).not('accepted_at', 'is', null),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes,
-    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes] = res;
+    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes, sosEstRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
   // any labor math below; missing keys keep the shipped defaults.
@@ -14167,6 +14172,38 @@ async function renderMetrics() {
   const prevAvgJobSize = prevSold.length ? prevSalesVolume / prevSold.length : null;
   const prevRevCollected = payments.reduce((s, p) => (payOk(p) && inPrev(p.received_date)) ? s + p.amount : s, 0);
   const prevJobsCompleted = jobs.reduce((s, j) => s + (jobOk(j) && inPrev(j.completed_date) ? 1 : 0), 0);
+
+  // ---- Sold on site (prompt 94 C3) ------------------------------------------
+  // Rate = sold-on-site accepts / all accepts in window, reading the STAMPED
+  // flag with the human override on top: coalesce(override, stored, false).
+  // Estimates accepted before the metric existed carry null and read as NOT
+  // sold, so early windows undercount rather than invent history (the
+  // backfill stamped only what the appointment data could prove).
+  const sosEnabled = String((metSettingsRows.find(r => r.key === 'sold_on_site_enabled') || {}).value || 'true') !== 'false';
+  const sosRoster = (saRosterRes && saRosterRes.data) || [];
+  const sosRepName = e => {
+    const id = e.intake && e.intake.salesperson_id;
+    const m = id && sosRoster.find(r => String(r.id) === String(id));
+    return (m && m.name) || 'Unassigned';
+  };
+  const sosAll = ((sosEstRes && !sosEstRes.error && sosEstRes.data) || []).map(e => ({
+    ...e,
+    day: String(e.accepted_at || '').slice(0, 10),
+    sold: e.sold_on_site_override != null ? e.sold_on_site_override === true : e.sold_on_site === true,
+    rep: sosRepName(e),
+  }));
+  const sosOk = e => !sp || e.rep === sp;
+  const sosInWin = sosAll.filter(e => sosOk(e) && inWin(e.day));
+  const sosSold = sosInWin.filter(e => e.sold);
+  const sosRate = sosInWin.length ? sosSold.length / sosInWin.length : null;
+  const sosPrev = sosAll.filter(e => sosOk(e) && inPrev(e.day));
+  const sosPrevRate = sosPrev.length ? sosPrev.filter(e => e.sold).length / sosPrev.length : null;
+  const sosByRep = {};
+  for (const e of sosInWin) {
+    (sosByRep[e.rep] ||= { sold: 0, total: 0 });
+    sosByRep[e.rep].total += 1;
+    if (e.sold) sosByRep[e.rep].sold += 1;
+  }
   const deltaHtml = (cur, prev) => {
     const win = `prior ${winDays} day${winDays === 1 ? '' : 's'}`;
     if (cur == null || prev == null || (prev === 0 && cur === 0)) return '<div class="pec-m-kpi-delta flat">no prior-window data</div>';
@@ -14202,6 +14239,25 @@ async function renderMetrics() {
         ] })),
       total: [countOf(invTimingJobs.length, 'job'), '', '', `${invAhead.length} before completion`, ''],
       footnote: invNoSendCount > 0 ? `${invNoSendCount} completed job${invNoSendCount === 1 ? '' : 's'} in this window have no invoice-send on record and are excluded (data gap, not a miss). Only invoices sent after 2026-06-15 are tracked.` : 'Only invoices sent after 2026-06-15 are tracked.',
+    })),
+    soldOnSite: regDrill(() => ({
+      title: 'Sold on site: estimates accepted during the on-site visit',
+      summary: sosInWin.length
+        ? `${sosSold.length} of ${countOf(sosInWin.length, 'accepted estimate')} accepted inside the matched on-site appointment window (start to end + grace) = ${invPct(sosRate)}. A hand-set value on the estimate page beats the rule.`
+        : 'No accepted estimates in this window.',
+      columns: ['Estimate', 'Customer', 'Accepted', 'Sold on site', 'Salesperson', 'Value'],
+      rows: sosInWin.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '')).map(e => ({ cells: [
+        e.estimate_number ? 'EST-' + e.estimate_number : '—',
+        (e.customers && e.customers.name) || '—',
+        invFmtDate(e.day),
+        e.sold_on_site_override != null
+          ? (e.sold ? 'Yes (set by hand)' : 'No (set by hand)')
+          : (e.sold ? 'Yes' : (e.sold_on_site == null ? 'No (no data)' : 'No')),
+        e.rep,
+        invUSD(invNum(e.price)),
+      ] })),
+      total: [countOf(sosInWin.length, 'estimate'), '', '', `${sosSold.length} sold on site`, '', ''],
+      footnote: 'Rule: accepted between the matched on-site appointment\'s start and its end plus the grace window (tunable in Settings > Estimates). No matching appointment counts as not sold on site. "No (no data)" = accepted before the metric existed; set it by hand on the estimate page if you remember the visit.',
     })),
   };
   // DripJobs-style KPI card: icon chip + uppercase label, one-line muted
@@ -14265,7 +14321,11 @@ async function renderMetrics() {
   // callback shows callbacks/completed plus the rate.
   const spMax = spRows.length ? spRows[0][1].sum : 0;
   const spRankRows = spRows.map(([name, g], i) => ({
-    drill: spRowIds[i], name, sub: countOf(g.jobs.length, 'job'),
+    drill: spRowIds[i], name,
+    // Prompt 94 C3: close-in-the-home rate rides each rep's row (the whole
+    // point of the metric). Estimates-based, so it can show for a rep with
+    // accepted estimates even when the signed-jobs count comes from jobs.
+    sub: countOf(g.jobs.length, 'job') + (sosEnabled && sosByRep[name] ? ` · in home ${sosByRep[name].sold}/${sosByRep[name].total}` : ''),
     pctOfMax: pctOfMax(g.sum, spMax), value: invUSD0(g.sum),
     share: salesVolume > 0 ? Math.round((g.sum / salesVolume) * 100) + '%' : '',
   }));
@@ -14538,6 +14598,8 @@ async function renderMetrics() {
       avg_job_size: rnd(avgJobSize), avg_job_size_prior_period: rnd(prevAvgJobSize),
       jobs_completed: compInWin.length, jobs_completed_prior_period: prevJobsCompleted,
       jobs_signed: soldInWin.length,
+      sold_on_site: sosSold.length, accepted_estimates_in_window: sosInWin.length,
+      sold_on_site_rate: rnd(sosRate), sold_on_site_rate_prior_period: rnd(sosPrevRate),
       callback_rate_all_time: rnd(callbackPct), callbacks_all_time: totalCallbacks, completed_production_jobs_all_time: totalProdCompleted,
       pct_invoiced_before_completion: rnd(pctInvAhead), completed_without_invoice_on_record: invNoSendCount,
       ar_aged_30plus_days: rnd(arAged30),
@@ -14545,7 +14607,8 @@ async function renderMetrics() {
       pct_paid_in_full_on_completion_day: rnd(pctPaidOnDay),
       avg_review_rating: rnd(avgRating), reviews_in_window: ratingN,
     },
-    sales_by_salesperson: spRows.map(([name, g]) => ({ name, signed_value: rnd(g.sum), jobs: g.jobs.length })),
+    sales_by_salesperson: spRows.map(([name, g]) => ({ name, signed_value: rnd(g.sum), jobs: g.jobs.length,
+      ...(sosByRep[name] ? { sold_on_site: sosByRep[name].sold, accepted_estimates: sosByRep[name].total } : {}) })),
     gp_by_crew_lead: gpRows.map(([lead, g]) => ({ lead, gp: rnd(g.gp), price: rnd(g.price), cost: rnd(g.cost), jobs: g.jobs.length })),
     price_per_sqft_by_system: dpsfSystemRows.map(([name, g]) => ({ system: name, avg: rnd(g.sum / g.n), median: rnd(dpsfMedian(g.vals)), jobs: g.n })),
     speed_to_lead: { median_minutes: rnd(s2lMedian), leads_contacted: s2lMins.length, leads_created_in_window: leadsInWin.length },
@@ -14600,6 +14663,7 @@ async function renderMetrics() {
       ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume), salesVolWeekly, 'sales')}
       ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected), revCollected, 'admin')}
       ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize), null, 'sales')}
+      ${sosEnabled ? kpiCard(kpiIds.soldOnSite, 'check', 'Sold on site', 'Accepted estimates signed while the rep was still in the home (appointment window + grace).', `${invPct(sosRate)}${sosInWin.length ? ` <span style="font-size:.6em;font-weight:600;color:var(--muted)">${sosSold.length}/${sosInWin.length}</span>` : ''}`, deltaHtml(sosRate, sosPrevRate), null, 'sales') : ''}
     </div>
     <div class="pec-m-group-h" data-metcat="production admin">Production &amp; quality</div>
     <div class="pec-m-kpis" style="margin-bottom:16px">
@@ -20251,7 +20315,8 @@ async function renderSettingsEstimates() {
       'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
       'companycam_name_match_min_score', 'companycam_max_customer_photos',
       'estimate_warranty_enabled', 'estimate_color_chart_enabled',
-      'estimate_color_chart_min_products', 'estimate_color_chart_max_swatches', 'estimate_color_chart_print_mode']),
+      'estimate_color_chart_min_products', 'estimate_color_chart_max_swatches', 'estimate_color_chart_print_mode',
+      'sold_on_site_enabled', 'sold_on_site_grace_minutes', 'sold_on_site_appt_types', 'sold_on_site_lookback_hours']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -20310,6 +20375,13 @@ async function renderSettingsEstimates() {
   const chartMin = Number(map.estimate_color_chart_min_products) > 0 ? Number(map.estimate_color_chart_min_products) : 6;
   const chartMax = Number(map.estimate_color_chart_max_swatches) > 0 ? Number(map.estimate_color_chart_max_swatches) : 60;
   const chartPrint = map.estimate_color_chart_print_mode === 'cap' ? 'cap' : 'omit';
+  // Sold on site (prompt 94 C5). Defaults MUST match the migration seeds and
+  // the derivation fallbacks (true / 120 / on_site_estimate / 0), in both
+  // pec-public-estimate.cjs and the pecDeriveSoldOnSite client mirror.
+  const sosOn = (map.sold_on_site_enabled || 'true') !== 'false';
+  const sosGrace = Number(map.sold_on_site_grace_minutes) >= 0 && map.sold_on_site_grace_minutes !== '' && map.sold_on_site_grace_minutes != null ? Number(map.sold_on_site_grace_minutes) : 120;
+  const sosTypes = (map.sold_on_site_appt_types || '').trim() || 'on_site_estimate';
+  const sosLookback = Number(map.sold_on_site_lookback_hours) >= 0 && map.sold_on_site_lookback_hours !== '' && map.sold_on_site_lookback_hours != null ? Number(map.sold_on_site_lookback_hours) : 0;
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -20475,6 +20547,26 @@ async function renderSettingsEstimates() {
           <button type="button" class="pec-btn ghost sm" id="chartSetSave">Save</button>
         </div>
       </details>`)}
+    ${toggleCard('Sold on site tracking', sosOn,
+      'Marks an accepted estimate "sold on site" when it was accepted between the matched on-site appointment\'s start and its end plus the grace below. Stamped at accept; correctable by hand on the estimate page. Shows as a rate card in Metrics.', 'setSosOn',
+      `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <label style="font-size:.8rem">Grace after the appointment ends (minutes)
+          <input type="number" id="sosSetGrace" min="0" max="1440" step="5" value="${sosGrace}" style="width:80px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+        <button type="button" class="pec-btn ghost sm" id="sosSetSave">Save</button>
+      </div>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <label style="font-size:.72rem;color:var(--muted)">Appointment types that count (comma-separated)
+            <input type="text" id="sosSetTypes" value="${esc(sosTypes)}" style="width:220px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <label style="font-size:.72rem;color:var(--muted)">Lookback before the start (hours; 0 = off)
+            <input type="number" id="sosSetLookback" min="0" max="24" step="1" value="${sosLookback}" style="width:70px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+        </div>
+        <div style="color:var(--muted);font-size:.68rem;margin-top:6px">A lookback lets an accept slightly BEFORE the start count (a customer who signs while you are setting up). Valid types: on_site_estimate, project_walkthrough, site_visit, other. Save with the button above.</div>
+      </details>`)}
     <div class="pec-card">
       <details>
         <summary style="cursor:pointer;font-weight:700">Advanced</summary>
@@ -20508,6 +20600,22 @@ async function renderSettingsEstimates() {
   });
   wire('setEstWarranty', 'estimate_warranty_enabled', warrOn);
   wire('setEstChart', 'estimate_color_chart_enabled', chartOn);
+  wire('setSosOn', 'sold_on_site_enabled', sosOn);
+  $('sosSetSave').addEventListener('click', async () => {
+    const btn = $('sosSetSave'); btn.disabled = true;
+    const g = Math.floor(Number($('sosSetGrace').value));
+    const lb = Math.floor(Number($('sosSetLookback').value));
+    const types = $('sosSetTypes').value.split(',').map(s => s.trim()).filter(Boolean);
+    if (!Number.isFinite(g) || g < 0 || g > 1440) { showToast('The grace must be between 0 and 1440 minutes.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!Number.isFinite(lb) || lb < 0 || lb > 24) { showToast('The lookback must be between 0 and 24 hours.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!types.length) { showToast('At least one appointment type is required (on_site_estimate is the default).', { ttl: 4500 }); btn.disabled = false; return; }
+    try {
+      await saveSetting('sold_on_site_grace_minutes', g);
+      await saveSetting('sold_on_site_lookback_hours', lb);
+      await saveSetting('sold_on_site_appt_types', types.join(','));
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
   $('chartSetSave').addEventListener('click', async () => {
     const btn = $('chartSetSave'); btn.disabled = true;
     const mn = Math.floor(Number($('chartSetMin').value));
@@ -31441,6 +31549,7 @@ async function renderEstimateDetail(estimateId) {
           ` : `
             <div style="font-size:.82rem;margin-bottom:4px">Sent ${esc(fmtRelativeTime(est.sent_at))} <span style="color:var(--muted)" title="${esc(new Date(est.sent_at).toLocaleString())}">(${esc(new Date(est.sent_at).toLocaleDateString())})</span></div>
             ${est.signed_at ? `<div style="background:rgba(22,163,74,.12);border:1px solid rgba(22,163,74,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Signed by ${esc(est.signed_name || 'customer')}</strong> ${esc(fmtRelativeTime(est.signed_at))}${est.job_id ? ' · <a href="#" id="estOpenJob" style="color:var(--rd-accent,var(--accent))">Open job</a>' : ''}</div>` : ''}
+            ${est.status === 'accepted' ? '<div id="estSoldOnSiteBlock" style="border:1px solid var(--line,rgba(100,116,139,.35));border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px;display:none"></div>' : ''}
             ${est.status === 'change_requested' && est.change_request_note ? `<div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Changes requested:</strong> <span style="white-space:pre-wrap">${esc(est.change_request_note)}</span><div style="color:var(--muted);font-size:.72rem;margin-top:4px">Edit the estimate, then re-send. Same number, same link, new sent date.</div></div>` : ''}
             ${est.status === 'rejected' ? `<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Declined</strong>${est.rejected_at ? ' ' + esc(fmtRelativeTime(est.rejected_at)) : ''}${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}</div>` : ''}
             ${est.public_token ? `<div style="color:var(--muted);font-size:.7rem;margin-top:8px;word-break:break-all">${esc(location.origin + '/e/' + est.public_token)}</div>` : ''}
@@ -31689,12 +31798,68 @@ async function renderEstimateDetail(estimateId) {
     }
   };
   const acceptBtn = $('estMarkAccepted');
-  if (acceptBtn) acceptBtn.addEventListener('click', () => setStatus(
-    { status: 'accepted', accepted_at: new Date().toISOString() },
-    'Mark this estimate accepted? This records the win only; the JOB is created automatically when the customer accepts through their link (Send to customer). For an in-person win, open the sent link on your phone and have them sign there, or add the job manually.',
-  ));
+  if (acceptBtn) acceptBtn.addEventListener('click', async () => {
+    // Prompt 94 C2: the manual accept stamps sold_on_site too (same rule the
+    // public accept runs server-side). Best-effort: a failed derivation
+    // stamps nothing (null = unknown) and never blocks the accept.
+    const acceptedAt = new Date().toISOString();
+    let sos = {};
+    try {
+      const ctx = await pecSoldOnSiteContext(est, acceptedAt);
+      if (ctx.enabled) sos = { sold_on_site: ctx.sold };
+    } catch (_) { /* stamp nothing */ }
+    setStatus(
+      { status: 'accepted', accepted_at: acceptedAt, ...sos },
+      'Mark this estimate accepted? This records the win only; the JOB is created automatically when the customer accepts through their link (Send to customer). For an in-person win, open the sent link on your phone and have them sign there, or add the job manually.',
+    );
+  });
   const lostBtn = $('estMarkLost');
   if (lostBtn) lostBtn.addEventListener('click', () => setStatus({ status: 'lost' }, 'Mark this estimate lost?'));
+
+  // Prompt 94 C3: the sold-on-site block on an accepted estimate. Shows the
+  // effective value (override beats derived beats false), WHY the rule
+  // decided it (a metric nobody can audit is a metric nobody trusts), and a
+  // toggle whose write is its OWN PATCH carrying only sold_on_site_override:
+  // trg_estimate_status_guard fails whole updates that carry a stale status.
+  const sosBlock = $('estSoldOnSiteBlock');
+  if (sosBlock && est.status === 'accepted') (async () => {
+    try {
+      const ctx = await pecSoldOnSiteContext(est, est.accepted_at || est.signed_at);
+      if (!ctx.enabled) return;
+      const derived = est.sold_on_site;
+      const overridden = est.sold_on_site_override != null;
+      const effective = overridden ? est.sold_on_site_override : (derived != null ? derived : false);
+      const fmtT = iso => iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '?';
+      let why;
+      if (ctx.reason === 'in_window' && ctx.appointment) why = `matched your ${fmtT(ctx.appointment.start_at)} on-site estimate; accepted ${fmtT(est.accepted_at)}`;
+      else if (ctx.reason === 'outside_window' && ctx.appointment) why = `nearest on-site estimate started ${fmtT(ctx.appointment.start_at)}, accepted ${fmtT(est.accepted_at)}, outside the window`;
+      else why = 'no matching on-site estimate appointment on this lead or customer';
+      sosBlock.style.display = '';
+      sosBlock.innerHTML = `
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:700">
+          <input type="checkbox" id="estSosToggle" ${effective ? 'checked' : ''}> Sold on site
+        </label>
+        <div style="color:var(--muted);font-size:.72rem;margin-top:2px">${
+          overridden
+            ? `Set by hand. The rule would say ${derived == null ? 'nothing (accepted before the metric existed)' : (derived ? 'yes' : 'no')}: ${esc(why)}.`
+            : (derived == null
+              ? `Not recorded (accepted before the metric existed): ${esc(why)}. Tick to record it by hand.`
+              : `Rule: ${esc(why)}.`)
+        }</div>`;
+      $('estSosToggle').addEventListener('change', async (e) => {
+        const v = e.target.checked;
+        // Agreeing with the derived value clears the override (back to the
+        // rule); disagreeing records a human correction.
+        const override = (derived != null && v === derived) ? null : v;
+        try {
+          const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ sold_on_site_override: override }).eq('id', est.id), { label: 'estimate-sold-on-site' });
+          if (upd.error) throw upd.error;
+          showToast('Sold on site updated ✓', { ttl: 2000 });
+          renderEstimateDetail(est.id);
+        } catch (err) { showToast('Could not update sold on site: ' + esc(err.message || err), { ttl: 5000 }); }
+      });
+    } catch (_) { /* stays hidden; display-only */ }
+  })();
 
   // Archive (soft-delete, any status, any staff). An accepted estimate warns
   // HARD that the downstream JOB is not touched. Never a hard-delete, never a
@@ -31900,6 +32065,64 @@ function estScopeBlanks(text) {
   scan(/_{3,}/g, 'underscore');
   scan(/\{\{[^{}\n]*\}\}/g, 'token');
   return out;
+}
+
+// Prompt 94 C: CLIENT MIRROR of production/sold-on-site.cjs (deriveSoldOnSite
+// + parseApptTypes); keep in lockstep. The server stamps the flag on the
+// public accept; this mirror stamps the manual Mark accepted and paints the
+// estimate page's audit note. The STORED estimates.sold_on_site stays
+// authoritative for metrics; the mirror only derives at accept time and for
+// display.
+function pecParseApptTypes(value) {
+  const arr = String(value == null ? '' : value).split(',').map(s => s.trim()).filter(Boolean);
+  return arr.length ? arr : ['on_site_estimate'];
+}
+function pecDeriveSoldOnSite({ acceptedAt, appointments, graceMinutes, lookbackHours, apptTypes }) {
+  const grace = Number(graceMinutes);
+  const graceMs = (Number.isFinite(grace) && grace >= 0 ? grace : 120) * 60000;
+  const lb = Number(lookbackHours);
+  const lookbackMs = (Number.isFinite(lb) && lb > 0 ? lb : 0) * 3600000;
+  const types = Array.isArray(apptTypes) && apptTypes.length ? apptTypes.map(String) : ['on_site_estimate'];
+  const t = new Date(acceptedAt || '').getTime();
+  if (!Number.isFinite(t)) return { sold: false, appointment: null, reason: 'no_appointment' };
+  const cands = (Array.isArray(appointments) ? appointments : [])
+    .filter(p => p && types.includes(String(p.appt_type)) && String(p.status) !== 'canceled')
+    .map(p => ({ p, s: new Date(p.start_at).getTime(), e: new Date(p.end_at).getTime() }))
+    .filter(x => Number.isFinite(x.s) && Number.isFinite(x.e));
+  if (!cands.length) return { sold: false, appointment: null, reason: 'no_appointment' };
+  const pick = (arr) => arr.slice().sort((a, b) => {
+    const aBefore = a.s <= t, bBefore = b.s <= t;
+    if (aBefore !== bBefore) return aBefore ? -1 : 1;
+    if (aBefore && b.s !== a.s) return b.s - a.s;
+    if (!aBefore && a.s !== b.s) return a.s - b.s;
+    return String(a.p.id) < String(b.p.id) ? -1 : 1;
+  })[0];
+  const inWin = cands.filter(x => t >= x.s - lookbackMs && t <= x.e + graceMs);
+  if (inWin.length) return { sold: true, appointment: pick(inWin).p, reason: 'in_window' };
+  return { sold: false, appointment: pick(cands).p, reason: 'outside_window' };
+}
+// Settings + this estimate's matched appointments (lead_id first, else
+// customer_id, the existing indirect-join precedent) -> derivation context.
+async function pecSoldOnSiteContext(est, acceptedAtIso) {
+  const { data: setRows } = await supabase.from('settings').select('key,value')
+    .in('key', ['sold_on_site_enabled', 'sold_on_site_grace_minutes', 'sold_on_site_appt_types', 'sold_on_site_lookback_hours']);
+  const cfg = Object.fromEntries((setRows || []).map(r => [r.key, r.value]));
+  if (String(cfg.sold_on_site_enabled || 'true') === 'false') return { enabled: false, sold: null, appointment: null, reason: null };
+  let appts = [];
+  if (est.lead_id) {
+    const { data } = await supabase.from('pec_appointments').select('id,appt_type,status,start_at,end_at').eq('lead_id', est.lead_id);
+    appts = data || [];
+  }
+  if (!appts.length && est.customer_id) {
+    const { data } = await supabase.from('pec_appointments').select('id,appt_type,status,start_at,end_at').eq('customer_id', est.customer_id);
+    appts = data || [];
+  }
+  const d = pecDeriveSoldOnSite({
+    acceptedAt: acceptedAtIso, appointments: appts,
+    graceMinutes: cfg.sold_on_site_grace_minutes, lookbackHours: cfg.sold_on_site_lookback_hours,
+    apptTypes: pecParseApptTypes(cfg.sold_on_site_appt_types),
+  });
+  return { enabled: true, sold: d.sold, appointment: d.appointment, reason: d.reason };
 }
 async function estimateSendGateOk(est) {
   // FRESH READ (prompt 76): the fix flow happens INSIDE the inline estimator
