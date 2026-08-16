@@ -1,3 +1,36 @@
+## [2026-08-16 MST] Prompt 92 Task C verification: the ACH failure bell renders and routes correctly (proven on a second test row after the handoff's own SQL picked an archived job). The Stripe test-event half is BLOCKED on login and handed back.
+By: Cowork
+Changed: No code, schema, or settings. Two test rows inserted into pec_notifications and both deleted. PROJECT-LOG.md only.
+Why: Prompt 92 shipped payment bells but could not verify them from Claude Code (no synthetic ACH failure, and canned Stripe test events carry no metadata.job_id). This is the Handoff to Cowork from the entry below.
+
+**Task 1: the bell renders and routes. PASS, with a caveat about the handoff's own SQL.**
+
+Row 1 was inserted exactly as the handoff specified (`... select 'payment_failed_ach', id, ... from jobs limit 1`), which selected job 2a29887e (Doug Paschke, 5312 N Stetson Dr, $1,450). The bell rendered it at the top of the panel with the red "!" high-priority mark, wording intact. Tapping it routed to `?v=invoicing&invoice=2a29887e-7e00-458a-959c-dbbcf061fc56` (correct view, correct job id) but the screen read **"Invoice not found. It may have been voided or archived."**
+
+That is not a routing bug. `from jobs limit 1` returns an unordered row, and the one it returned is **archived** (`jobs.archived_at` = 2026-07-20 22:01:24+00, `hq_invoice_number` null, zero pec_payments). The invoicing screen is behaving correctly by refusing an archived job. A real ACH failure cannot land on a job in that state, because a job that took an ACH payment is necessarily invoiced and unarchived.
+
+Rather than report a false failure, a second test row was inserted against a live invoiced job: 71a50c81 (Bill Toon, invoice #10001, 2 recorded payments, not archived, not voided). Same type, same priority, same body prefix so the handoff's cleanup delete would still catch it. Result: red "!" mark present, and the tap landed on the **fully rendered invoice screen** (customer Bill Toon, INVOICE # 10001, SIGNED status pill, Send invoice / Receive payment / More actions all present). Routing verified.
+
+Badge behavior: the badge decremented 25 to 24 on tap, so the read stamp works. The badge count itself was audited against the table and is correct: 26 unread rows total = 15 shared (target_user_id null) + 11 targeted; the bell shows 25 = the 15 shared plus the 10 targeted to Dylan, with 1 row targeted to another admin correctly excluded by the client-side display filter. Not verified: a live badge increment inside the 30-second cache window, because the page was loaded after the insert and the count already included the row on first paint.
+
+**Cleanup: `delete from pec_notifications where body like 'TEST: ACH payment%'` returned 2 rows, not 1.** Two rows were deleted because two were inserted, for the reason above. Post-delete audit: the only rows still matching `type like 'payment_%'` are four pre-existing June 2026 rows written by log_payment_edited / log_payment_deleted (Dusty Wilson editing and deleting payments for Bobette Weiss). Zero test residue, and no other notification row was read, written, or deleted. Nothing was written to pec_payments or pec_stripe_pending.
+
+**Task 2: BLOCKED, not attempted.** dashboard.stripe.com and app.netlify.com both presented login screens in Dylan's Chrome profile. Cowork does not enter credentials or authenticate on his behalf, so no test event was sent, no function log was read, and the endpoint's signing secret was not touched or viewed.
+
+Partial substitute, for what it is worth: the c88734c deploy is independently confirmed live at https://prescottepoxy.netlify.app, because the prompt 92 bell-panel CSS and all three prompt 92 What's New entries render there. That covers the "deploy landed" half of what Task 2 was meant to prove. The **Stripe signature wiring remains unverified**, and the first real card or ACH event is now the test.
+
+**Side effect worth knowing:** the What's New modal auto-opened on page reload ("3 updates since you last checked") and was dismissed with its X to reach the bell, so that prompt is now cleared for Dylan. The three entries are still readable under Help > What's New.
+
+Files touched: PROJECT-LOG.md
+Next steps: None from Cowork. The webhook half needs Dylan.
+Handoff to Cowork: None.
+Handoff to Dylan:
+1. Send the Stripe test event yourself: Stripe Dashboard > Developers > Webhooks > the prescottepoxy endpoint > Send test event > `checkout.session.async_payment_failed`. In Netlify (site prescottepoxy > Functions > pec-stripe-webhook) the log should show **200** with body `{"ignored":"incomplete"}`. Anything 4xx or 5xx means the signature or deploy wiring needs looking at. Do not resend repeatedly and do not rotate the signing secret.
+2. Alternatively, skip it. The bell UX is now proven and the next real payment exercises the webhook path for free. Nothing about the payment recording path changed in prompt 92, so waiting carries no risk to money.
+3. Unrelated but still open since 2026-08-13: SALESASK_API_KEY and SALESASK_WEBHOOK_SECRET are still not set in Netlify, so the Kellogg Patton recording still has not landed.
+
+---
+
 ## [2026-08-16 MST] Prompt 92: the phone gets a real Job Schedule calendar (one-week swipe grid), the notification bell panel fits the screen, and the bell rings for every payment (card, ACH settled, ACH failed, staff-recorded).
 
 By: Claude Code
