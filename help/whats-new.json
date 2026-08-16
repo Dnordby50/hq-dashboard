@@ -1,5 +1,38 @@
 [
   {
+    "id": "mobile-schedule-week-calendar",
+    "date": "2026-08-16",
+    "title": "A real calendar for the Job Schedule on your phone",
+    "summary": "On a phone, the 3-week Job Schedule now shows one week at a time as a real calendar grid. Job bars span their days in crew colors, just like on the computer. Swipe left or right to change weeks, and the week you were on is remembered if the page reloads.",
+    "howto": [
+      "Open Job Schedule on your phone in 3 weeks mode. You will see this week as a seven-day grid.",
+      "Swipe the calendar left or right (or tap the arrows above it) to move between weeks.",
+      "Tap any day's header to open that day's full run sheet under the grid. Tap a job bar for its details."
+    ]
+  },
+  {
+    "id": "mobile-bell-panel-fix",
+    "date": "2026-08-16",
+    "title": "Notifications panel now fits on your phone",
+    "summary": "The notification bell's panel used to open partly off the screen on phones. It now always fits the screen, scrolls inside itself when the list is long, and closes when you tap anywhere outside it.",
+    "howto": [
+      "Tap the bell in the top bar. The panel opens fully on screen at any phone size.",
+      "Scroll inside the panel if you have a long list of notifications.",
+      "Tap outside the panel (or press Escape on a keyboard) to close it."
+    ]
+  },
+  {
+    "id": "payment-bell-notifications",
+    "date": "2026-08-16",
+    "title": "The bell rings when a payment comes in",
+    "summary": "You now get a notification for every payment: a customer paying by card, a bank (ACH) payment settling, a bank payment failing, and payments the office records by hand. A failed bank payment rings loud, because money that looked collected has vanished. Tapping a payment notification opens that job's invoice.",
+    "howto": [
+      "Watch the bell in the top bar. New payments show the customer, amount, and method.",
+      "Tap a payment notification to open that job's invoice screen.",
+      "Tune it under Settings, Invoicing, Payment bell notifications. You can set a minimum amount so tiny test charges stay quiet."
+    ]
+  },
+  {
     "id": "companycam-estimate-photos",
     "date": "2026-08-13",
     "title": "CompanyCam photos on estimates and proposals",
