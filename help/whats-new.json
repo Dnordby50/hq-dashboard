@@ -1,5 +1,38 @@
 [
   {
+    "id": "estimate-letterhead-brand-switcher",
+    "date": "2026-08-16",
+    "title": "Your address and ROC number at the top of every estimate",
+    "summary": "Customer estimates now show your showroom address, phone, license number, and website right under the logo, visible without scrolling. The footer keeps them too for printed pages. Settings, Brand also gained a PEC / FTP switcher so both brands' details can be edited.",
+    "howto": [
+      "Open any customer estimate link. The letterhead sits under the logo at the top.",
+      "To change the details, open Settings, Brand, pick the brand, edit, and save.",
+      "Finishing Touch has no ROC on file yet. Switch to FTP and enter it, and its estimates pick it up."
+    ]
+  },
+  {
+    "id": "estimate-color-charts",
+    "date": "2026-08-16",
+    "title": "Color charts on customer estimates",
+    "summary": "Each line's system now shows its color chart on the customer's estimate, built straight from your product catalog. A flake job shows the flake colors, a metallic job the metallic pigments, and the customer's chosen color is marked so they see it in context of the whole range.",
+    "howto": [
+      "Send or preview any estimate with a flake, metallic, or quartz line. The charts appear below the price.",
+      "The chosen color carries a Your selection badge.",
+      "Tune or turn this off under Settings, Estimates, Color charts on customer estimates. Charts only appear for products with images in the catalog."
+    ]
+  },
+  {
+    "id": "estimate-warranty-document",
+    "date": "2026-08-16",
+    "title": "Your warranty on every estimate, frozen at send",
+    "summary": "Write your warranty once under Settings, Presentation, and it appears on every customer estimate right after the terms. The wording freezes when an estimate is sent, so a customer always sees the exact warranty their document went out with, even if you edit it later.",
+    "howto": [
+      "Open Settings, Presentation and add a section with the kind Our warranty.",
+      "Send an estimate. The warranty shows after the terms and is frozen for that customer.",
+      "Turn it on or off under Settings, Estimates, Warranty on customer estimates."
+    ]
+  },
+  {
     "id": "mobile-schedule-week-calendar",
     "date": "2026-08-16",
     "title": "A real calendar for the Job Schedule on your phone",
