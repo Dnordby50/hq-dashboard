@@ -23200,6 +23200,7 @@ async function renderSettings() {
         <div class="pec-field"><label>Metrics AI insight cache (days)</label><input name="metrics_ai_cache_days" type="number" min="1" step="1" value="${esc(map.metrics_ai_cache_days || '7')}"><span style="color:var(--muted);font-size:.68rem">How long a generated AI read is reused before Generate calls the model again. Regenerate always forces a fresh one.</span></div>
         <div class="pec-field"><label>Bonus lock (days after completion)</label><input name="bonus_lock_days" type="number" min="0" step="1" value="${esc(map.bonus_lock_days || '14')}"><span style="color:var(--muted);font-size:.68rem">A crew bonus becomes payable only this many days after the job's completion date. Hard block, no override.</span></div>
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Schedule / Production · Touch-ups</div>
+        <div class="pec-field"><label>Mobile calendar breakpoint (px)</label><input name="schedule_mobile_breakpoint_px" type="number" min="320" step="10" value="${esc(map.schedule_mobile_breakpoint_px || '720')}"><span style="color:var(--muted);font-size:.68rem">Below this screen width the 3-week Job Schedule renders as the one-week swipe calendar. Read once at page load, so a change takes effect on the next reload.</span></div>
         <div class="pec-field"><label>Touch-up aging (days)</label><input name="touchup_aging_days" type="number" min="1" step="1" value="${esc(map.touchup_aging_days || '14')}"><span style="color:var(--muted);font-size:.68rem">An open touch-up turns red in the Touch-ups panel after this many days. Visual only, no notification.</span></div>
         <div class="pec-field"><label>Touch-up default duration (hours)</label><input name="touchup_default_duration_hours" type="number" min="0" step="0.5" value="${esc(map.touchup_default_duration_hours || '2')}"><span style="color:var(--muted);font-size:.68rem">Prefills Estimated hours in the schedule modal when scheduling a touch-up.</span></div>
         <div class="pec-field"><label>Touch-ups: show Done for (days)</label><input name="touchup_panel_show_done_days" type="number" min="1" step="1" value="${esc(map.touchup_panel_show_done_days || '30')}"><span style="color:var(--muted);font-size:.68rem">How far back the panel's Done section reaches. Older closed touch-ups stay in the data and the callback report.</span></div>
@@ -33645,12 +33646,59 @@ function openTouchupReportModal() {
 // observer accumulation across the many renderSchedule re-runs).
 let _schedPendingRO = null, _schedPendingResize = null;
 
+// Mobile calendar breakpoint (prompt 92): below schedule_mobile_breakpoint_px
+// the 3-week calendar renders as the one-week swipe grid. Same loader shape as
+// settings_rail_breakpoint_px (cached on window.pecState, falls back to 720
+// when the row is missing or unparseable).
+function scheduleMobileBreakpointPx() {
+  const v = Number(window.pecState && window.pecState._schedMobileBreakpointPx);
+  return Number.isFinite(v) && v > 0 ? v : 720;
+}
+async function loadScheduleMobileBreakpoint() {
+  const st = window.pecState;
+  if (!st || st._schedMobileBreakpointLoaded) return;
+  st._schedMobileBreakpointLoaded = true;
+  try {
+    const { data } = await supabase.from('settings').select('value').eq('key', 'schedule_mobile_breakpoint_px').maybeSingle();
+    const v = Number(data && data.value);
+    if (Number.isFinite(v) && v > 0) st._schedMobileBreakpointPx = v;
+  } catch (_) { /* row missing or unreadable: scheduleMobileBreakpointPx() falls back to 720 */ }
+}
+function scheduleIsPhone() {
+  return !!(window.matchMedia && window.matchMedia(`(max-width:${scheduleMobileBreakpointPx()}px)`).matches);
+}
+// The layout the calendar last rendered with, so the breakpoint-cross resize
+// handler re-renders only on an actual crossing (rotation, window resize), not
+// on every resize tick. Torn down/re-armed per render like _schedPendingResize.
+let _schedCalLastPhone = null, _schedCalBpResize = null;
+// Week the phone calendar is parked on (pec_sched_anchor): written by the
+// mobile week nav so a mid-planning reload lands back on the same week, aged
+// out after 7 days so a fresh open weeks later starts at today, not history.
+const SCHED_ANCHOR_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+function saveSchedAnchor(iso) {
+  try { localStorage.setItem('pec_sched_anchor', JSON.stringify({ iso, at: Date.now() })); } catch (_) {}
+}
+function restoreSchedAnchor() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pec_sched_anchor') || 'null');
+    if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved.iso || '') && Date.now() - (Number(saved.at) || 0) < SCHED_ANCHOR_MAX_AGE_MS) return saved.iso;
+  } catch (_) {}
+  return null;
+}
+
 async function renderSchedule() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading schedule…</div>';
   await runScheduleStatusSync(); // calendar is the source of truth; keep statuses in step (throttled)
   await loadScheduleData();
-  if (!state.scheduleAnchor) state.scheduleAnchor = isoDate(new Date());
+  await loadScheduleMobileBreakpoint();
+  if (!state.scheduleAnchor) {
+    state.scheduleAnchor = isoDate(new Date());
+    // Phone only: restore the week the mobile nav parked on (see
+    // saveSchedAnchor). Desktop never reads it, so the >breakpoint render is
+    // untouched by any stored value.
+    if (scheduleIsPhone()) { const saved = restoreSchedAnchor(); if (saved) state.scheduleAnchor = saved; }
+  }
   // View mode: 'week' (single-week per-crew run sheet) or '3weeks' (the rolling
   // 3-week calendar). Persisted so the choice sticks across sessions.
   if (!state.scheduleMode) { try { state.scheduleMode = localStorage.getItem('pec_sched_mode') || '3weeks'; } catch (_) { state.scheduleMode = '3weeks'; } }
@@ -33770,13 +33818,18 @@ async function renderSchedule() {
   $('pecSchedAddTask').addEventListener('click', () => openTaskModal(null));
   $('pecSchedHoliday').addEventListener('click', () => openHolidayModal());
   $('pecSchedDayOff').addEventListener('click', () => openDayOffModal());
-  $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); renderSchedule(); });
+  // Phone keeps its parked week across reloads (prompt 92), so every anchor
+  // move persists there; desktop deliberately never writes or reads it.
+  const stampAnchor = () => { if (scheduleIsPhone()) saveSchedAnchor(state.scheduleAnchor); };
+  $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); stampAnchor(); renderSchedule(); });
   $('pecSchedPrev').addEventListener('click', () => {
     state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), -7));
+    stampAnchor();
     renderSchedule();
   });
   $('pecSchedNext').addEventListener('click', () => {
     state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), 7));
+    stampAnchor();
     renderSchedule();
   });
   const setSchedMode = (m) => { state.scheduleMode = m; try { localStorage.setItem('pec_sched_mode', m); } catch (_) {} renderSchedule(); };
@@ -33838,6 +33891,27 @@ async function renderSchedule() {
   wireTouchupPanel(root, tuCtx);
   renderScheduleCalendar(sysById, crewById, areaSystem);
 
+  // Prompt 92: rotation / window resize across the mobile breakpoint re-picks
+  // the calendar layout (the phone-vs-desktop choice is a render-time JS
+  // branch, so CSS alone cannot fix a stale layout). Debounced, and re-renders
+  // ONLY on an actual crossing; a same-side resize does nothing.
+  if (_schedCalBpResize) {
+    window.removeEventListener('resize', _schedCalBpResize);
+    window.removeEventListener('orientationchange', _schedCalBpResize);
+    _schedCalBpResize = null;
+  }
+  let _bpTimer = null;
+  _schedCalBpResize = () => {
+    if (_bpTimer) clearTimeout(_bpTimer);
+    _bpTimer = setTimeout(() => {
+      if (_schedCalLastPhone !== null && scheduleIsPhone() !== _schedCalLastPhone) {
+        renderScheduleCalendar(sysById, crewById, areaSystem);
+      }
+    }, 200);
+  };
+  window.addEventListener('resize', _schedCalBpResize);
+  window.addEventListener('orientationchange', _schedCalBpResize);
+
   // Task 3: cap the Pending panel at the CALENDAR's height so it hugs its content
   // when short and scrolls internally when taller, with no second page scrollbar.
   // Chosen over pure CSS grid-stretch deliberately: the grid's single auto row
@@ -33892,6 +33966,10 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   const periodEl = $('pecSchedPeriod');
   const anchor = parseISO(state.scheduleAnchor);
   const today = new Date();
+  // Evaluated ONCE per render; the breakpoint-cross resize handler in
+  // renderSchedule compares against this to know when a re-render is due.
+  const isPhone = scheduleIsPhone();
+  _schedCalLastPhone = isPhone;
 
   // Group schedule_days by job_id, sorted by date
   const daysByJob = {};
@@ -34133,7 +34211,31 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     return { bars, laneCount: lanes.length };
   };
 
-  const barHtml = (bar, gridRow) => {
+  // phoneCtx ({ wStartIso, wEndIso }, prompt 92): the one-week phone grid
+  // renders a COMPACT bar (customer last name + system initials, >=11px) with
+  // continuation markers when the job's scheduled days run past the visible
+  // week. Omitted (undefined) on desktop, where the output is byte-identical
+  // to the pre-92 renderer.
+  const barHtml = (bar, gridRow, phoneCtx) => {
+    if (phoneCtx) {
+      const lastName = String(bar.ev.job.customer_name || '').trim().split(/\s+/).pop() || '(no name)';
+      const sysAbbr = bar.ev.isCallback ? 'TU'
+        : (bar.ev.sys && bar.ev.sys.name ? bar.ev.sys.name.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 3) : '');
+      // Continuation: the bar touches the week edge AND the job has scheduled
+      // days beyond it (daysByJob is sorted). Squared edge + chevron, visually
+      // distinct from a genuine start/end (rounded corner, no chevron).
+      const jd = daysByJob[bar.jobId] || [];
+      const contL = bar.startCol === 1 && jd.length > 0 && jd[0].scheduled_date < phoneCtx.wStartIso;
+      const contR = bar.startCol + bar.spanCols - 1 === 7 && jd.length > 0 && jd[jd.length - 1].scheduled_date > phoneCtx.wEndIso;
+      const barRev = bar.ev.revPerDay * bar.spanCols;
+      const tip = bar.ev.tooltipBase
+        + (bar.note ? ` · ${bar.note}` : '')
+        + (bar.ev.revFull ? ` · Contract ${bar.ev.revFull}` + (barRev > 0 ? ` · this week ${fullRev(barRev)}` : '') : '');
+      return `<div class="pec-cal-event-bar pec-cal-mbar${contL ? ' cont-l' : ''}${contR ? ' cont-r' : ''}"
+        data-event-job="${esc(bar.jobId)}"
+        title="${esc(tip)}"
+        style="grid-column:${bar.startCol} / span ${bar.spanCols};grid-row:${gridRow};--ev-color:${esc(bar.ev.color)}${bar.ev.bannerColor ? `;--ev-banner:${esc(bar.ev.bannerColor)}` : ''}">${contL ? '<span class="mbar-cont">‹</span>' : ''}<span class="mbar-label">${esc(lastName)}${sysAbbr ? ` · ${esc(sysAbbr)}` : ''}</span>${contR ? '<span class="mbar-cont">›</span>' : ''}</div>`;
+    }
     const parts = [];
     // First/Second/Third chip first so it survives the progressive collapse on
     // narrow bars (the slot is the most important field per Dylan). Stored value
@@ -34171,19 +34273,24 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   // No per-day cap: every bar in the week is shown. The week row grows
   // vertically as needed. Headers are rendered once above all weeks at the
   // calendar level, not per-row.
-  const renderWeekGrid = (weekDays) => {
+  const renderWeekGrid = (weekDays, phone) => {
     const { bars, laneCount } = buildWeek(weekDays);
     const lanesShown = Math.max(1, laneCount || 1);
+    // Phone (prompt 92): the week bounds ride to barHtml for the continuation
+    // markers, the in-grid day numbers are dropped (the tappable header strip
+    // above the grid owns them), and bars start at row 1 (no day-num row).
+    const phoneCtx = phone ? { wStartIso: isoDate(weekDays[0]), wEndIso: isoDate(weekDays[6]) } : null;
+    const barRow0 = phoneCtx ? 1 : 2;
     const dayCellsHtml = weekDays.map((d, i) => {
       const iso = isoDate(d);
       const hol = holidaysByDate[iso];
       return `<div class="day-c ${sameDay(d, today)?'today':''} ${hol?'is-holiday':''}" style="grid-column:${i+1};grid-row:1 / -1">
-        <div class="day-num">${d.getDate()}</div>
+        ${phoneCtx ? '' : `<div class="day-num">${d.getDate()}</div>`}
         ${hol ? holidayCellHtml(hol) : ''}
       </div>`;
     }).join('');
-    // Bars start at row 2 (row 1 is the day-num row).
-    const barsHtml = bars.map(b => barHtml(b, 2 + b.lane)).join('');
+    // Bars start at row 2 (row 1 is the day-num row); row 1 on the phone grid.
+    const barsHtml = bars.map(b => barHtml(b, barRow0 + b.lane, phoneCtx)).join('');
     // Task chips + day-off markers live in the trailing 1fr filler row, BELOW
     // the job-bar lanes, so they never collide with the lane assignment math
     // above. The 1fr track auto-grows to fit its content. Day-off markers render
@@ -34193,12 +34300,15 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       const tlist = tasksByDate[iso] || [];
       const olist = daysOffByDate[iso] || [];
       if (!tlist.length && !olist.length) return '';
-      return `<div class="pec-cal-task-strip" style="grid-column:${i + 1};grid-row:${2 + lanesShown}">${olist.map(dayOffChipHtml).join('')}${tlist.map(taskChipHtml).join('')}</div>`;
+      return `<div class="pec-cal-task-strip" style="grid-column:${i + 1};grid-row:${barRow0 + lanesShown}">${olist.map(dayOffChipHtml).join('')}${tlist.map(taskChipHtml).join('')}</div>`;
     }).join('');
     // Header row just holds the day number; lanes are tall enough for each job
-    // bar to wrap to two lines (customer/rev on top, system/crew below).
+    // bar to wrap to two lines (customer/rev on top, system/crew below). The
+    // phone grid has no header row and single-line bars, so shorter lanes.
     const HEADER = 24, LANE = 50;
-    const rowTemplate = `${HEADER}px repeat(${lanesShown}, minmax(${LANE}px, max-content)) 1fr`;
+    const rowTemplate = phoneCtx
+      ? `repeat(${lanesShown}, minmax(30px, max-content)) 1fr`
+      : `${HEADER}px repeat(${lanesShown}, minmax(${LANE}px, max-content)) 1fr`;
     return `<div class="pec-cal-week-grid" style="grid-template-rows:${rowTemplate}">
       ${dayCellsHtml}${barsHtml}${tasksRowHtml}
     </div>`;
@@ -34303,24 +34413,94 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   const firstDay = weeks[0].days[0], lastDay = weeks[2].days[6];
   periodEl.textContent = `Week of ${firstDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${lastDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
-  // PHONE: the spanning 7-column grid with multi-day event bars cannot reflow
-  // to one column via CSS (bars are positioned by explicit grid-column spans),
-  // so on a narrow screen the 3-week view renders as a vertical DAY LIST reusing
-  // the same per-day card (dayCardHtml) and the same in-memory arrays. This is
-  // the ONE JS branch in item 3; everything else is CSS. Each week's revenue
-  // heads its group so the pro-rated tally stays visible.
-  if (window.matchMedia && window.matchMedia('(max-width:720px)').matches) {
-    host.innerHTML = `<div class="pec-cal-daylist">${weeks.map((w, wi) => `
-      <div class="pec-cal-daylist-weekhead" data-weekrev="${wi}" role="button" tabindex="0" aria-expanded="false" title="Tap for the revenue breakdown">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} <span>${fmtMoney(weekRevenue(w.days))} &#9662;</span></div>
-      <div class="pec-cal-weekrev-host" data-weekrev-panel="${wi}" hidden>${weekRevPanelHtml(w.days)}</div>
-      ${w.days.map(dayCardHtml).join('')}
-    `).join('')}</div>`;
-    // Prompt 57 Part E: a bar click opens the READ-ONLY quick look; its Schedule
-    // button is the deliberate path into the edit modal (a click used to land
-    // straight in an editable form, one stray keystroke from changing a job).
+  // PHONE (prompt 92): ONE week as a real 7-column grid with the same spanning
+  // job bars as desktop, swipe left/right (or the ‹ › chevrons) to change
+  // week. Replaces the old vertical 21-day card list, which gave no sense of
+  // the week's shape. The per-day readability that list gave survives as an
+  // accordion: tapping a day's header expands its full run-sheet card
+  // (dayCardHtml) under the grid, one day at a time. The breakpoint is
+  // schedule_mobile_breakpoint_px (default 720; Settings > General).
+  if (isPhone) {
+    const wDays = weeks[0].days;
+    const weekLabel = `Week of ${wDays[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${wDays[6].toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    periodEl.textContent = weekLabel;
+    const headCells = wDays.map(d => {
+      const iso = isoDate(d);
+      const hol = holidaysByDate[iso];
+      return `<div class="mday-h ${sameDay(d, today) ? 'today' : ''} ${hol ? 'is-holiday' : ''}" data-mday="${esc(iso)}" role="button" tabindex="0" aria-expanded="false" title="Tap for this day's run sheet">${d.toLocaleDateString(undefined, { weekday: 'narrow' })}<span class="mday-num">${d.getDate()}</span></div>`;
+    }).join('');
+    host.innerHTML = `<div class="pec-cal-mweek">
+      <div class="pec-cal-mweek-nav">
+        <button class="pec-btn sm" data-mweek-nav="-1" aria-label="Previous week">‹</button>
+        <div class="pec-cal-mweek-label">${esc(weekLabel)}</div>
+        <button class="pec-btn sm" data-mweek-nav="1" aria-label="Next week">›</button>
+      </div>
+      <div class="pec-cal-mweek-swipe" id="pecMweekSwipe">
+        <div class="pec-cal-mweek-head">${headCells}</div>
+        ${renderWeekGrid(wDays, true)}
+      </div>
+      <div class="pec-cal-mweek-dayhost" id="pecMweekDayHost" hidden></div>
+      <div class="pec-cal-daylist-weekhead pec-cal-mweek-rev" data-weekrev="0" role="button" tabindex="0" aria-expanded="false" title="Tap for the revenue breakdown">Week revenue <span>${fmtMoney(weekRevenue(wDays))} &#9662;</span></div>
+      <div class="pec-cal-weekrev-host" data-weekrev-panel="0" hidden>${weekRevPanelHtml(wDays)}</div>
+    </div>`;
+
+    // Week nav: chevrons and swipe both move the anchor one week and re-render
+    // JUST the calendar (data is already in memory; no renderSchedule reload).
+    // The anchor persists (saveSchedAnchor) so a reload lands on this week.
+    const goWeek = (delta) => {
+      state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), delta * 7));
+      saveSchedAnchor(state.scheduleAnchor);
+      renderScheduleCalendar(sysById, crewById, areaSystem);
+    };
+    host.querySelectorAll('[data-mweek-nav]').forEach(b => b.addEventListener('click', () => goWeek(Number(b.dataset.mweekNav))));
+
+    // Swipe: pointer events with an axis lock (a mostly-vertical move is a
+    // page scroll, never a week change) and a 48px travel threshold.
+    // touch-action:pan-y on the container keeps vertical scrolling native (the
+    // browser fires pointercancel when it takes the gesture). No library.
+    const swipeEl = host.querySelector('#pecMweekSwipe');
+    let swipe = null; // { x, y, axis }
+    swipeEl.addEventListener('pointerdown', (e) => { swipe = { x: e.clientX, y: e.clientY, axis: null }; });
+    swipeEl.addEventListener('pointermove', (e) => {
+      if (!swipe || swipe.axis) return;
+      const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+      if (Math.abs(dx) > 10 || Math.abs(dy) > 10) swipe.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    });
+    swipeEl.addEventListener('pointerup', (e) => {
+      if (!swipe) return;
+      const dx = e.clientX - swipe.x;
+      const wasX = swipe.axis === 'x';
+      swipe = null;
+      if (wasX && Math.abs(dx) >= 48) goWeek(dx < 0 ? 1 : -1);
+    });
+    swipeEl.addEventListener('pointercancel', () => { swipe = null; });
+
+    // Day accordion: tap a day header for its full run-sheet card below the
+    // grid; one open at a time, tapping the open day again closes it. The
+    // injected card's job/task clicks are wired on open (the render-time
+    // wiring below runs while this host is still empty).
+    const dayHost = host.querySelector('#pecMweekDayHost');
+    const dayHeads = Array.from(host.querySelectorAll('[data-mday]'));
+    const toggleDay = (h) => {
+      const wasOpen = h.getAttribute('aria-expanded') === 'true';
+      dayHeads.forEach(x => x.setAttribute('aria-expanded', 'false'));
+      if (wasOpen) { dayHost.hidden = true; dayHost.innerHTML = ''; return; }
+      h.setAttribute('aria-expanded', 'true');
+      dayHost.innerHTML = dayCardHtml(parseISO(h.dataset.mday));
+      dayHost.hidden = false;
+      dayHost.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openJobQuickLook(el.dataset.eventJob)));
+      wireTaskClicks(dayHost);
+    };
+    dayHeads.forEach(h => {
+      h.addEventListener('click', () => toggleDay(h));
+      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDay(h); } });
+    });
+
+    // Prompt 57 Part E: a bar click opens the READ-ONLY quick look; same modal
+    // as the desktop bars, deliberately no second detail surface.
     host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openJobQuickLook(el.dataset.eventJob)));
     wireWeekRevPanels(host);
-    wireTaskClicks(host);
+    wireTaskClicks(swipeEl);
     return;
   }
 
@@ -40508,6 +40688,34 @@ if (portalToken) {
     .pec-cal-daycols { grid-template-columns:1fr }
     .pec-cal-daycols .pec-cal-daycard { min-height:0 }
   }
+  /* Phone one-week grid (prompt 92). Deliberately NO media query on these:
+     the render-time JS branch (schedule_mobile_breakpoint_px, default 720)
+     decides when this markup exists, so CSS and JS can never disagree about
+     the breakpoint. */
+  .pec-cal-mweek-nav { display:flex; align-items:center; gap:8px; margin-bottom:8px }
+  .pec-cal-mweek-label { flex:1; text-align:center; font-weight:700; font-size:.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .pec-cal-mweek-swipe { touch-action:pan-y; user-select:none; -webkit-user-select:none }
+  .pec-cal-mweek-head { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:2px; margin-bottom:4px }
+  .pec-cal-mweek-head .mday-h { text-align:center; padding:5px 0 4px; border-radius:6px; cursor:pointer; background:var(--rd-soft,var(--s2)); font-size:.62rem; text-transform:uppercase; color:var(--muted); line-height:1.25 }
+  .pec-cal-mweek-head .mday-h .mday-num { display:block; font-size:.86rem; font-weight:700; color:var(--rd-ink,var(--text)) }
+  .pec-cal-mweek-head .mday-h.today { box-shadow:inset 0 0 0 2px var(--rd-accent,var(--accent)) }
+  .pec-cal-mweek-head .mday-h.today .mday-num { color:var(--rd-accent,var(--accent)) }
+  .pec-cal-mweek-head .mday-h.is-holiday { background:color-mix(in srgb, #dc2626 14%, var(--rd-soft,var(--s2))) }
+  .pec-cal-mweek-head .mday-h[aria-expanded="true"] { background:var(--rd-accent,var(--accent)); color:#fff }
+  .pec-cal-mweek-head .mday-h[aria-expanded="true"] .mday-num { color:#fff }
+  .pec-cal-mweek .pec-cal-week-grid { min-height:110px }
+  /* Compact phone bar: >=11px hard floor (Dylan reads these in the field),
+     single line, ellipsized label. Crew color fill + system top band are the
+     shared --ev-color / --ev-banner vars, same as desktop. */
+  .pec-cal-mbar { font-size:11px; padding:5px 5px 5px 11px; white-space:nowrap; flex-wrap:nowrap; gap:2px }
+  .pec-cal-mbar .mbar-label { overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1 1 auto; font-weight:600 }
+  .pec-cal-mbar .mbar-cont { flex:0 0 auto; font-weight:800; opacity:.75 }
+  /* Continuation (job runs past the visible week): squared edge, chevron.
+     A genuine start/end keeps the rounded corner and no chevron. */
+  .pec-cal-mbar.cont-l { border-top-left-radius:0; border-bottom-left-radius:0; margin-left:0 }
+  .pec-cal-mbar.cont-r { border-top-right-radius:0; border-bottom-right-radius:0; margin-right:0 }
+  .pec-cal-mweek-dayhost { margin-top:8px }
+  .pec-cal-mweek-rev { margin-top:10px }
   .pec-cal-month { border:1px solid var(--rd-line, var(--border)); border-radius:8px; padding:8px; background:var(--rd-card, var(--s1)) }
   .pec-cal-month-head { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)) 150px; gap:1px; margin-bottom:8px; padding-left:0 }
   .pec-cal-month-head .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
