@@ -1,3 +1,44 @@
+## [2026-08-16 MST] Dylan's nine-item field list from 2026-08-16 turned into three Claude Code build prompts (92, 93, 94), plus one item pulled out because it already exists.
+By: Cowork
+Changed: Wrote three self-contained build specs at the repo root: claude-code-prompt-92-mobile-calendar-bell-payments.md, claude-code-prompt-93-estimate-document-package.md, claude-code-prompt-94-scope-templates-sold-on-site.md. No application code, schema, or settings were touched by this session. Twelve multiple-choice questions were put to Dylan and every design decision below is his, recorded as locked in the prompts.
+
+Why: Dylan pasted nine requests in one message after a day in the field. Bundling nine into one session is how the last few oversized prompts stranded half their scope, so they were split by theme: 92 = mobile job-schedule calendar + mobile bell panel + payment notifications; 93 = estimate document package (address/ROC header, color chart, warranty); 94 = scope templates replacing Generate Scope + the sold-on-site metric.
+
+Investigation findings that changed the shape of the work (all verified against bd0f820 and live Supabase zdfpzmmrgotynrwkeakd on 2026-08-16):
+
+1. **The showroom address and ROC are already on the estimate.** pec_brand_identity holds `1030 Sandretto Dr Suite K, Prescott, AZ 86305` and `ROC353243` for prescott-epoxy, and pec-public-estimate.cjs:748-752 prints them in the footer as "address · phone · License ROC353243". Dylan's request became "duplicate it into the header", not "add it". Related gap found: the finishing-touch row has a NULL license_number and NULL website, and renderSettingsBrand (index.html:25313) is hardcoded to `brand='prescott-epoxy'` at :25317, :25401, :25408, so there is no UI to fix FTP. Prompt 93 adds a brand switcher.
+
+2. **Present mode already exists and Dylan did not know.** Prompt 64 shipped openPresentMode (index.html:32018), pec_presentation_sections, the pec-presentation storage bucket with per-section image uploads, and a Settings > Presentation editor (index.html:20549). His "presentation style estimate view for customer, changed in settings under its own button, upload different documents" is largely that feature. When asked, he chose to be walked through what exists before anything is built, so this item was REMOVED from prompt 93 rather than becoming a second presentation surface. It needs a decision after the walkthrough.
+
+3. **Scope templates already exist as columns, with no editor.** pec_prod_system_types.scope_template and .scope_template_mvb are populated for 6 of 8 active systems (missing: Polydeck System; Custom System correctly has none), but the system-type modal save payload (index.html:44104-44121) omits both columns, so they are editable only through Supabase Studio. Only Standard Flake has an MVB variant. Prompt 94 adds the editor.
+
+4. **The notification bell is NOT hidden on mobile.** No CSS anywhere targets #pecBell. The real defect is index.html:5282: #pecBellPanel is inline-styled `width:340px; right:0` and anchored to an element that sits mid-row in a wrapping topbar, so on a 390px phone the panel renders partly off-screen. The help panel already solves this at index.html:1454 with `width: calc(100vw - 24px)`. Dylan confirmed the symptom is "opens but cut off", not "invisible".
+
+5. **Nothing rings the bell for a payment today.** The only payment notifications are log_payment_edited (index.html:13145) and log_payment_deleted (index.html:13190), both corrections. pec-stripe-webhook.cjs has three distinct hook points (card paid :75-96, ACH settled :269-285, ACH failed :286-303) and staff-recorded payments land at index.html:13277. Staff sessions cannot INSERT into pec_notifications, so item 4 needs a SECURITY DEFINER RPC. Dylan chose all four events including ACH failures.
+
+6. **Nothing records HOW an estimate was accepted.** There is no accepted_via column; signature.via at pec-public-estimate.cjs:1747 is a hardcoded 'public_estimate_page' literal, because Present mode deliberately runs the byte-identical accept path (index.html:31978-31981). Dylan chose an appointment-time-window rule over the Present-mode signal. There is no estimate_id on pec_appointments, so the match goes estimates.lead_id -> pec_appointments.lead_id with appt_type='on_site_estimate'.
+
+7. **Color chart source.** Dylan chose to build charts from the products catalog rather than upload one per system. Coverage was checked first: active products with a non-empty image_url are Flake 21/25, Metallic Pigment 49/50, Quartz 41/44, but Basecoat 1/13, Stain 0/9, Topcoat 0/4. So the prompt specifies a settings-driven coverage floor instead of a hardcoded material_type allowlist, which excludes Stain and Basecoat today and includes them automatically if images are ever uploaded.
+
+8. **Polydeck System is active with ZERO recipe slots and no scope template.** Any line using it has no material cost, no color chart, and a wrong GP. Flagged in both prompt 93 and prompt 94 as a Dylan handoff; deliberately not fixed here.
+
+9. Prompt 94 carries an explicit pre-flight: run the sold-on-site derivation as a read-only count over historical accepted estimates and report true / false / no-matching-appointment BEFORE backfilling, citing the prompt 56 incident where a derived-beats-stored rule silently moved GP on 34 finalized jobs by $4,785.
+
+Files touched: claude-code-prompt-92-mobile-calendar-bell-payments.md (new), claude-code-prompt-93-estimate-document-package.md (new), claude-code-prompt-94-scope-templates-sold-on-site.md (new), PROJECT-LOG.md.
+
+Next steps: Dylan runs prompt 92, 93, and 94 in Claude Code as three separate sessions, in whatever priority order he wants. They are independent; 93 and 94 both touch estimate surfaces but not the same functions.
+
+Handoff to Cowork: None from this session. Note that the 2026-08-13 SalesAsk env-var handoff (SALESASK_API_KEY, SALESASK_WEBHOOK_SECRET in Netlify, webhook registration, then salesask_pull_lookback_days back to '3') is still OPEN and unrelated to this work.
+
+Handoff to Dylan:
+1. Decide on the presentation item after the Present mode walkthrough. If something is genuinely missing, it becomes prompt 95.
+2. FTP has no ROC number and no estimate terms text on file. Prompt 93 ships the brand switcher; the values are yours to enter.
+3. Polydeck System needs recipe slots and a scope template, or it should be deactivated.
+4. The 6 existing scope templates need their hand-written blanks converted to {{tokens}} before the fill-in form in prompt 94 does anything useful.
+5. Confirm whether estimate_line_generate_enabled should be flipped to 'false' in prod once templates are live.
+
+---
+
 ## [2026-08-13 MST] Five fixes in one evening sweep: pricing cards off the estimate page, optional lines default unticked, the dead payment-schedule autoseed revived, the SalesAsk pipeline diagnosed (env vars still missing) AND its mapper fixed, and prompt 83 (CompanyCam photos on estimates) finally built.
 
 By: Claude Code
