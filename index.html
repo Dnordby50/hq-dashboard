@@ -20249,7 +20249,9 @@ async function renderSettingsEstimates() {
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
       'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
       'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
-      'companycam_name_match_min_score', 'companycam_max_customer_photos']),
+      'companycam_name_match_min_score', 'companycam_max_customer_photos',
+      'estimate_warranty_enabled', 'estimate_color_chart_enabled',
+      'estimate_color_chart_min_products', 'estimate_color_chart_max_swatches', 'estimate_color_chart_print_mode']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -20301,6 +20303,13 @@ async function renderSettingsEstimates() {
   const ccCustOn = (map.companycam_customer_photos_enabled || 'true') !== 'false';
   const ccMinScore = Number(map.companycam_name_match_min_score) > 0 ? Number(map.companycam_name_match_min_score) : 80;
   const ccMaxPhotos = Number(map.companycam_max_customer_photos) > 0 ? Number(map.companycam_max_customer_photos) : 24;
+  // Warranty + color charts (prompt 93). Defaults MUST match the migration
+  // seeds and pec-public-estimate.cjs fallbacks: true / true / 6 / 60 / omit.
+  const warrOn = (map.estimate_warranty_enabled || 'true') !== 'false';
+  const chartOn = (map.estimate_color_chart_enabled || 'true') !== 'false';
+  const chartMin = Number(map.estimate_color_chart_min_products) > 0 ? Number(map.estimate_color_chart_min_products) : 6;
+  const chartMax = Number(map.estimate_color_chart_max_swatches) > 0 ? Number(map.estimate_color_chart_max_swatches) : 60;
+  const chartPrint = map.estimate_color_chart_print_mode === 'cap' ? 'cap' : 'omit';
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -20444,6 +20453,28 @@ async function renderSettingsEstimates() {
           <button type="button" class="pec-btn ghost sm" id="ccSetSave">Save</button>
         </div>
       </details>`)}
+    ${toggleCard('Warranty on customer estimates', warrOn,
+      'Shows your warranty document on every customer estimate, pinned right after the terms. Write it under Settings, Presentation, as a section of kind Our warranty. The wording freezes when an estimate is sent, so a customer always sees the warranty their document went out with.', 'setEstWarranty')}
+    ${toggleCard('Color charts on customer estimates', chartOn,
+      'Each line\'s system shows its color chart, built live from the products catalog (a flake line shows the flake chart, a metallic line the metallic colors). The customer\'s chosen color is marked. Charts only appear for slots with enough product images in the catalog.', 'setEstChart',
+      `<details style="margin-top:10px">
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <label style="font-size:.72rem;color:var(--muted)">Minimum products with images before a chart shows
+            <input type="number" id="chartSetMin" min="1" max="50" value="${chartMin}" style="width:70px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <label style="font-size:.72rem;color:var(--muted)">Max swatches per chart
+            <input type="number" id="chartSetMax" min="6" max="200" value="${chartMax}" style="width:70px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <label style="font-size:.72rem;color:var(--muted)">On Print / PDF
+            <select id="chartSetPrint" style="margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+              <option value="omit" ${chartPrint === 'omit' ? 'selected' : ''}>Leave the charts off the printout</option>
+              <option value="cap" ${chartPrint === 'cap' ? 'selected' : ''}>Print them (capped)</option>
+            </select>
+          </label>
+          <button type="button" class="pec-btn ghost sm" id="chartSetSave">Save</button>
+        </div>
+      </details>`)}
     <div class="pec-card">
       <details>
         <summary style="cursor:pointer;font-weight:700">Advanced</summary>
@@ -20474,6 +20505,21 @@ async function renderSettingsEstimates() {
     try { await saveSetting('estimate_accept_slack_enabled', cb.checked ? 'true' : 'false'); }
     catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); cb.checked = !cb.checked; }
     cb.disabled = false;
+  });
+  wire('setEstWarranty', 'estimate_warranty_enabled', warrOn);
+  wire('setEstChart', 'estimate_color_chart_enabled', chartOn);
+  $('chartSetSave').addEventListener('click', async () => {
+    const btn = $('chartSetSave'); btn.disabled = true;
+    const mn = Math.floor(Number($('chartSetMin').value));
+    const mx = Math.floor(Number($('chartSetMax').value));
+    if (!Number.isFinite(mn) || mn < 1 || mn > 50) { showToast('The minimum must be between 1 and 50 products.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!Number.isFinite(mx) || mx < 6 || mx > 200) { showToast('Max swatches must be between 6 and 200.', { ttl: 4000 }); btn.disabled = false; return; }
+    try {
+      await saveSetting('estimate_color_chart_min_products', mn);
+      await saveSetting('estimate_color_chart_max_swatches', mx);
+      await saveSetting('estimate_color_chart_print_mode', $('chartSetPrint').value === 'cap' ? 'cap' : 'omit');
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
   });
   wire('setCcEstPhotos', 'companycam_estimate_photos_enabled', ccEstOn);
   $('setCcCustPhotos').addEventListener('change', async (e) => {
@@ -25431,9 +25477,13 @@ function paymentInstructionsToText(raw) {
 
 async function renderSettingsBrand() {
   const root = $('pecViewRoot');
+  // Prompt 93 Task A2: the page was hardcoded to prescott-epoxy, which is why
+  // FTP's ROC was never enterable. The selected brand persists for the session
+  // (state), defaulting to PEC; every load and save below targets it.
+  const brandKey = state.brandSettingsKey === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
   let bi = null, notReady = false;
   try {
-    const { data, error } = await withFreshSession(() => supabase.from('pec_brand_identity').select('*').eq('brand', 'prescott-epoxy').maybeSingle(), { label: 'brand-identity' });
+    const { data, error } = await withFreshSession(() => supabase.from('pec_brand_identity').select('*').eq('brand', brandKey).maybeSingle(), { label: 'brand-identity' });
     if (error) notReady = true; else bi = data;
   } catch (e) { notReady = true; }
   if (notReady) {
@@ -25441,22 +25491,30 @@ async function renderSettingsBrand() {
     wireSettingsTabs(root);
     return;
   }
-  const b = bi || { ...EMAIL_BRAND_DEFAULTS, brand: 'prescott-epoxy' };
-  state.brandIdentity = b;
+  const b = bi || { ...EMAIL_BRAND_DEFAULTS, brand: brandKey };
+  // The cached identity feeds PEC email compose/preview helpers; never let an
+  // FTP edit session overwrite it.
+  if (brandKey === 'prescott-epoxy') state.brandIdentity = b;
   // Per-status customer portal descriptions (editable here). Best-effort load:
   // before the migration runs the table is absent, so default to empty text.
   const STATUS_META = [['signed', 'Signed'], ['scheduled', 'Scheduled'], ['in_progress', 'In progress'], ['completed', 'Completed']];
   let statusDescs = {};
   try {
-    const { data: sd } = await withFreshSession(() => supabase.from('pec_status_descriptions').select('status,body_text').eq('brand', 'prescott-epoxy'), { label: 'status-desc' });
+    const { data: sd } = await withFreshSession(() => supabase.from('pec_status_descriptions').select('status,body_text').eq('brand', brandKey), { label: 'status-desc' });
     statusDescs = Object.fromEntries((sd || []).map(r => [r.status, r.body_text]));
   } catch (_) { /* table not migrated yet */ }
   const field = (label, id, val, ph) => `<div class="pec-field"><label>${esc(label)}</label><input id="${id}" value="${esc(val || '')}" placeholder="${esc(ph || '')}"></div>`;
   const colorField = (label, id, val) => `<div class="pec-field"><label>${esc(label)}</label><div style="display:flex;gap:8px;align-items:center"><input type="color" id="${id}c" value="${esc(val || '#000000')}" style="width:46px;height:34px;padding:2px"><input id="${id}" value="${esc(val || '')}" placeholder="#1e3a5f" style="flex:1"></div></div>`;
   root.innerHTML = settingsTabBar('brand') + `
     <div class="pec-card">
-      <h3>Brand identity</h3>
-      <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">Drives the email header / signature / footer and the public invoice page. One brand (Prescott Epoxy).</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">Brand identity</h3>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="pec-btn sm ${brandKey === 'prescott-epoxy' ? 'primary' : 'ghost'}" data-brand-key="prescott-epoxy">PEC</button>
+          <button type="button" class="pec-btn sm ${brandKey === 'finishing-touch' ? 'primary' : 'ghost'}" data-brand-key="finishing-touch">FTP</button>
+        </div>
+      </div>
+      <div style="font-size:.75rem;color:var(--muted);margin:6px 0 10px">Drives the email header / signature / footer, the public invoice page, and the estimate letterhead + footer. Editing <strong>${brandKey === 'finishing-touch' ? 'Finishing Touch Painting' : 'Prescott Epoxy Company'}</strong>; switch brands above.</div>
       ${field('Logo URL (paste a hosted image URL; blank = text header)', 'biLogo', b.logo_url, 'https://…/logo.png')}
       <div class="pec-row-2">${colorField('Primary color', 'biPrimary', b.primary_color)}${colorField('Accent color', 'biAccent', b.accent_color)}</div>
       ${field('Business name', 'biName', b.business_name, 'Prescott Epoxy Company')}
@@ -25486,6 +25544,10 @@ async function renderSettingsBrand() {
       <span id="sdMsg" style="margin-left:10px;font-size:.8rem"></span>
     </div>`;
   wireSettingsTabs(root);
+  root.querySelectorAll('[data-brand-key]').forEach(btn => btn.addEventListener('click', () => {
+    state.brandSettingsKey = btn.dataset.brandKey;
+    renderSettings();
+  }));
   [['biPrimary'], ['biAccent']].forEach(([id]) => {
     const hex = $(id), sw = $(id + 'c');
     if (hex && sw) {
@@ -25517,18 +25579,22 @@ async function renderSettingsBrand() {
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      let upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(patch).eq('brand', 'prescott-epoxy'), { label: 'brand-identity' });
+      // Upsert keyed on the PK (brand): updates the selected brand's row, and
+      // creates it if it were ever missing, so a save on either brand always
+      // lands. Idempotent, safe for the write retry.
+      const doSave = (p) => withFreshWriteRetry(() => supabase.from('pec_brand_identity').upsert({ ...p, brand: brandKey }, { onConflict: 'brand' }), { label: 'brand-identity' });
+      let upd = await doSave(patch);
       // Pre-migration fallback: if the four new invoice-text columns do not
       // exist yet, save the rest so the other brand fields still persist, and
       // tell the user the invoice text needs the migration applied.
       let invoiceTextDeferred = false;
       if (upd.error && /invoice_intro_text|offline_payment_details_text|invoice_footer_text|invoice_terms_text|estimate_terms_text|column .* does not exist/i.test(upd.error.message || '')) {
         const { invoice_intro_text, offline_payment_details_text, invoice_footer_text, invoice_terms_text, estimate_terms_text, ...base } = patch;
-        upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(base).eq('brand', 'prescott-epoxy'), { label: 'brand-identity-base' });
+        upd = await doSave(base);
         invoiceTextDeferred = !upd.error;
       }
       if (upd.error) throw upd.error;
-      state.brandIdentity = { ...b, ...patch };
+      if (brandKey === 'prescott-epoxy') state.brandIdentity = { ...b, ...patch };
       showToast(invoiceTextDeferred
         ? 'Saved. The invoice text fields need the 2026-06-23 migration applied to PROD before they save.'
         : 'Brand identity saved', { ttl: invoiceTextDeferred ? 5000 : 2500 });
@@ -25542,7 +25608,7 @@ async function renderSettingsBrand() {
   $('sdSave')?.addEventListener('click', async () => {
     const btn = $('sdSave'), msg = $('sdMsg'); msg.textContent = '';
     // Full-value upsert keyed by (brand, status) -> idempotent, safe to retry.
-    const rows = STATUS_META.map(([s]) => ({ brand: 'prescott-epoxy', status: s, body_text: ($('sd_' + s).value || '').trim(), updated_at: new Date().toISOString() }));
+    const rows = STATUS_META.map(([s]) => ({ brand: brandKey, status: s, body_text: ($('sd_' + s).value || '').trim(), updated_at: new Date().toISOString() }));
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
       const upd = await withFreshWriteRetry(() => supabase.from('pec_status_descriptions').upsert(rows, { onConflict: 'brand,status' }), { label: 'status-desc' });
@@ -32124,7 +32190,10 @@ function presentMdToHtml(text) {
 }
 
 // Shared with the server's SECTION_KIND_LABELS and the Settings editor.
-const PRESENT_KIND_LABELS = { why_us: 'Why choose us', process: 'How the work happens', gallery: 'Our work', financing: 'Ways to pay' };
+// warranty (prompt 93): a DOCUMENT kind. The customer page pins it after the
+// terms card instead of floating it among the literature; Present mode still
+// shows it as a slide like any other section so the rep can walk it.
+const PRESENT_KIND_LABELS = { why_us: 'Why choose us', process: 'How the work happens', gallery: 'Our work', financing: 'Ways to pay', warranty: 'Our warranty' };
 
 // estimates.brand carries the short forms (PEC/FTP); pec_presentation_sections
 // keys on pec_brand_identity's long forms. Same mapping the server uses.
@@ -32363,7 +32432,35 @@ async function markEstimateSent(est) {
     console.warn('[estimates] companycam snapshot skipped:', err && err.message);
     showToast('Estimate sent. CompanyCam photos could not be refreshed for the proposal; it shows the previous set (or none).', { ttl: 5000 });
   }
+  // Prompt 93: freeze the warranty at the same send moment (contractual: a
+  // customer who signed today must still see the wording they signed under,
+  // whatever Dylan edits next month). Same failure policy as the photos: the
+  // send stands, a miss logs and the page falls back to the live sections.
+  try { await pecWarrantySnapshotAtSend(est); }
+  catch (err) { console.warn('[estimates] warranty snapshot skipped:', err && err.message); }
   return nowIso;
+}
+
+// Write estimates.warranty_snapshot: the brand's ACTIVE kind='warranty'
+// presentation sections, verbatim, at send. Re-sending re-snapshots (the
+// prompt 83 contract). No active warranty writes null so a stale snapshot
+// from a since-deactivated section cannot ship on a re-send. Deliberately a
+// PATCH with NO status column: trg_estimate_status_guard fails whole updates
+// that carry a stale status backward, so the snapshot must never ride one.
+async function pecWarrantySnapshotAtSend(est) {
+  const setRes = await supabase.from('settings').select('value').eq('key', 'estimate_warranty_enabled').maybeSingle();
+  if (String((setRes.data && setRes.data.value) ?? 'true') === 'false') return; // disabled: leave whatever exists alone
+  const { data, error } = await supabase.from('pec_presentation_sections')
+    .select('id,title,body,images,sort_order')
+    .eq('brand', presentBrandKey(est.brand)).eq('kind', 'warranty').eq('active', true)
+    .order('sort_order', { ascending: true });
+  if (error) throw error;
+  const snapshot = (data && data.length)
+    ? { sections: data.map(s => ({ id: s.id, title: s.title, body: s.body, images: s.images })), frozen_at: new Date().toISOString() }
+    : null;
+  const upd = await supabase.from('estimates').update({ warranty_snapshot: snapshot }).eq('id', est.id);
+  if (upd.error) throw upd.error;
+  est.warranty_snapshot = snapshot;
 }
 
 // Write estimates.companycam_photos: live project photos minus the rep's

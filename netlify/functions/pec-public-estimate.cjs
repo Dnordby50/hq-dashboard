@@ -98,6 +98,13 @@ const BRAND_DEFAULTS = {
 };
 const LOGO_URL = '/assets/pec-logo.png';
 
+// ONE license label for header letterhead AND footer (prompt 93 Task A): if
+// Dylan ever wants "ROC #353243" instead of "License ROC353243", this is the
+// single string to change and the two can never disagree. Empty when the
+// brand has no license on file (FTP today), so callers' filter(Boolean)
+// collapses it with no stray separator.
+const licenseLabel = (b) => (b && b.license_number ? 'License ' + b.license_number : '');
+
 // Deterministic v5-style UUID (sha1, version + variant bits set) namespaced to
 // this accept path. THE idempotency anchor: retries of the same estimate's
 // accept always compute the same job/customer/event ids, so an existence check
@@ -594,6 +601,14 @@ function estimatePage(est, brand, opts) {
   h3.sec { margin:0 0 16px; font-size:19px; font-weight:800; letter-spacing:-.01em; color:${primary}; }
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:18px 30px; }
   .topbar img { max-height:46px; max-width:240px; display:block; }
+  .letterhead { font-size:12px; color:#6b7280; margin-top:7px; line-height:1.55; }
+  .colorgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:10px; margin-top:10px; }
+  .swatch { position:relative; }
+  .swatch img { width:100%; height:84px; object-fit:cover; border-radius:8px; background:#eef0f3; display:block; }
+  .swatch.sel img { outline:3px solid ${accent}; outline-offset:1px; }
+  .swatch .selmark { position:absolute; top:6px; left:6px; right:6px; text-align:center; color:#fff; font-size:9.5px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; border-radius:6px; padding:3px 4px; }
+  .swatch .swname { font-size:11.5px; color:#374151; margin-top:5px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; }
+  .swatch.sel .swname { font-weight:700; }
   .pill { display:inline-block; background:${esc(pillMeta[0])}; color:#fff; font-size:11px; font-weight:800; letter-spacing:1.2px; text-transform:uppercase; border-radius:999px; padding:6px 14px; white-space:nowrap; }
   .hero { background:${primary}; color:#fff; padding:30px; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:20px; }
   .hero .big { font-size:34px; font-weight:800; letter-spacing:-.02em; line-height:1.05; }
@@ -684,7 +699,16 @@ function estimatePage(est, brand, opts) {
     ${preview ? '' : state.banner}
     <div class="card">
       <div class="topbar">
-        <img src="${esc(logoUrl)}" alt="${esc(biz)}">
+        <div>
+          <img src="${esc(logoUrl)}" alt="${esc(biz)}">
+          ${/* Letterhead (prompt 93 Task A): address, phone, license, website
+               under the logo so they are visible without scrolling. Same b.*
+               brand fields and the same licenseLabel as the footer, which
+               stays (a printed page needs it at the bottom too). Null fields
+               collapse via filter(Boolean): FTP has no license and no
+               website, so it prints neither and leaves no stray separator. */''}
+          ${(() => { const bits = [b.address_line, b.phone, licenseLabel(b), b.website].filter(Boolean).map(esc); return bits.length ? `<div class="letterhead">${bits.join(' &middot; ')}</div>` : ''; })()}
+        </div>
         <span class="pill">${esc(pillMeta[1])}</span>
       </div>
       <div class="hero">
@@ -737,7 +761,8 @@ function estimatePage(est, brand, opts) {
       </div>
     </div>
 
-    ${financingBlock}${termsBlock}${signedBlock}
+    ${colorChartsBlockHtml(opts && opts.colorCharts, b.accent_color)}
+    ${financingBlock}${termsBlock}${warrantyBlockHtml(opts && opts.warranty)}${signedBlock}
     ${actions}
     ${ccPhotosBlockHtml(opts && opts.ccPhotos)}
     ${literatureBlockHtml(opts && opts.literature, b.accent_color)}
@@ -748,7 +773,7 @@ function estimatePage(est, brand, opts) {
     <div class="footerband">
       <div class="rule"></div>
       <div class="bizname">${esc(biz)}</div>
-      <div class="meta">${[b.address_line, b.phone, b.license_number ? 'License ' + b.license_number : ''].filter(Boolean).map(esc).join(' &middot; ')}</div>
+      <div class="meta">${[b.address_line, b.phone, licenseLabel(b)].filter(Boolean).map(esc).join(' &middot; ')}</div>
     </div>
   </div>
 ${/* One IIFE, two sections (prompt 78 A1). The TICKING section (checkbox
@@ -1012,7 +1037,10 @@ async function loadAreas(estimateId) {
     // id / is_custom / custom_label added for the accept path (prompt 69).
     // estimate_areas.notes is INTERNAL and is deliberately NOT selected here:
     // nothing this function loads can leak it onto the customer page.
-    const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed,is_custom,custom_label&order=sort_order.asc`);
+    // answers (prompt 93): the estimator's raw slotId -> product id picks,
+    // which the color charts use to mark "Your selection" per slot. Color
+    // choices only, nothing sensitive; notes stays excluded.
+    const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed,is_custom,custom_label,answers&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -1055,6 +1083,7 @@ async function loadLiterature(estBrand) {
 const SECTION_KIND_LABELS = {
   why_us: 'Why choose us', process: 'How the work happens',
   gallery: 'Our work', financing: 'Ways to pay',
+  warranty: 'Our warranty',
 };
 
 // ---------------------------------------------------------------------------
@@ -1108,7 +1137,9 @@ function ccPhotosBlockHtml(cc) {
 }
 
 function literatureBlockHtml(literature, accent) {
-  const sections = literature && Array.isArray(literature.sections) ? literature.sections : [];
+  // Warranty sections never float here (prompt 93): they render pinned after
+  // the terms card via warrantyBlockHtml, whatever their sort_order says.
+  const sections = (literature && Array.isArray(literature.sections) ? literature.sections : []).filter(s => s.kind !== 'warranty');
   if (!sections.length) return '';
   const reviews = Array.isArray(literature.reviews) ? literature.reviews : [];
   const stars = (n) => '&#9733;'.repeat(Math.max(1, Math.min(5, Number(n) || 5)));
@@ -1134,6 +1165,170 @@ function literatureBlockHtml(literature, accent) {
       ${s.body ? `<div style="font-size:14px;color:#374151;line-height:1.7">${mdToSafeHtml(s.body)}</div>` : ''}
       ${imagesHtml(s.images)}
       ${s.kind === 'gallery' ? reviewsHtml : ''}
+    </div>`).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Color charts (prompt 93 Task B). Generated from the products catalog through
+// the estimate lines' recipe slots, NEVER from an uploaded image, so the chart
+// can never go stale relative to what is actually sold. Resolution mirrors the
+// dashboard job-area editor's productsForSlot exactly: same material_type,
+// active, Special Order placeholders excluded, editor_hidden slots skipped
+// (the Metallic/Quartz body coats are not customer color choices), choice/text
+// slots skipped. A slot only charts when at least
+// estimate_color_chart_min_products of its eligible products have an image,
+// which excludes Stain (0 images) and Basecoat (1) today and includes them
+// automatically if images are ever uploaded; deliberately NO material_type
+// allowlist. Service-role fetch here; the customer page makes zero client
+// Supabase calls (the loadCcCustomerPhotos posture).
+// ---------------------------------------------------------------------------
+const CHART_SWATCH_TYPES = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+const chartIsSpecialOrder = (p) => p.name === 'Special Order Flake' || p.name === 'Special Order Quartz';
+async function loadColorCharts(est, areas, { print } = {}) {
+  try {
+    const set = await sb('GET', '/settings?key=in.(estimate_color_chart_enabled,estimate_color_chart_min_products,estimate_color_chart_max_swatches,estimate_color_chart_print_mode)&select=key,value');
+    const cfg = Object.fromEntries((set || []).map((r) => [r.key, r.value]));
+    if (String(cfg.estimate_color_chart_enabled || 'true') === 'false') return null;
+    // Print: 'omit' (default) drops the charts entirely. A printed proposal is
+    // a document snapshot whose chosen color is already named on the line;
+    // fifty image tiles bloat and paginate the PDF badly. 'cap' keeps them,
+    // still bounded by max_swatches.
+    if (print && (cfg.estimate_color_chart_print_mode || 'omit') !== 'cap') return null;
+    const minProducts = Number(cfg.estimate_color_chart_min_products) > 0 ? Number(cfg.estimate_color_chart_min_products) : 6;
+    const maxSwatches = Number(cfg.estimate_color_chart_max_swatches) > 0 ? Number(cfg.estimate_color_chart_max_swatches) : 60;
+
+    const rows = Array.isArray(areas) ? areas.filter(a => a && a.system_type_id) : [];
+    const sysIds = [...new Set(rows.map(a => a.system_type_id))];
+    if (!sysIds.length) return null;
+    const idIn = encodeURIComponent(`in.(${sysIds.join(',')})`);
+    const [slots, systems] = await Promise.all([
+      sb('GET', `/pec_prod_recipe_slots?system_type_id=${idIn}&select=id,system_type_id,order_index,material_type,label,slot_kind,editor_hidden&order=order_index.asc`),
+      sb('GET', `/pec_prod_system_types?id=${idIn}&select=id,name,sort_order`),
+    ]);
+    const sysById = Object.fromEntries((Array.isArray(systems) ? systems : []).map(s => [s.id, s]));
+    const colorSlots = (Array.isArray(slots) ? slots : []).filter(s =>
+      !s.editor_hidden && s.slot_kind !== 'choice' && s.slot_kind !== 'text' && s.material_type);
+    if (!colorSlots.length) return null;
+
+    const mats = [...new Set(colorSlots.map(s => s.material_type))];
+    const matIn = encodeURIComponent(`in.(${mats.map(m => `"${String(m).replace(/"/g, '')}"`).join(',')})`);
+    const prods = await sb('GET', `/pec_prod_products?material_type=${matIn}&active=is.true&select=id,name,color,material_type,image_url&order=name.asc`);
+    const eligibleByMat = {};
+    for (const p of (Array.isArray(prods) ? prods : [])) {
+      if (chartIsSpecialOrder(p)) continue;
+      if (!p.image_url || !String(p.image_url).trim()) continue; // no image = omitted, never a broken tile
+      (eligibleByMat[p.material_type] ||= []).push(p);
+    }
+
+    // One chart per DISTINCT slot across the estimate's lines: two Standard
+    // Flake lines share slot ids, so the flake chart renders once; a Flake
+    // line plus a Quartz line renders both. Selections union across lines.
+    const chartsBySlot = new Map();
+    for (const a of rows) {
+      for (const slot of colorSlots) {
+        if (slot.system_type_id !== a.system_type_id) continue;
+        const withImage = eligibleByMat[slot.material_type] || [];
+        if (withImage.length < minProducts) continue; // coverage floor
+        let chart = chartsBySlot.get(slot.id);
+        if (!chart) {
+          const sys = sysById[slot.system_type_id] || {};
+          chart = { slot, system: sys.name || '', sysSort: Number(sys.sort_order) || 0, products: withImage, selected: new Set() };
+          chartsBySlot.set(slot.id, chart);
+        }
+        // The line's pick for THIS slot: the raw estimator answer first, then
+        // the derived flake/basecoat/topcoat columns by material_type (the
+        // same first-slot-wins mapping the estimator's deriveProducts uses).
+        const ans = a.answers && typeof a.answers === 'object' ? a.answers[slot.id] : null;
+        if (ans && UUID_RE.test(String(ans))) chart.selected.add(String(ans));
+        else if (CHART_SWATCH_TYPES.has(slot.material_type) && a.flake_product_id) chart.selected.add(a.flake_product_id);
+        else if (slot.material_type === 'Basecoat' && a.basecoat_product_id) chart.selected.add(a.basecoat_product_id);
+        else if (slot.material_type === 'Topcoat' && a.topcoat_product_id) chart.selected.add(a.topcoat_product_id);
+      }
+    }
+    let charts = [...chartsBySlot.values()];
+    if (!charts.length) return null;
+    // Per-chart cap: catalog order kept, but a selected product is never
+    // dropped by the cap (the highlight is the point of the feature).
+    for (const c of charts) {
+      if (c.products.length > maxSwatches) {
+        const kept = [];
+        let room = maxSwatches - c.products.filter(p => c.selected.has(p.id)).length;
+        for (const p of c.products) {
+          if (c.selected.has(p.id)) kept.push(p);
+          else if (room > 0) { kept.push(p); room--; }
+        }
+        c.truncated = c.products.length - kept.length;
+        c.products = kept;
+      }
+    }
+    charts.sort((a, b) => a.sysSort - b.sysSort || String(a.system).localeCompare(String(b.system)) || (a.slot.order_index || 0) - (b.slot.order_index || 0));
+    return { charts };
+  } catch (e) { console.warn('public-estimate: color charts skipped:', e.message); return null; }
+}
+
+function colorChartsBlockHtml(cc, accent) {
+  const charts = cc && Array.isArray(cc.charts) ? cc.charts : [];
+  if (!charts.length) return '';
+  return charts.map((c) => {
+    const hasSel = c.products.some(p => c.selected.has(p.id));
+    return `
+    <div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">${esc(c.system || 'Color options')}</div>
+      <h3 class="sec">${esc(c.slot.label || c.slot.material_type)} colors</h3>
+      ${hasSel ? '<div style="font-size:13px;color:#6b7280;margin-bottom:2px">Your selection is marked. The full range is shown so you can compare, or change your mind before work starts.</div>' : ''}
+      <div class="colorgrid">
+        ${c.products.map((p) => `
+          <div class="swatch${c.selected.has(p.id) ? ' sel' : ''}">
+            <img src="${esc(p.image_url)}" alt="${esc(p.color && p.color !== 'Per-job pick' ? p.color : p.name)}" loading="lazy">
+            ${c.selected.has(p.id) ? `<div class="selmark" style="background:${esc(accent)}">Your selection</div>` : ''}
+            <div class="swname">${esc(p.color && p.color !== 'Per-job pick' ? p.color : p.name)}</div>
+          </div>`).join('')}
+      </div>
+      ${c.truncated ? `<div style="font-size:12px;color:#9ca3af;margin-top:8px">Plus ${c.truncated} more colors. Ask us to see the full range.</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Warranty (prompt 93 Task C). pec_presentation_sections rows with
+// kind='warranty', pinned after the terms card rather than floating among the
+// marketing literature (it is a document, not literature). Live-until-sent,
+// frozen after (the prompt 83 photos contract): estimates.warranty_snapshot
+// is written by markEstimateSent, and a snapshot always wins here because it
+// is what the customer's document said when it went out. An ACCEPTED estimate
+// with no snapshot (signed before this feature) renders nothing rather than
+// wording the customer never signed under. Gate: estimate_warranty_enabled.
+// ---------------------------------------------------------------------------
+async function loadWarranty(est) {
+  try {
+    const rows = await sb('GET', '/settings?key=eq.estimate_warranty_enabled&select=value&limit=1');
+    const enabled = String(((Array.isArray(rows) && rows[0]) || {}).value ?? 'true') !== 'false';
+    if (!enabled) return null;
+    const snap = est.warranty_snapshot;
+    if (snap && Array.isArray(snap.sections) && snap.sections.length) return { sections: snap.sections, source: 'snapshot' };
+    if (est.status === 'accepted') return null;
+    const brandKey = presentationBrandKey(est.brand);
+    const sections = await sb('GET', `/pec_presentation_sections?brand=eq.${encodeURIComponent(brandKey)}&kind=eq.warranty&active=is.true&select=id,title,body,images,sort_order&order=sort_order.asc`);
+    return Array.isArray(sections) && sections.length ? { sections, source: 'live' } : null;
+  } catch (_) { return null; }
+}
+
+function warrantyBlockHtml(w) {
+  const sections = w && Array.isArray(w.sections) ? w.sections : [];
+  if (!sections.length) return '';
+  const imagesHtml = (imgs) => {
+    const list = Array.isArray(imgs) ? imgs.filter(Boolean) : [];
+    if (!list.length) return '';
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:16px">
+      ${list.map((p) => `<img src="${esc(presentationImageUrl(p))}" alt="" loading="lazy" style="width:100%;height:160px;object-fit:cover;border-radius:10px;background:#eef0f3">`).join('')}
+    </div>`;
+  };
+  return sections.map((s) => `
+    <div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">Our warranty</div>
+      <h3 class="sec">${esc(s.title || 'Warranty')}</h3>
+      ${s.body ? `<div style="font-size:14px;color:#374151;line-height:1.7">${mdToSafeHtml(s.body)}</div>` : ''}
+      ${imagesHtml(s.images)}
     </div>`).join('');
 }
 
@@ -2047,15 +2242,19 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimateById(qs.preview);
       if (!est) return notFoundPage();
-      const [brand, areas, financing, literature, installments, ccPhotos] = await Promise.all([
+      const isPrint = String(qs.print || '') === '1';
+      // areas first: the color charts derive from the lines' systems + picks.
+      const areas = await loadAreas(est.id);
+      const [brand, financing, literature, installments, ccPhotos, colorCharts, warranty] = await Promise.all([
         loadBrand(est.brand),
-        loadAreas(est.id),
         loadFinancingSettings(sb),
         loadLiterature(est.brand),
         loadInstallments(est.id),
         loadCcCustomerPhotos(est, { preview: true }),
+        loadColorCharts(est, areas, { print: isPrint }),
+        loadWarranty(est),
       ]);
-      return estimatePage(est, brand, { preview: true, print: String(qs.print || '') === '1', financing, literature, areas, installments, ccPhotos });
+      return estimatePage(est, brand, { preview: true, print: isPrint, financing, literature, areas, installments, ccPhotos, colorCharts, warranty });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -2068,14 +2267,18 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
-    const [brand, areas, financing, literature, installments, acceptedPay, ccPhotos] = await Promise.all([
+    const isPrint = String(qs.print || '') === '1';
+    // areas first: the color charts derive from the lines' systems + picks.
+    const areas = await loadAreas(est.id);
+    const [brand, financing, literature, installments, acceptedPay, ccPhotos, colorCharts, warranty] = await Promise.all([
       loadBrand(est.brand),
-      loadAreas(est.id),
       loadFinancingSettings(sb),
       loadLiterature(est.brand),
       loadInstallments(est.id),
       loadAcceptedPay(est),
       loadCcCustomerPhotos(est),
+      loadColorCharts(est, areas, { print: isPrint }),
+      loadWarranty(est),
     ]);
     // Await (not fire-and-forget): the lambda may freeze the instant the
     // response returns, which would drop an un-awaited insert.
@@ -2088,7 +2291,7 @@ exports.handler = async (event) => {
     // log for the same reason: it is not a customer view and must not light
     // the bell. Same hand-add reasoning applies.
     if (String(qs.present || '') !== '1' && String(qs.print || '') !== '1') await logEstimateView(est, event);
-    return estimatePage(est, brand, { print: String(qs.print || '') === '1', financing, literature, areas, installments, acceptedPay, ccPhotos });
+    return estimatePage(est, brand, { print: isPrint, financing, literature, areas, installments, acceptedPay, ccPhotos, colorCharts, warranty });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();
