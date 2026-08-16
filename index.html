@@ -13316,6 +13316,14 @@ function openPaymentModal(row, { deposit }) {
           }
         }
         if (ins.error) throw ins.error;
+        // Prompt 92: office bell for a staff-recorded payment. Strictly AFTER
+        // the confirmed insert, fire-and-forget (never awaited; both the call
+        // and the promise swallow), so it can never block, retry, or fail the
+        // payment path. Staff sessions cannot INSERT into pec_notifications,
+        // so this goes through the SECURITY DEFINER log_payment_recorded RPC,
+        // which also owns the gating (master switch, staff-recorded toggle,
+        // minimum amount) server-side. A no-op until its migration lands.
+        try { supabase.rpc('log_payment_recorded', { p_job_id: payload.job_id, p_amount: amount, p_method: payload.method }).then(() => {}, () => {}); } catch (_) {}
         // Mark the deposit collected when the user checked the box OR when this
         // payment brings paid-to-date up to (>=) the deposit owed, so a deposit is
         // reflected no matter how it is recorded. Never auto-mark a waived or
@@ -21321,7 +21329,7 @@ function openApptRuleModal(rule, onDone) {
 async function renderSettingsInvoicing() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'estimate_schedule_autoseed', 'post_sign_payment_prompt_enabled', 'invoice_terms_residential_default', 'invoice_terms_commercial_default']),
+    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'estimate_schedule_autoseed', 'post_sign_payment_prompt_enabled', 'invoice_terms_residential_default', 'invoice_terms_commercial_default', 'payment_notifications_enabled', 'payment_notify_min_amount', 'payment_notify_staff_recorded', 'payment_notify_ach_failed_priority']),
     { label: 'settings-invoicing' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const depPct = map.default_deposit_pct != null ? map.default_deposit_pct : '50';
@@ -21332,6 +21340,10 @@ async function renderSettingsInvoicing() {
   const payPromptOn = map.post_sign_payment_prompt_enabled !== 'false';
   const termsRes = PEC_INVOICE_TERMS_LABELS[map.invoice_terms_residential_default] ? map.invoice_terms_residential_default : 'due_on_completion';
   const termsCom = PEC_INVOICE_TERMS_LABELS[map.invoice_terms_commercial_default] ? map.invoice_terms_commercial_default : 'net_30';
+  const payNotifOn = map.payment_notifications_enabled !== 'false';
+  const payNotifMin = map.payment_notify_min_amount != null ? map.payment_notify_min_amount : '0';
+  const payNotifStaffOn = map.payment_notify_staff_recorded !== 'false';
+  const payNotifAchPriority = map.payment_notify_ach_failed_priority === 'normal' ? 'normal' : 'high';
   // custom_date is a per-invoice choice, never a company default.
   const termsOpts = sel => Object.entries(PEC_INVOICE_TERMS_LABELS).filter(([k]) => k !== 'custom_date')
     .map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(v)}</option>`).join('');
@@ -21413,6 +21425,43 @@ async function renderSettingsInvoicing() {
         </div>
         <button type="button" class="pec-btn sm ${gateOn ? '' : 'primary'}" id="setInstGate">${gateOn ? 'Turn approvals OFF' : 'Turn approvals ON'}</button>
       </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Payment bell notifications: ${payNotifOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${payNotifOn
+            ? 'The bell rings for every payment: customer card payments, settled bank (ACH) payments, failed ACH payments, and payments staff record by hand. Failed ACH rings loud (high priority) because money that looked collected has vanished.'
+            : 'No payment rings the bell. Payments still record exactly as before; only the notifications are off.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${payNotifOn ? '' : 'primary'}" id="setPayNotifOn">${payNotifOn ? 'Turn payment bells OFF' : 'Turn payment bells ON'}</button>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line,var(--border))">
+        <label style="font-weight:600;text-transform:none">Only ring at or above $</label>
+        <input type="number" id="setPayNotifMin" min="0" step="1" value="${esc(payNotifMin)}" style="width:110px;text-align:right">
+        <button type="button" class="pec-btn primary sm" id="setPayNotifMinSave">Save</button>
+        <span style="color:var(--muted);font-size:.72rem">Payments under this amount record normally but do not ring (keeps a $1 test charge quiet). 0 rings for everything.</span>
+        <span id="setPayNotifErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px">
+          <label style="display:flex;align-items:center;gap:10px;font-weight:600;text-transform:none">Ring for staff-recorded payments
+            <select id="setPayNotifStaff">
+              <option value="true" ${payNotifStaffOn ? 'selected' : ''}>On</option>
+              <option value="false" ${payNotifStaffOn ? '' : 'selected'}>Off</option>
+            </select>
+            <span style="color:var(--muted);font-size:.72rem;font-weight:400">Turn off if a batch of hand-logged checks gets noisy. Online payments keep ringing.</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;font-weight:600;text-transform:none">Failed ACH priority
+            <select id="setPayNotifAchPri">
+              <option value="high" ${payNotifAchPriority === 'high' ? 'selected' : ''}>High (red mark)</option>
+              <option value="normal" ${payNotifAchPriority === 'normal' ? 'selected' : ''}>Normal</option>
+            </select>
+            <span style="color:var(--muted);font-size:.72rem;font-weight:400">How loudly a bounced bank payment rings.</span>
+          </label>
+        </div>
+      </details>
     </div>`;
   wireSettingsTabs(root);
 
@@ -21470,6 +21519,34 @@ async function renderSettingsInvoicing() {
     try { await saveSetting('installment_approval_required', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     renderSettings();
   });
+  // Payment bell notifications (prompt 92). All four knobs are read
+  // SERVER-side (the Stripe webhook + the log_payment_recorded RPC), so a
+  // save here changes behavior with no deploy.
+  $('setPayNotifOn').addEventListener('click', async () => {
+    const to = payNotifOn ? 'false' : 'true';
+    const btn = $('setPayNotifOn'); btn.disabled = true;
+    try { await saveSetting('payment_notifications_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setPayNotifMinSave').addEventListener('click', async () => {
+    const errEl = $('setPayNotifErr'); errEl.textContent = '';
+    const v = Number($('setPayNotifMin').value);
+    if (!Number.isFinite(v) || v < 0) { errEl.textContent = 'Enter 0 or a positive dollar amount.'; return; }
+    const btn = $('setPayNotifMinSave'); btn.disabled = true;
+    try { await saveSetting('payment_notify_min_amount', v); showToast('Minimum saved', { ttl: 2500 }); }
+    catch (err) { errEl.textContent = err.message || String(err); }
+    btn.disabled = false;
+  });
+  const wirePayNotifSelect = (id, key) => {
+    $(id).addEventListener('change', async () => {
+      const sel = $(id); sel.disabled = true;
+      try { await saveSetting(key, sel.value); showToast('Saved', { ttl: 2000 }); }
+      catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); }
+      sel.disabled = false;
+    });
+  };
+  wirePayNotifSelect('setPayNotifStaff', 'payment_notify_staff_recorded');
+  wirePayNotifSelect('setPayNotifAchPri', 'payment_notify_ach_failed_priority');
 }
 
 // Settings > BusyBusy (prompt 52): the admin-triggered, preview-then-commit

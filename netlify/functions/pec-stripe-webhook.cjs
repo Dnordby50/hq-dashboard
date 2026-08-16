@@ -126,6 +126,53 @@ async function recordPayment(s, jobId, kind, piId, amount) {
   return { recorded: true };
 }
 
+// Prompt 92: office bell (pec_notifications) for online payments. Settings-
+// gated SERVER-side: payment_notifications_enabled is the master switch (a
+// 'false' row is a silent no-op; the webhook's response to Stripe is never
+// affected either way) and payment_notify_min_amount suppresses rows under
+// that dollar floor (so a $1 test charge does not ring). Called ONLY after a
+// CONFIRMED insert (recordPayment returned recorded:true) or on the
+// pending-to-failed TRANSITION, never on a dedupe-skip path, so a Stripe
+// retry cannot double-ring. Best-effort side effect by construction: every
+// error is logged and swallowed, it never blocks, retries, or fails the
+// payment path, and the payment row is already committed before it runs.
+async function notifyPaymentBell({ jobId, amount, kind, reason }) {
+  try {
+    const set = await sb('GET', '/settings?key=in.(payment_notifications_enabled,payment_notify_min_amount,payment_notify_ach_failed_priority)&select=key,value');
+    const cfg = Object.fromEntries((set || []).map((r) => [r.key, r.value]));
+    if (String(cfg.payment_notifications_enabled || 'true') === 'false') return;
+    const min = Number(cfg.payment_notify_min_amount);
+    if (Number.isFinite(min) && Number(amount) < min) return;
+
+    let customer = 'A customer';
+    try {
+      const rows = await sb('GET', `/pec_job_ar?id=eq.${encodeURIComponent(jobId)}&select=customer_name&limit=1`);
+      const r = Array.isArray(rows) ? rows[0] : null;
+      if (r && r.customer_name) customer = r.customer_name;
+    } catch (_) { /* bell still rings, just generically */ }
+
+    let type, body, priority = 'normal';
+    if (kind === 'card') {
+      type = 'payment_received';
+      body = `${customer} paid ${usd(amount)} by card`;
+    } else if (kind === 'ach_settled') {
+      type = 'payment_received_ach';
+      body = `${customer} paid ${usd(amount)} by bank transfer (ACH settled)`;
+    } else { // ach_failed: the money that looked collected days ago vanished
+      type = 'payment_failed_ach';
+      body = `ACH payment of ${usd(amount)} from ${customer} failed: ${reason || 'the bank returned the debit'}. The invoice is unpaid again.`;
+      priority = cfg.payment_notify_ach_failed_priority || 'high';
+    }
+    // target_view 'invoicing' + target_id = job id lands the tap on the job's
+    // invoice screen (notifTarget's invoicing branch -> renderJobInvoice);
+    // job_id doubles as the legacy job-card fallback. Shared row on purpose
+    // (target_user_id NULL): payments are office-wide events.
+    await sb('POST', '/pec_notifications', { type, job_id: jobId, body, priority, target_view: 'invoicing', target_id: jobId });
+  } catch (e) {
+    console.error('stripe-webhook: payment bell failed (payment already recorded, response unaffected)', e.message);
+  }
+}
+
 // Best-effort: pull the bank's failure reason off the PaymentIntent so the
 // alert says WHY (insufficient funds, revoked authorization, ...). Any problem
 // falls back to a generic line; this can never block the failure handling.
@@ -237,6 +284,9 @@ exports.handler = async (event) => {
     if (!s.payment_status || s.payment_status === 'paid') {
       try {
         const out = await recordPayment(s, jobId, kind, piId, amount);
+        // Bell only when THIS delivery inserted the row (never the dedupe
+        // path, so a Stripe retry cannot double-ring).
+        if (out.recorded) await notifyPaymentBell({ jobId, amount, kind: 'card' });
         return reply(200, out);
       } catch (err) {
         // Genuine DB failure: 500 so Stripe RETRIES and the idempotent insert lands.
@@ -270,6 +320,10 @@ exports.handler = async (event) => {
   if (evt.type === 'checkout.session.async_payment_succeeded') {
     try {
       const out = await recordPayment(s, jobId, kind, piId, amount);
+      // Bell BEFORE the marker flip: if the PATCH below fails we 500 and the
+      // retried delivery dedupes (recorded:false), so ringing here is the one
+      // spot that fires exactly once. Insert-gated like the card path.
+      if (out.recorded) await notifyPaymentBell({ jobId, amount, kind: 'ach_settled' });
       // Flip the marker inside the try: if this PATCH fails we 500 and Stripe
       // retries the whole delivery; recordPayment dedupes on the reference key,
       // then the PATCH runs again. A missing marker row (pre-migration
@@ -304,8 +358,14 @@ exports.handler = async (event) => {
       }
     }
     // Alerts fire only on the TRANSITION to failed, so a Stripe retry of this
-    // delivery (or a 500 below on a later attempt) cannot double-ping.
-    if (!alreadyFailed) await sendFailureAlerts({ jobId, amount, reason });
+    // delivery (or a 500 below on a later attempt) cannot double-ping. The
+    // bell rides the same transition guard; high priority by default
+    // (payment_notify_ach_failed_priority) because money that looked
+    // collected days ago just vanished.
+    if (!alreadyFailed) {
+      await sendFailureAlerts({ jobId, amount, reason });
+      await notifyPaymentBell({ jobId, amount, kind: 'ach_failed', reason });
+    }
     return reply(200, { failed_marked: true });
   } catch (err) {
     console.error('stripe-webhook: failure marking failed', err.message);
