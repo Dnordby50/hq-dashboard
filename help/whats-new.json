@@ -1,5 +1,38 @@
 [
   {
+    "id": "scope-templates-replace-generate",
+    "date": "2026-08-16",
+    "title": "The Generate Scope button is gone. Picking a system writes the scope now.",
+    "summary": "When you pick a system on an estimate line, that system's scope template drops straight into the line description, ready to edit. No more Generate button and no more AI rewrite: what you see on the line is exactly what the customer reads. Your own typed text is never replaced without asking first.",
+    "howto": [
+      "In the estimator, add a line and pick a system. The template appears in the description immediately.",
+      "Edit the text freely. If you change the system later, it asks before replacing anything you wrote.",
+      "Templates are edited in Catalog, System types, Edit. Each system has a standard and an optional MVB version."
+    ]
+  },
+  {
+    "id": "scope-template-fill-in-fields",
+    "date": "2026-08-16",
+    "title": "Templates can ask for job details with fill-in fields",
+    "summary": "A scope template can carry named placeholders like {{install_date}} or {{stem_walls}}. When the template lands on a line, a short form appears under the description with one box per placeholder. Filling a box drops the answer straight into the text. An estimate cannot be sent while any placeholder is unfilled.",
+    "howto": [
+      "Write a placeholder in a template as two curly braces around a lowercase name, like {{install_date}}. A name ending in _date gets a date picker.",
+      "On the line editor, fill each box; the answer replaces the placeholder in the text.",
+      "The send button stays blocked until every placeholder, BLANK, and ___ is filled in."
+    ]
+  },
+  {
+    "id": "sold-on-site-metric",
+    "date": "2026-08-16",
+    "title": "Metrics now tracks how often you close in the home",
+    "summary": "An accepted estimate counts as sold on site when the customer accepted during your on-site visit (up to 2 hours after the appointment ends, adjustable). Metrics shows the rate, the raw count, and each salesperson's in-home numbers. Every accepted estimate shows what the rule decided and lets you correct it by hand.",
+    "howto": [
+      "Open Metrics. The Sold on site card sits with the sales cards; click it for the estimates behind the number.",
+      "On an accepted estimate, the Sold on site box under the signature shows why it counted or not. Tick or untick to correct it.",
+      "Tune the grace window and appointment types in Settings, Estimates, Sold on site tracking."
+    ]
+  },
+  {
     "id": "estimate-letterhead-brand-switcher",
     "date": "2026-08-16",
     "title": "Your address and ROC number at the top of every estimate",

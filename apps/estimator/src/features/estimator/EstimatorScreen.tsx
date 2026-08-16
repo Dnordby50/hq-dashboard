@@ -752,15 +752,25 @@ export default function EstimatorScreen({
       const isMvbOnly = sys.name === MVB_ONLY_SYSTEM_NAME;
       const name = a.name || `Area ${i + 1}`;
       const label = (calcCount > 1 ? `${name}: ${sys.name}` : isMvbOnly ? sys.name : `${sys.name} floor coating system`) + optTag;
+      // Prompt 94: the line's ACTUAL text wins. Since prompt 74 the line
+      // description IS the customer-facing scope (template dropped at pick
+      // time, rep edits, token fill-ins), and this assembly is what the save
+      // writes to estimates.scope_of_work, so diverging from the line text
+      // would hand the crew a different document than the customer signed.
+      // The template render remains only as the fallback for a line whose
+      // description is still empty.
+      const typed = a.lineDescription.trim();
       const tpl = (a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
-      const body = tpl ? scopeApplyAnswers(tpl, scopeAnswers, sys.name) : `${Math.round(Number(a.sqft) || 0)} sqft`;
+      const body = typed || (tpl ? scopeApplyAnswers(tpl, scopeAnswers, sys.name) : `${Math.round(Number(a.sqft) || 0)} sqft`);
       sections.push(body ? `## ${label}\n\n${body}` : `## ${label}`);
     });
     for (const f of addonForms) {
       const cat = f.addonId ? addonCatalog.find((x) => x.id === f.addonId) ?? null : null;
       const snippet = cat && cat.scope_snippet && cat.scope_snippet.trim() ? cat.scope_snippet : null;
       const head = `## ${f.label.trim() || 'Add-on'}${f.optional ? ' (optional)' : ''}`;
-      const body = snippet && cat ? scopeApplyAnswers(snippet, scopeAnswers, cat.name) : f.description.trim();
+      // Same rule: the add-on line's typed description (what the customer
+      // reads) beats the catalog snippet; the snippet fills an empty line.
+      const body = f.description.trim() || (snippet && cat ? scopeApplyAnswers(snippet, scopeAnswers, cat.name) : '');
       sections.push(body ? `${head}\n\n${body}` : head);
     }
     return sections.join('\n\n---\n\n');

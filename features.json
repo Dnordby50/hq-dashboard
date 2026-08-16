@@ -165,16 +165,24 @@
     {
       "name": "Auto-written scope of work",
       "area": "estimator",
-      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved. Prompt 69: each area's internal notes ride that line's generation context as substitution facts (never quoted into customer text, never new scope), and a custom line's typed scope is used VERBATIM (the writer skips it; only the explicit Polish button touches custom text). Prompt 74: the per-line descriptions the writer assembles are now the CUSTOMER-FACING scope under each line, and the estimator's save never authors them (the old save wrote '970 sqft' over every calculator line's description on each re-save, erasing generated scope on sent estimates; descriptions now round-trip through lineDescription and a new line starts null until generation fills it). The send gate hard-blocks an estimate whose scope is stale or missing per line. Prompt 76: every line's description is EDITABLE in the line editor sheet (templates seed it, a rep edit WINS until the rep presses Generate again; the post-generation refresh skips lines edited this session). The writer's templateless skip branch now CLEARS a description matching the exact sqft clobber fingerprint (CLOBBER_DESC_EXACT_RE) and returns per-line skip reasons (area_id + needs_rep_text) that the sheet shows, so a templateless system is a type-it-here prompt instead of a dead end. The whole-document scope UI was deleted from both the estimator and the estimate detail (estimates.scope_of_work is still written and still feeds jobScope, the crew scope, and the declined filter); Regenerate scope lives on the Line items card, and send-gate blockers are tappable links that open the offending line's sheet with the description focused (the gate re-reads rows fresh). Settings: estimate_line_generate_enabled, estimator_line_sheet_breakpoint_px. 2026-08-08: Dylan approved scope templates for Metallic (4 day system, hardcoded not-included lines at his choice) and MVB Only; both were seeded live. The MVB-only scope exemption (writer skip + send-gate pass + estimator no-scope-needed chip) is retired: MVB Only lines generate and gate like any other area line.",
+      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved. Prompt 69: each area's internal notes ride that line's generation context as substitution facts (never quoted into customer text, never new scope), and a custom line's typed scope is used VERBATIM (the writer skips it; only the explicit Polish button touches custom text). Prompt 74: the per-line descriptions the writer assembles are now the CUSTOMER-FACING scope under each line, and the estimator's save never authors them (the old save wrote '970 sqft' over every calculator line's description on each re-save, erasing generated scope on sent estimates; descriptions now round-trip through lineDescription and a new line starts null until generation fills it). The send gate hard-blocks an estimate whose scope is stale or missing per line. Prompt 76: every line's description is EDITABLE in the line editor sheet (templates seed it, a rep edit WINS until the rep presses Generate again; the post-generation refresh skips lines edited this session). The writer's templateless skip branch now CLEARS a description matching the exact sqft clobber fingerprint (CLOBBER_DESC_EXACT_RE) and returns per-line skip reasons (area_id + needs_rep_text) that the sheet shows, so a templateless system is a type-it-here prompt instead of a dead end. The whole-document scope UI was deleted from both the estimator and the estimate detail (estimates.scope_of_work is still written and still feeds jobScope, the crew scope, and the declined filter); Regenerate scope lives on the Line items card, and send-gate blockers are tappable links that open the offending line's sheet with the description focused (the gate re-reads rows fresh). Settings: estimate_line_generate_enabled, estimator_line_sheet_breakpoint_px. 2026-08-08: Dylan approved scope templates for Metallic (4 day system, hardcoded not-included lines at his choice) and MVB Only; both were seeded live. The MVB-only scope exemption (writer skip + send-gate pass + estimator no-scope-needed chip) is retired: MVB Only lines generate and gate like any other area line. Prompt 94 REPLACES generation with pick-time templates: selecting a system on a line drops its scope_template (scope_template_mvb on an MVB line, Standard Flake only today) into the line description immediately, fully editable; machine text is replaced silently on a system change, rep-typed text only after a confirm defaulting to keep, and nothing auto-fills after the estimate is sent. {{snake_case}} tokens in a template become a compact fill-in form on the line sheet (a _date suffix gets a date picker; the committed value substitutes into the text once and stays ordinary text); unfilled tokens, BLANK, and ___ hard-block sending via the shared production/scope.cjs scopeBlanks detector (server scopeSendBlockers + dashboard estScopeBlanks mirror). The Generate/Regenerate scope buttons, the dashboard answers card, and the auto-regenerate on line changes are GONE; the estimator save assembles estimates.scope_of_work from the line texts (never over a hand-edited document), which keeps feeding jobs.scope and the crew scope at accept. pec-estimate-scope.cjs and pec-estimate-custom-polish.cjs are KEPT but gated server-side on estimate_line_generate_enabled (data-flipped to 'false'); dead-code removal is a later prompt.",
       "code": {
         "netlifyFunctions": [
-          "pec-estimate-scope.cjs"
+          "pec-estimate-scope.cjs",
+          "pec-estimate-custom-polish.cjs"
         ],
         "other": [
-          "apps/estimator/src/lib/ai.ts"
+          "apps/estimator/src/lib/ai.ts",
+          "production/scope.cjs",
+          "production/optional-lines.cjs",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
         ]
       },
-      "tables": [],
+      "tables": [
+        "estimate_line_items",
+        "pec_prod_system_types",
+        "settings"
+      ],
       "spec": "docs/archive/prompts/claude-code-prompt-15c-scope-questions-duplicates-preview.md",
       "since": "2026-07"
     },
@@ -375,7 +383,7 @@
     {
       "name": "Live proposal panel",
       "area": "estimator",
-      "description": "The customer-facing proposal builds live inside the estimator as reps work, drafting from scope templates the moment an area has a system and square footage. The AI writes the polished version automatically on the first save once scope questions are answered, then only rewrites on an explicit Regenerate, and reps can edit the text in place before sending.",
+      "description": "The customer-facing proposal builds live inside the estimator as reps work, drafting from scope templates the moment an area has a system and square footage. The AI writes the polished version automatically on the first save once scope questions are answered, then only rewrites on an explicit Regenerate, and reps can edit the text in place before sending. Prompt 94: the AI write path is gated off (estimate_line_generate_enabled 'false' in prod); the panel's assembly now IS the document, written to estimates.scope_of_work on every save instead of by the writer.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-scope.cjs"
@@ -892,7 +900,7 @@
     {
       "name": "Price & Material Catalog",
       "area": "dashboard",
-      "description": "The single catalog of products, materials, flake colors, add-ons, and system-type recipes with pricing that feeds estimating, ordering, and costing. Products carry an explicit cost basis (per gallon/box/pack versus per kit, auto-converted by kit size), each flake carries its own default basecoat, systems show a collapsible one-line recipe summary, and material categories include liquids, flake, quartz, and Polycoat. Admins tune per-system target gross profit and the sundries rate here. Prompt 53: each product can carry two uploaded PDFs, a data sheet (TDS) and an MSDS/SDS, stored as object paths in the public pec-datasheets Supabase Storage bucket (the app's first Storage feature); the list shows TDS/SDS chips and the editor uploads on file pick under a random UUID name so an unsaved product can carry a file. Prompt 57 (pending the 2026-07-29_flake_color_model.sql migration): the 18 identically priced Torginol flake products condense into ONE Standard Flake product and the BLEND moves to the colors table (category='flake-blend', 21 rows carrying product_id + default_basecoat_product_id + active). The New Job flake picker lists colors and writes flake_color_id + flake_product_id together; basecoat resolves explicit pick > the color's pairing > the product's pairing (legacy rows) > slot default (flakeColorBasecoatDefaults beside flakeBasecoatDefaults). Obsidian, Autumn Brown, and Stonewash keep their own products (different cost or spread rate); the retired 18 are DEACTIVATED, never deleted (historical areas FK to them), hidden behind the catalog's new Show inactive toggle. flakeProductSaveError exempts color='Per-job pick' products from the mandatory-basecoat gate. Pre-migration everything renders exactly as before (colorMode detection).",
+      "description": "The single catalog of products, materials, flake colors, add-ons, and system-type recipes with pricing that feeds estimating, ordering, and costing. Products carry an explicit cost basis (per gallon/box/pack versus per kit, auto-converted by kit size), each flake carries its own default basecoat, systems show a collapsible one-line recipe summary, and material categories include liquids, flake, quartz, and Polycoat. Admins tune per-system target gross profit and the sundries rate here. Prompt 53: each product can carry two uploaded PDFs, a data sheet (TDS) and an MSDS/SDS, stored as object paths in the public pec-datasheets Supabase Storage bucket (the app's first Storage feature); the list shows TDS/SDS chips and the editor uploads on file pick under a random UUID name so an unsaved product can carry a file. Prompt 57 (pending the 2026-07-29_flake_color_model.sql migration): the 18 identically priced Torginol flake products condense into ONE Standard Flake product and the BLEND moves to the colors table (category='flake-blend', 21 rows carrying product_id + default_basecoat_product_id + active). The New Job flake picker lists colors and writes flake_color_id + flake_product_id together; basecoat resolves explicit pick > the color's pairing > the product's pairing (legacy rows) > slot default (flakeColorBasecoatDefaults beside flakeBasecoatDefaults). Obsidian, Autumn Brown, and Stonewash keep their own products (different cost or spread rate); the retired 18 are DEACTIVATED, never deleted (historical areas FK to them), hidden behind the catalog's new Show inactive toggle. flakeProductSaveError exempts color='Per-job pick' products from the mandatory-basecoat gate. Pre-migration everything renders exactly as before (colorMode detection). Prompt 94 B3: the system-type editor modal finally edits scope_template and scope_template_mvb (two textareas with a live preview listing the {{token}} fill-in fields a rep will see, flagging malformed tokens and legacy BLANK/___ placeholders); the catalog list's no-scope-template warning pill is unchanged.",
       "code": {
         "indexHtml": [
           "renderCatalog",
@@ -1128,7 +1136,7 @@
     {
       "name": "Metrics and analytics",
       "area": "dashboard",
-      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Prompt 50: the window control is four presets (MTD default via the metrics_default_window setting, YTD, Last 4 weeks = rolling 28 days, Custom with native date inputs); metricsWindowRange/metricsBuildBuckets drive the WHOLE tab (KPIs, deltas vs an equal-length prior period, charts, Sales section, drip/blast cards, drills), routing around invBuildWeeks; the 12-week preset folded into Custom. A manual-generate AI insights panel at the top writes a plain-language read of the computed values for the selected window (pec-metrics-ai.cjs mode:'tab', cache keyed by window+salesperson in the metrics_tab_ai_insights settings row, TTL from metrics_ai_cache_days), distinct from the weekly pipeline read which stays. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card, the open pipeline with the AI weekly read, and the Phase 3 drip/blast performance cards. Prompt 66: the three by-crew cards derive the crew lead from pec_prod_jobs.crew_id -> pec_prod_crews.name via one shared crewLeadOf helper (pec_prod_jobs.crew_lead is a dead column, never written); the callback rate counts touch-ups (is_callback, incl. $0 warranty revisits) OR the legacy callback flag, charged to the ORIGINAL job's crew via original_job_id, with all touch-up rows excluded from the completed-jobs denominator; and the tab gets All/Sales/Production/Admin category tabs, a pure display filter (data-metcat tags + data-metcat-active on the wrapper, state.metricsCategory) that never re-runs the queries, keeps the AI insights panel reading the whole window, and resizes Chart.js charts on reveal via Chart.getChart over the view's canvases.",
+      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Prompt 50: the window control is four presets (MTD default via the metrics_default_window setting, YTD, Last 4 weeks = rolling 28 days, Custom with native date inputs); metricsWindowRange/metricsBuildBuckets drive the WHOLE tab (KPIs, deltas vs an equal-length prior period, charts, Sales section, drip/blast cards, drills), routing around invBuildWeeks; the 12-week preset folded into Custom. A manual-generate AI insights panel at the top writes a plain-language read of the computed values for the selected window (pec-metrics-ai.cjs mode:'tab', cache keyed by window+salesperson in the metrics_tab_ai_insights settings row, TTL from metrics_ai_cache_days), distinct from the weekly pipeline read which stays. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card, the open pipeline with the AI weekly read, and the Phase 3 drip/blast performance cards. Prompt 66: the three by-crew cards derive the crew lead from pec_prod_jobs.crew_id -> pec_prod_crews.name via one shared crewLeadOf helper (pec_prod_jobs.crew_lead is a dead column, never written); the callback rate counts touch-ups (is_callback, incl. $0 warranty revisits) OR the legacy callback flag, charged to the ORIGINAL job's crew via original_job_id, with all touch-up rows excluded from the completed-jobs denominator; and the tab gets All/Sales/Production/Admin category tabs, a pure display filter (data-metcat tags + data-metcat-active on the wrapper, state.metricsCategory) that never re-runs the queries, keeps the AI insights panel reading the whole window, and resizes Chart.js charts on reveal via Chart.getChart over the view's canvases. Prompt 94 C: a Sold on site KPI card (sales category): rate = sold-on-site accepts / accepted estimates in window, with prior-window delta, raw count, a per-estimate drilldown, per-rep in-home counts on the Sales-by-salesperson rows, and sold_on_site_rate in the AI insights payload. Reads the STAMPED estimates.sold_on_site with sold_on_site_override on top (effective = coalesce(override, stored, false)); estimates accepted before the metric read as not-sold rather than inventing history. Hidden when sold_on_site_enabled is 'false'.",
       "code": {
         "indexHtml": [
           "renderMetrics",
@@ -1145,10 +1153,13 @@
         ]
       },
       "tables": [
+        "estimates",
         "pec_call_log",
-        "pec_sms_log",
         "pec_email_log",
-        "pec_prod_crews"
+        "pec_prod_crews",
+        "pec_sales_team_members",
+        "pec_sms_log",
+        "settings"
       ],
       "since": "2026-05",
       "settings": [
@@ -2358,6 +2369,34 @@
         "pec_status_descriptions"
       ],
       "since": "2026-06"
+    },
+    {
+      "name": "Sold-on-site tracking",
+      "area": "estimator",
+      "description": "Tracks how often estimates close while the rep is still in the home. At accept time (customer signing the public page, or the dashboard's manual Mark accepted) the rule derives whether accepted_at fell between the matched on-site appointment's start and its end plus a tunable grace (default 120 min; appointment matched lead_id first, else customer_id, type on_site_estimate, canceled excluded; more than one match picks the start nearest before the accept, ties by smallest id) and STAMPS estimates.sold_on_site, so later appointment edits cannot rewrite history. A human override (sold_on_site_override) is set from the accepted estimate's audit block, which shows what the rule decided and why; the override PATCH never carries status (trg_estimate_status_guard). Effective value = coalesce(override, stored, false); NULL stored = accepted before the metric existed and reads as not-sold. Surfaces: the estimate-page audit block with toggle, the Metrics Sold on site rate card + drilldown + per-rep counts, and Settings > Estimates (sold_on_site_enabled + grace front-of-card; appt types + lookback hours behind Advanced). Backfilled 2026-08-16 over all 6 then-accepted estimates: 2 true, 4 false.",
+      "code": {
+        "indexHtml": [
+          "pecDeriveSoldOnSite",
+          "pecSoldOnSiteContext",
+          "renderEstimateDetail",
+          "renderMetrics",
+          "renderSettingsEstimates"
+        ],
+        "netlifyFunctions": [
+          "pec-public-estimate.cjs"
+        ],
+        "other": [
+          "production/sold-on-site.cjs",
+          "supabase/migrations/2026-09-04_prompt94_sold_on_site_and_template_flip.sql"
+        ]
+      },
+      "tables": [
+        "estimates",
+        "pec_appointments",
+        "pec_sales_team_members",
+        "settings"
+      ],
+      "since": "2026-08"
     }
   ]
 }
