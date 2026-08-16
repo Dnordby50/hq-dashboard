@@ -190,6 +190,14 @@ export type SaveEstimateArgs = {
   // the server's never-overwrite rule protects it, the same lock custom mode
   // uses. Null (the usual case) leaves every scope column alone.
   editedScope?: string | null;
+  // Prompt 94: the machine-assembled document (the line texts joined, the
+  // same assembly localScopePreview renders). With the AI writer gated off,
+  // the SAVE is what keeps estimates.scope_of_work feeding jobs.scope and
+  // the crew scope. Written WITHOUT scope_edited_at (machine text) and with
+  // scope_stale false (the save just made it current). The caller passes
+  // null on a legacy hand-edited document (scope_edited_at set), so a
+  // human's words are never overwritten.
+  assembledScope?: string | null;
 };
 
 // Persist an estimate offline: write a local copy of the parent first (durable +
@@ -297,6 +305,13 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
   if (!isCustom && typeof args.editedScope === 'string' && args.editedScope.trim()) {
     estimateRow.scope_of_work = args.editedScope;
     estimateRow.scope_edited_at = now;
+    estimateRow.scope_stale = false;
+  } else if (!isCustom && typeof args.assembledScope === 'string' && args.assembledScope.trim()) {
+    // Prompt 94: the save carries the assembled document (see the args
+    // comment). scope_edited_at is cleared, not stamped: this is machine
+    // text again, exactly what the old writer wrote after a generation.
+    estimateRow.scope_of_work = args.assembledScope;
+    estimateRow.scope_edited_at = null;
     estimateRow.scope_stale = false;
   }
   // Custom estimate: the typed scope IS the customer-facing scope of work, so

@@ -257,6 +257,9 @@ declare module '*/production/optional-lines.cjs' {
   export function declinedNoteLine(declinedLines: unknown[]): string | null;
   export function selectedScopeDoc(includedLines: unknown[]): string;
   export function optionalControlsVisible(enabled: boolean | undefined, isOptional: boolean | undefined): boolean;
+  // The send gate's machine-junk prefix ("970 sqft…"); prompt 94 B1 reuses it
+  // as one arm of the "is this description machine-written?" test.
+  export const CLOBBER_DESC_RE: RegExp;
 }
 
 // Estimate-side payment schedule math (repo-root
@@ -299,7 +302,15 @@ declare module '*/production/scope.cjs' {
     answersByKey: Record<string, string>,
   ): ScopeQuestion[];
   export function stableKey(contextLabel: string, context: string, ordinal?: number): string;
-  export function scopeBlanks(text: unknown): Array<{ kind: 'blank' | 'choice' | 'underscore'; snippet: string }>;
+  export function scopeBlanks(text: unknown): Array<{ kind: 'blank' | 'choice' | 'underscore' | 'token'; snippet: string }>;
+  // Prompt 94 B2: {{snake_case}} fill-in tokens.
+  export interface TokenField {
+    name: string;
+    label: string;
+    type: 'date' | 'text';
+  }
+  export function tokenFields(text: unknown): TokenField[];
+  export function applyTokens(text: unknown, valuesByName: Record<string, string>): string;
 }
 
 // Card-first draft + salesperson default rules (repo-root

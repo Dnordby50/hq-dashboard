@@ -106,9 +106,61 @@ function applyAnswers(text, answersByKey, contextLabel) {
   return out;
 }
 
+// Prompt 94 B2: named fill-in tokens. Templates carry {{snake_case_name}}
+// placeholders for job-specific values ({{install_date}}, {{stem_walls}});
+// the line editor renders one input per distinct token and substitutes the
+// answer into the text. Two regexes on purpose:
+//   TOKEN_RE      the strict, well-formed token (lowercase snake_case). Only
+//                 these get a form field and only these substitute.
+//   ANY_TOKEN_RE  anything in double braces, however malformed ({{Install
+//                 Date}}, {{x-y}}). The SEND GATE scans with this one, because
+//                 a customer must never read {{...}} in a document they are
+//                 signing, even when a typo means no form field appeared.
+// Type inference is deliberately tiny (Dylan's locked decision): a name
+// ending in _date is a date, everything else is text. No type system.
+const TOKEN_RE = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+const ANY_TOKEN_RE = /\{\{[^{}\n]*\}\}/g;
+
+// Distinct well-formed tokens in `text`, in order of first appearance:
+//   { name, label, type }  — label is the humanized prompt for the form
+//   ("install_date" -> "Install date"), type is 'date' | 'text'.
+function tokenFields(text) {
+  const src = String(text == null ? '' : text);
+  const out = [];
+  const seen = Object.create(null);
+  let m;
+  TOKEN_RE.lastIndex = 0;
+  while ((m = TOKEN_RE.exec(src)) !== null) {
+    const name = m[1];
+    if (seen[name]) continue;
+    seen[name] = true;
+    const words = name.replace(/_/g, ' ').trim();
+    out.push({
+      name,
+      label: words.charAt(0).toUpperCase() + words.slice(1),
+      type: /_date$/.test(name) ? 'date' : 'text',
+    });
+  }
+  return out;
+}
+
+// Substitute values into `text`: every well-formed {{name}} whose value is a
+// non-empty string is replaced; unanswered (or malformed) tokens stay verbatim
+// so the send gate catches them. Substitution is one-way by design (prompt 94
+// B2): once a value is in the text it is ordinary text the rep can edit, and
+// nothing re-templatizes it.
+function applyTokens(text, valuesByName) {
+  const src = String(text == null ? '' : text);
+  const vals = valuesByName || {};
+  return src.replace(TOKEN_RE, (whole, name) => {
+    const v = vals[name];
+    return (v != null && String(v).trim()) ? String(v).trim() : whole;
+  });
+}
+
 // Prompt 78 D1: every customer-visible unfilled placeholder in `text`, as
 // structured findings so the send gate can quote the offending text back to
-// the rep. Three detectors, and no others:
+// the rep. Four detectors, and no others:
 //   blank      the literal BLANK (BLANK_RE above; case sensitivity is
 //              deliberate and load-bearing: a customer named Blank Smith must
 //              never trip it)
@@ -121,6 +173,8 @@ function applyAnswers(text, answersByKey, contextLabel) {
 //   underscore a ___ fill-in run. mdToSafeHtml renders --- as a horizontal
 //              rule and never ___, so an underscore run in a scope is always
 //              a fill-in; no divider heuristic needed.
+//   token      an unsubstituted {{...}} fill-in token (prompt 94 B2), scanned
+//              with ANY_TOKEN_RE so malformed tokens block too.
 // Each finding is {kind, snippet}: snippet is the trimmed surrounding line,
 // capped at 60 characters, so the blocker message shows what to look for.
 const CHOICE_RE = /\b(is|are)\s*\/\s*(is|are)\s+not\b/gi;
@@ -142,6 +196,7 @@ function scopeBlanks(text) {
   scan(BLANK_RE, 'blank');
   scan(CHOICE_RE, 'choice');
   scan(UNDERSCORE_RE, 'underscore');
+  scan(ANY_TOKEN_RE, 'token');
   return out;
 }
 
@@ -163,4 +218,4 @@ function openQuestions(sources, answersByKey) {
   return [...byKey.values()];
 }
 
-module.exports = { containsBlank, detectBlanks, applyAnswers, openQuestions, stableKey, scopeBlanks };
+module.exports = { containsBlank, detectBlanks, applyAnswers, openQuestions, stableKey, scopeBlanks, tokenFields, applyTokens };

@@ -31382,21 +31382,17 @@ async function renderEstimateDetail(estimateId) {
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
             <h3 style="margin:0">Line items</h3>
             <div style="display:flex;gap:8px">
-              <button class="pec-btn sm" id="estScopeGen">${est.scope_of_work ? 'Regenerate scope' : 'Generate scope'}</button>
               <button class="pec-btn ghost sm" id="estAddOptional">+ Add optional item</button>
             </div>
           </div>
-          ${est.scope_of_work && /\bBLANK\b/.test(String(est.scope_of_work)) ? `
+          <!-- Prompt 94 B4: the Generate scope button and the stale-scope
+               banners are gone. Line scopes fill from the system template at
+               pick time in the estimator, and the save assembles the internal
+               document; nothing flips scope_stale anymore (prod rows were
+               cleared in the 2026-09-04 migration). -->
+          ${est.scope_of_work && /\bBLANK\b|\{\{[^{}\n]*\}\}/.test(String(est.scope_of_work)) ? `
             <div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.45);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
-              <strong>The scope still says BLANK.</strong> Fill in the questions below (or edit the line in the estimator) before you send; a customer should never read the word BLANK in a document they are signing.
-            </div>` : ''}
-          ${est.scope_stale && est.scope_edited_at ? `
-            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
-              <strong>The estimate changed since the scope was edited by hand.</strong> The text is untouched; Regenerate scope replaces it with a fresh write-up from the current estimate.
-            </div>` : ''}
-          ${est.scope_stale && !est.scope_edited_at && est.scope_of_work ? `
-            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
-              <strong>The estimate changed since the scope was written.</strong> Tap Regenerate scope to bring the line descriptions up to date; sending is blocked until then.
+              <strong>The scope still has an unfilled placeholder.</strong> Open the estimate in the estimator and fill it in on the line before you send; a customer should never read BLANK or {{...}} in a document they are signing.
             </div>` : ''}
           <div class="pec-table-wrap" style="margin-top:8px"><table class="pec-table">
             <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Total</th><th></th></tr></thead>
@@ -31412,24 +31408,14 @@ async function renderEstimateDetail(estimateId) {
           </div>
           <div style="color:var(--muted);font-size:.7rem;margin-top:8px">
             ${est.scope_edited_at
-              ? `Scope edited by hand ${esc(fmtRelativeTime(est.scope_edited_at))}. The AI never overwrites edits without the Regenerate click.`
-              : (est.scope_generated_at ? `Scope generated ${esc(fmtRelativeTime(est.scope_generated_at))}${est.scope_model ? ' · ' + esc(est.scope_model) : ''} from the verbatim system templates; only this estimate’s facts were substituted. Per-line text is editable in the estimator.` : 'Each line’s scope renders under it. Generate writes templated lines; templateless lines are typed on the line in the estimator.')}
+              ? `Scope edited by hand ${esc(fmtRelativeTime(est.scope_edited_at))}; edits are never overwritten.`
+              : (est.scope_generated_at ? `Scope generated ${esc(fmtRelativeTime(est.scope_generated_at))}${est.scope_model ? ' · ' + esc(est.scope_model) : ''} from the verbatim system templates; only this estimate’s facts were substituted. Per-line text is editable in the estimator.` : 'Each line’s scope renders under it. Picking a system in the estimator fills the line from that system’s template; templateless lines are typed on the line.')}
           </div>
         </div>
 
-        ${(() => {
-          // Open BLANK questions the scope writer recorded. A rep who saved
-          // fast at the job site finishes them here at the desk; answering and
-          // saving substitutes them into the scope on the next write.
-          const qs = Array.isArray(est.scope_questions) ? est.scope_questions : [];
-          if (!qs.length) return '';
-          return `<div class="pec-card" style="border:1px solid rgba(217,119,6,.5)">
-            <h3 style="margin:0 0 4px">Finish the scope</h3>
-            <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">The scope of work still has ${qs.length} blank${qs.length === 1 ? '' : 's'} the template left for you. Fill ${qs.length === 1 ? 'it' : 'them'} in so the customer never sees the word BLANK, then Regenerate the scope.</div>
-            ${qs.map(q => `<div class="pec-field" style="margin-bottom:8px"><label>${esc(q.label || 'Fill in the blank')}</label><input class="est-scope-answer" data-key="${esc(q.key)}" value="${esc((est.scope_answers && est.scope_answers[q.key]) || '')}" placeholder="Fill in the blank"></div>`).join('')}
-            <button class="pec-btn sm primary" id="estScopeAnswerSave">Save answers &amp; rewrite scope</button>
-          </div>`;
-        })()}
+        <!-- Prompt 94 B4: the "Finish the scope" answers card is gone with
+             the writer it drove; blanks and {{tokens}} are filled on the line
+             in the estimator, where the send-gate blockers deep-link. -->
 
         <div class="pec-card">
           <h3>Production detail</h3>
@@ -31753,33 +31739,13 @@ async function renderEstimateDetail(estimateId) {
     }
   });
 
-  // ---- Scope generation + the never-overwrite rule --------------------------
-  // Any line-item change here changes the estimate: while the scope has NOT
-  // been hand-edited it regenerates freely; once scope_edited_at is set the
-  // change only flips scope_stale (the server enforces the same rule, so even
-  // a buggy caller cannot silently replace a human's words).
-  const callScopeGen = async (force) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session && session.access_token;
-    if (!token) throw new Error('Not signed in.');
-    const res = await fetch('/.netlify/functions/pec-estimate-scope', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ estimate_id: est.id, force: !!force }),
-    });
-    let body = {}; try { body = await res.json(); } catch (_) {}
-    if (!res.ok || !body.success) throw new Error(body.error || `Scope generation failed (${res.status})`);
-    return body;
-  };
-  const afterEstimateChanged = async () => {
-    if (est.scope_edited_at) {
-      // A human owns the text: mark stale, never touch the words.
-      await supabase.from('estimates').update({ scope_stale: true }).eq('id', est.id);
-    } else if (est.scope_of_work) {
-      // Machine text: regenerate freely, best-effort (Generate button covers a miss).
-      callScopeGen(false).catch(err => console.warn('[estimates] scope refresh skipped:', err && err.message));
-    }
-  };
+  // ---- Scope lives on the lines now (prompt 94) -----------------------------
+  // callScopeGen / afterEstimateChanged are GONE with the Generate button:
+  // each line's description fills from its system's template at pick time in
+  // the estimator, and the save assembles estimates.scope_of_work from the
+  // line texts. Adding or removing an optional item here neither regenerates
+  // anything nor flips scope_stale (which nothing sets anymore); the item's
+  // own description rides the row.
 
   // Line item writes are PER ROW (estimate_line_items, 2026-07-13): a tick is
   // one small PATCH, so this page and the public page can never race a whole-
@@ -31798,7 +31764,6 @@ async function renderEstimateDetail(estimateId) {
       const del = await withFreshWriteRetry(() => supabase.from('estimate_line_items')
         .delete().eq('id', btn.dataset.liId), { label: 'estimate-item-remove' });
       if (del.error) throw del.error;
-      await afterEstimateChanged();
       renderEstimateDetail(est.id);
     } catch (err) { showToast('Could not remove item: ' + esc(err.message || err), { ttl: 5000 }); }
   }));
@@ -31834,64 +31799,16 @@ async function renderEstimateDetail(estimateId) {
           closeModal();
           const ins = await withFreshWriteRetry(() => supabase.from('estimate_line_items').insert(row), { label: 'estimate-item-add' });
           if (ins.error) throw ins.error;
-          await afterEstimateChanged();
           renderEstimateDetail(est.id);
         } catch (err) { showToast('Could not add item: ' + esc(err.message || err), { ttl: 5000 }); }
       });
     } });
   });
 
-  // ---- Finish the scope: answer the BLANK questions, then rewrite ------------
-  const answerSaveBtn = $('estScopeAnswerSave');
-  if (answerSaveBtn) answerSaveBtn.addEventListener('click', async () => {
-    // Merge the answers onto scope_answers (never drop keys the rep left blank
-    // this session but answered before), then regenerate so they substitute in.
-    const answers = { ...(est.scope_answers && typeof est.scope_answers === 'object' ? est.scope_answers : {}) };
-    root.querySelectorAll('.est-scope-answer').forEach(inp => { answers[inp.dataset.key] = inp.value.trim(); });
-    // A hand-edited scope is protected: answering questions must not silently
-    // overwrite it. Warn, and only force-regenerate if the rep agrees.
-    const force = !!est.scope_edited_at;
-    if (force && !confirm('The scope was edited by hand. Saving these answers and rewriting REPLACES your edited text. Continue?')) return;
-    answerSaveBtn.disabled = true; answerSaveBtn.textContent = 'Saving…';
-    try {
-      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ scope_answers: answers }).eq('id', est.id), { label: 'estimate-scope-answers' });
-      if (upd.error) throw upd.error;
-      const body = await callScopeGen(force);
-      if (body.generated === false) showToast(esc(body.reason || 'Answers saved.'), { ttl: 4000 });
-      else showToast('Scope updated ✓', { ttl: 2500 });
-      renderEstimateDetail(est.id);
-    } catch (err) {
-      answerSaveBtn.disabled = false; answerSaveBtn.textContent = 'Save answers & rewrite scope';
-      showToast('Could not update the scope: ' + esc(err.message || String(err)), { ttl: 6000 });
-    }
-  });
-
-  // ---- Regenerate scope (prompt 76 Part D3: lives on the Line items card;
-  // the whole-document Scope of work card and its Edit text flow are gone,
-  // while estimates.scope_of_work keeps being written by the server for
-  // jobScope, the crew scope, and the declined filter). Per-line text is
-  // edited in the estimator's line sheet.
-  const genBtn = $('estScopeGen');
-  if (genBtn) genBtn.addEventListener('click', async () => {
-    // Regenerating over a HUMAN edit requires this explicit, warned click; the
-    // server also refuses without force, so the UI cannot bypass the rule.
-    const force = !!est.scope_edited_at;
-    if (force && !confirm('The scope was edited by hand. Regenerating REPLACES the edited text with a fresh write-up from the current estimate. Continue?')) return;
-    genBtn.disabled = true; genBtn.textContent = 'Writing…';
-    try {
-      const body = await callScopeGen(force);
-      if (body.generated === false) {
-        showToast(esc(body.reason || 'Nothing to generate for this estimate.'), { ttl: 6000 });
-        genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate scope' : 'Generate scope';
-        return;
-      }
-      showToast('Scope written ✓', { ttl: 2500 });
-      renderEstimateDetail(est.id);
-    } catch (err) {
-      genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate scope' : 'Generate scope';
-      showToast('Scope generation failed: ' + esc(err.message || String(err)), { ttl: 6000 });
-    }
-  });
+  // Prompt 94 B4: the "Finish the scope" answers card and the Generate /
+  // Regenerate scope button (with their callScopeGen HTTP calls) are gone.
+  // pec-estimate-scope.cjs itself is KEPT and gated server-side behind
+  // estimate_line_generate_enabled; dead-code removal is a later prompt.
 }
 
 // Send-to-customer (prompt 16): compose modal (the invoice email pattern) that
@@ -31955,11 +31872,13 @@ function estimateOptionalGateOk(est) {
 // 2026-08-08: Dylan approved a scope template for the MVB Only system.
 const EST_CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 // Prompt 78 D3: CLIENT MIRROR of production/scope.cjs scopeBlanks; keep in
-// lockstep. Three detectors, and no others: the literal BLANK (case
+// lockstep. Four detectors, and no others: the literal BLANK (case
 // sensitive, so a customer named Blank Smith never trips it), an unresolved
 // "is/is not" template choice (\s+ on the tail because the live Metallic
-// template carries a double space), and a ___ fill-in run (mdToSafeHtml
-// renders --- as a rule and never ___, so underscores are always fill-ins).
+// template carries a double space), a ___ fill-in run (mdToSafeHtml
+// renders --- as a rule and never ___, so underscores are always fill-ins),
+// and (prompt 94 B2) an unsubstituted {{...}} fill-in token, scanned loosely
+// so malformed tokens block too.
 // Returns [{kind, snippet}]; snippet is the trimmed line, capped at 60 chars.
 function estScopeBlanks(text) {
   const src = String(text == null ? '' : text);
@@ -31979,6 +31898,7 @@ function estScopeBlanks(text) {
   scan(/\bBLANK\b/g, 'blank');
   scan(/\b(is|are)\s*\/\s*(is|are)\s+not\b/gi, 'choice');
   scan(/_{3,}/g, 'underscore');
+  scan(/\{\{[^{}\n]*\}\}/g, 'token');
   return out;
 }
 async function estimateSendGateOk(est) {
@@ -32021,7 +31941,10 @@ async function estimateSendGateOk(est) {
     blockers.push({ msg: 'This estimate has no priced lines yet. Open it in the estimator, add at least one line, and save before sending.' });
   }
   if (scopeStale) {
-    blockers.push({ msg: 'The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope (Line items card), then send.' });
+    // Prompt 94: nothing sets scope_stale anymore and prod rows were
+    // cleared; this survives for any straggler. A re-save from the
+    // estimator writes scope_stale false.
+    blockers.push({ msg: 'The scope of work is out of date: the estimate changed after the scope was written. Open the estimate in the estimator, review the line scopes, and save.' });
   }
   for (const li of items) {
     if (!li) continue;
@@ -32034,7 +31957,11 @@ async function estimateSendGateOk(est) {
     // 15); the old estimateBlankScopeOk confirm is gone.
     const blanks = estScopeBlanks(desc);
     if (blanks.length) {
-      blockers.push({ msg: `"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`, sortOrder });
+      // Prompt 94 B2: unfilled {{tokens}} get their own wording (the fix is
+      // the fill-in form on the line editor). Mirrors scopeSendBlockers.
+      blockers.push({ msg: blanks[0].kind === 'token'
+        ? `"${label}" still has an unfilled field in its scope: "${blanks[0].snippet}". Fill it in on the line editor, then send.`
+        : `"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`, sortOrder });
     }
     if (!li.estimate_area_id) {
       if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
@@ -32049,7 +31976,7 @@ async function estimateSendGateOk(est) {
   // blocker (no sortOrder), renders as a plain row like the stale-scope one.
   const sowBlanks = estScopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
   if (sowBlanks.length) {
-    blockers.push({ msg: `The scope of work still has a blank: "${sowBlanks[0].snippet}". Fill in the scope questions, then send.` });
+    blockers.push({ msg: `The scope of work still has a blank: "${sowBlanks[0].snippet}". Fix the line scopes in the estimator, then send.` });
   }
   // Rule 4: a schedule (when one exists) must resolve to the OPENING total
   // exactly; sub-cent percent rounding is fine (the render's last-row
@@ -44510,6 +44437,16 @@ function _mergeAcrossAreas(areaPlans) {
             </div>
             <div class="pec-field"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
           </div>
+          <div class="pec-field">
+            <label>Scope template <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">drops into a line's customer-facing scope the moment this system is picked in the estimator. {{snake_case}} tokens (e.g. {{install_date}}) become fill-in fields on the line; a name ending in _date gets a date picker. Unfilled tokens, BLANK, and ___ all block sending.</span></label>
+            <textarea id="smScopeTpl" rows="7" style="width:100%;resize:vertical">${esc(s.scope_template || '')}</textarea>
+            <div id="smScopeTplInfo" style="color:var(--muted);font-size:.7rem;margin-top:4px"></div>
+          </div>
+          <div class="pec-field">
+            <label>MVB scope template <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">used instead of the one above when the line has moisture vapor barrier ticked. Blank = MVB lines fall back to the standard template.</span></label>
+            <textarea id="smScopeTplMvb" rows="5" style="width:100%;resize:vertical">${esc(s.scope_template_mvb || '')}</textarea>
+            <div id="smScopeTplMvbInfo" style="color:var(--muted);font-size:.7rem;margin-top:4px"></div>
+          </div>
           <div class="pec-modal-actions">
             ${existing ? '<button class="pec-btn danger" id="smDelete">Delete</button>' : ''}
             <span style="flex:1"></span>
@@ -44523,6 +44460,30 @@ function _mergeAcrossAreas(areaPlans) {
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('smCancel').addEventListener('click', closer);
     window.prodModalWireX(closer);
+    // Prompt 94 B3: live preview under each template textarea, so whoever
+    // writes the template sees exactly what the rep will be asked for. The
+    // strict token regex mirrors production/scope.cjs TOKEN_RE; the loose
+    // {{...}} scan flags malformed tokens that will hard-block sending
+    // without ever getting a form field.
+    const tplPreview = (srcId, infoId) => {
+      const el = $(srcId), info = $(infoId);
+      const paint = () => {
+        const t = el.value || '';
+        const names = [...new Set([...t.matchAll(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g)].map(m => m[1]))];
+        const anyBraces = (t.match(/\{\{[^{}\n]*\}\}/g) || []).length;
+        const malformed = anyBraces - [...t.matchAll(/\{\{\s*[a-z][a-z0-9_]*\s*\}\}/g)].length;
+        const blanks = (t.match(/\bBLANK\b/g) || []).length + (t.match(/_{3,}/g) || []).length;
+        const parts = [];
+        if (names.length) parts.push('Fill-in fields the rep will see: ' + names.map(n => `<code>${esc(n)}</code>${/_date$/.test(n) ? ' (date)' : ''}`).join(', '));
+        if (malformed > 0) parts.push(`<span style="color:#dc2626">${malformed} malformed {{...}} token${malformed === 1 ? '' : 's'} (must be lowercase snake_case): will block sending with NO fill-in field.</span>`);
+        if (blanks > 0) parts.push(`<span style="color:#b45309">${blanks} legacy BLANK/___ placeholder${blanks === 1 ? '' : 's'}: blocks sending until the rep edits the text. Consider replacing with {{tokens}}.</span>`);
+        info.innerHTML = parts.length ? parts.join('<br>') : (t.trim() ? 'No fill-in fields: the template lands ready to send.' : '');
+      };
+      el.addEventListener('input', paint);
+      paint();
+    };
+    tplPreview('smScopeTpl', 'smScopeTplInfo');
+    tplPreview('smScopeTplMvb', 'smScopeTplMvbInfo');
     $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('smSave').addEventListener('click', async () => {
       const laborPctRaw = $('smLaborPct').value;
@@ -44543,6 +44504,11 @@ function _mergeAcrossAreas(areaPlans) {
         // loses to a deposit amount typed on the job (prompt 45).
         deposit_pct: $('smDepositPct').value === '' ? null : Number($('smDepositPct').value),
         notes: $('smNotes').value || null,
+        // Prompt 94 B3: the templates are finally editable outside Supabase
+        // Studio. Empty saves as null so the "no scope template" pill and the
+        // estimator's fallback logic keep one representation of "none".
+        scope_template: $('smScopeTpl').value.trim() ? $('smScopeTpl').value : null,
+        scope_template_mvb: $('smScopeTplMvb').value.trim() ? $('smScopeTplMvb').value : null,
       };
       if (!payload.name) return $('smError').textContent = 'Name is required.';
       try {

@@ -161,7 +161,9 @@ const CLOBBER_DESC_EXACT_RE = /^\s*\d+\s*sq\s*ft\s*$/i;
 function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
   const blockers = [];
   if (scopeStale === true) {
-    blockers.push('The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope, then send.');
+    // Prompt 94: the Regenerate button is gone (templates fill line scopes
+    // now), so the fix is a re-save from the estimator, which clears the flag.
+    blockers.push('The scope of work is out of date: the estimate changed after the scope was written. Open the estimate in the estimator, review the line scopes, and save.');
   }
   const customSet = customAreaIds instanceof Set ? customAreaIds : new Set(customAreaIds || []);
   for (const li of (Array.isArray(items) ? items : [])) {
@@ -175,7 +177,11 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
     // One blocker per line, quoting the first offending snippet.
     const blanks = scopeBlanks(desc);
     if (blanks.length) {
-      blockers.push(`"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`);
+      // Prompt 94 B2: a 'token' finding gets its own wording, because the fix
+      // is the fill-in form on the line editor, not hand-editing the text.
+      blockers.push(blanks[0].kind === 'token'
+        ? `"${label}" still has an unfilled field in its scope: "${blanks[0].snippet}". Fill it in on the line editor, then send.`
+        : `"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`);
     }
     if (!li.estimate_area_id) {
       // Add-on / one-off lines: many legitimately ship without scope language
@@ -197,7 +203,9 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
   // customer page no longer renders it. Estimate-level blocker.
   const sowBlanks = scopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
   if (sowBlanks.length) {
-    blockers.push(`The scope of work still has a blank: "${sowBlanks[0].snippet}". Fill in the scope questions, then send.`);
+    // Prompt 94: the answers card is gone; the document assembles from the
+    // line scopes, so the fix lives in the estimator's line editor.
+    blockers.push(`The scope of work still has a blank: "${sowBlanks[0].snippet}". Fix the line scopes in the estimator, then send.`);
   }
   return blockers;
 }

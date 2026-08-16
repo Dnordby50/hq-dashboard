@@ -118,6 +118,18 @@ exports.handler = async (event) => {
   const force = body.force === true;
 
   try {
+    // Prompt 94 B4: the writer is gated SERVER-SIDE behind
+    // estimate_line_generate_enabled (flipped to 'false' in prod once system
+    // templates fill line scopes at pick time). Server-side because a stale
+    // cached PWA bundle can still carry the old Generate button; the gate has
+    // to hold even when the UI does not. Clean disabled response (success +
+    // generated:false), never an error. Missing row fails open like the UI.
+    try {
+      const set = await sb('GET', '/settings?key=eq.estimate_line_generate_enabled&select=value&limit=1');
+      if (String((loadOne(set) || {}).value || 'true') === 'false') {
+        return jc(200, { success: true, generated: false, reason: 'Scope generation is turned off: picking a system fills the line scope from its template now.' });
+      }
+    } catch (_) { /* fail open, matching the UI default */ }
     const est = loadOne(await sb('GET',
       `/estimates?id=eq.${encodeURIComponent(estimateId)}&deleted_at=is.null&select=id,mvb,flake_color,intake,scope_of_work,scope_edited_at,scope_answers,estimate_number&limit=1`));
     if (!est) return jc(404, { success: false, error: 'Estimate not found' });

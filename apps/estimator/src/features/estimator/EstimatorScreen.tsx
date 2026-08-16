@@ -41,7 +41,7 @@ import { linesInputsKey } from '../../../../../production/ai-lines.cjs';
 // Optional-lines money rules (prompt 72): the same CJS module
 // pec-public-estimate.cjs uses, so the rep's totals and the customer's page
 // can never disagree about what required-only / all-in / opening mean.
-import { optionalControlsVisible, splitLineTotals } from '../../../../../production/optional-lines.cjs';
+import { CLOBBER_DESC_RE, optionalControlsVisible, splitLineTotals } from '../../../../../production/optional-lines.cjs';
 // Payment-schedule math (prompt 74): the SAME module pec-public-estimate.cjs
 // resolves and freezes with, so the card's dollars and the customer page can
 // never disagree.
@@ -49,7 +49,7 @@ import { computeScheduleCents, defaultScheduleRows, resolveDepositPct, scheduleV
 import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
-import { applyAnswers as scopeApplyAnswers, containsBlank as scopeContainsBlank, openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
+import { applyAnswers as scopeApplyAnswers, applyTokens as scopeApplyTokens, containsBlank as scopeContainsBlank, openQuestions as scopeOpenQuestions, tokenFields as scopeTokenFields, type ScopeQuestion, type TokenField } from '../../../../../production/scope.cjs';
 // Card-first draft + salesperson default rules (prompt 47): shared CJS module
 // (the scope.cjs pattern) so the fixture tests exercise the exact logic the
 // screen runs.
@@ -88,6 +88,13 @@ type AreaForm = {
   lineDescription: string;
 };
 const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '', optional: false, preselected: true, lineDescription: '' };
+// A date token's committed value is customer-facing text, so the ISO value
+// the picker produces ("2026-09-03") is rewritten as prose. En-US on purpose:
+// this string lands on the proposal.
+const fmtTokenDate = (iso: string): string => {
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+};
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
 // the per-area MVB checkbox is redundant there and is hidden.
 const MVB_ONLY_SYSTEM_NAME = 'MVB Only';
@@ -259,6 +266,40 @@ export default function EstimatorScreen({
   );
 
   const fallbackSystemId = editing?.systemTypeId ?? systemTypes[0]?.id ?? '';
+
+  // ---- Scope templates on lines (prompt 94 B1) -----------------------------
+  // Picking a system drops its scope_template into the line description,
+  // fully editable. An MVB line prefers scope_template_mvb when the system
+  // has one (today only Standard Flake does) and falls back to the standard
+  // template otherwise. This replaces the AI Generate path: the template
+  // lands at pick time, and {{tokens}} in it get a fill-in form in the sheet.
+  const templateForSystem = useCallback((sysId: string, mvb: boolean): string | null => {
+    const sys = systemTypes.find((s) => s.id === sysId);
+    if (!sys) return null;
+    const t = (mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
+    return t && String(t).trim() ? String(t) : null;
+  }, [systemTypes]);
+  // "Machine-written" = replaceable without asking: empty, the sqft clobber
+  // fingerprint, or byte-identical (trimmed) to SOME system's raw template
+  // (either variant; raw, because a token-substituted or hand-edited template
+  // is the rep's work and must survive a system change unprompted-over).
+  // Anything else is the rep's words; replacing those asks first.
+  const isMachineDesc = useCallback((desc: string): boolean => {
+    const d = String(desc || '').trim();
+    if (!d) return true;
+    if (CLOBBER_DESC_RE.test(d)) return true;
+    return systemTypes.some((s) =>
+      (s.scope_template != null && String(s.scope_template).trim() === d)
+      || (s.scope_template_mvb != null && String(s.scope_template_mvb).trim() === d));
+  }, [systemTypes]);
+  // Nothing auto-fills once the estimate has been sent: line descriptions
+  // inherit the never-rewritten-after-send rule (prompt 94 B1). Draft-only.
+  const templateAutoFillOk = editing == null || (editing.status === 'draft' && editing.sentAt == null);
+  // Prompt 94 B4: ONE flag now gates every AI generate/polish entry point
+  // (per-line Generate, custom Polish, the whole-document writer and its
+  // auto-fire). Flipped off in prod once templates fill at pick time; the
+  // code stays for rollback, and the server enforces the same flag.
+  const generateOn = config.estimateLineGenerateEnabled !== false;
   // Salesperson default (prompt 47): the edited estimate's pick if still
   // valid, else the member mapped to THIS login (auth_user_id), else blank.
   // Never salespeople[0]: an unmapped login gets a prompt, not a guess. Stays
@@ -404,7 +445,10 @@ export default function EstimatorScreen({
             lineDescription: a.lineDescription ?? '',
           }))
         : null,
-      makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {}, ...emptyLineFields }),
+      // Prompt 94 B1: the default area is born with its system's template
+      // already in the description (only on an unsent draft; editing a sent
+      // estimate never auto-fills).
+      makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {}, ...emptyLineFields, lineDescription: (templateAutoFillOk && fallbackSystemId ? templateForSystem(fallbackSystemId, false) : null) ?? '' }),
     }) as AreaForm[],
   );
   // Prompt 63 Part A: product-kind slots are HIDDEN at estimate time (Dylan:
@@ -1544,11 +1588,12 @@ export default function EstimatorScreen({
         const id = pendingAutoGenRef.current;
         if (id) {
           pendingAutoGenRef.current = null;
-          generateScope(id, false);
+          // Prompt 94 B4: gated with every other generate entry point.
+          if (generateOn) generateScope(id, false);
         }
       })
       .catch(() => {});
-  }, [online, refreshPending, generateScope]);
+  }, [online, refreshPending, generateScope, generateOn]);
   useEffect(() => {
     setSaveState('idle');
   }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason, isCustom, customScope, customPriceInput, customSqftInput]);
@@ -1684,7 +1729,8 @@ export default function EstimatorScreen({
       // either way). Custom lines carry no system, so they are skipped.
       const lastCalc = [...prev].reverse().find((a) => !a.isCustom);
       const sysId = lastCalc?.systemTypeId ?? fallbackSystemId;
-      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, mvb: false, slotValues: defaultSlotValues(sysId), ...emptyLineFields }];
+      // Prompt 94 B1: born with the system's template in the description.
+      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, mvb: false, slotValues: defaultSlotValues(sysId), ...emptyLineFields, lineDescription: (templateAutoFillOk && sysId ? templateForSystem(sysId, false) : null) ?? '' }];
     });
     setSheetFocusDesc(false);
     setOpenLine({ kind: 'area', idx: newIdx });
@@ -1715,7 +1761,46 @@ export default function EstimatorScreen({
 
   const onAreaSystemChange = (i: number, sysId: string) => {
     // New system, new slot set: re-seed THIS area with the new defaults.
-    setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, systemTypeId: sysId, slotValues: defaultSlotValues(sysId) } : a)));
+    // Prompt 94 B1: the new system's template follows the pick. Machine text
+    // (empty, sqft junk, or an untouched template) is replaced silently; the
+    // rep's own words are only replaced after an explicit confirm whose
+    // default (Cancel) KEEPS them. The system itself changes either way.
+    // Nothing auto-fills on a sent estimate.
+    const a = areas[i];
+    const patch: Partial<AreaForm> = { systemTypeId: sysId, slotValues: defaultSlotValues(sysId) };
+    if (a && !a.isCustom && templateAutoFillOk) {
+      const tpl = templateForSystem(sysId, a.mvb);
+      if (isMachineDesc(a.lineDescription)) {
+        // Replacing one system's untouched template with another's; when the
+        // new system has NO template the stale one is cleared, because a
+        // Metallic write-up on a now-Quartz line is worse than the send
+        // gate's "has no scope yet" block.
+        patch.lineDescription = tpl ?? '';
+        lineDescEditedRef.current.delete(i);
+      } else if (tpl) {
+        const sysName = systemTypes.find((s) => s.id === sysId)?.name ?? 'this system';
+        if (window.confirm(`Replace the scope you wrote with the ${sysName} template?`)) {
+          patch.lineDescription = tpl;
+          lineDescEditedRef.current.delete(i);
+        }
+      }
+    }
+    setAreas((prev) => prev.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+  };
+
+  // The MVB toggle swaps between a system's standard and MVB template
+  // variants, but ONLY over machine text; a rep's words survive the toggle.
+  const onAreaMvbChange = (i: number, mvb: boolean) => {
+    const a = areas[i];
+    const patch: Partial<AreaForm> = { mvb };
+    if (a && !a.isCustom && templateAutoFillOk && isMachineDesc(a.lineDescription)) {
+      const tpl = templateForSystem(a.systemTypeId, mvb);
+      if (tpl) {
+        patch.lineDescription = tpl;
+        lineDescEditedRef.current.delete(i);
+      }
+    }
+    setAreas((prev) => prev.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
   };
 
   // ---- Add-on handlers ------------------------------------------------------
@@ -1973,6 +2058,25 @@ export default function EstimatorScreen({
   // Polish keeps its undo (the pre-polish text, per line, cleared when a
   // line is removed so it can never land on the wrong index).
   const [linePrePolish, setLinePrePolish] = useState<Record<number, { field: 'customScope' | 'lineDescription'; text: string }>>({});
+
+  // ---- Template fill-in tokens (prompt 94 B2) ------------------------------
+  // The description keeps its {{tokens}} until the rep answers them; drafts
+  // of the answers live here (keyed `${lineIdx}:${tokenName}`) and COMMIT
+  // (blur / Enter / a completed date pick) substitutes the value into the
+  // text, after which it is ordinary text: nothing re-templatizes it, and
+  // the field disappears because its token no longer exists in the text.
+  const [tokenDraft, setTokenDraft] = useState<Record<string, string>>({});
+  const commitLineToken = (i: number, tok: TokenField, raw: string) => {
+    const v = String(raw || '').trim();
+    if (!v) return;
+    const value = tok.type === 'date' ? fmtTokenDate(v) : v;
+    setAreas((prev) => prev.map((a, idx) => (idx === i
+      ? { ...a, lineDescription: scopeApplyTokens(a.lineDescription, { [tok.name]: value }) }
+      : a)));
+    lineDescEditedRef.current.add(i);
+    setTokenDraft((prev) => { const n = { ...prev }; delete n[`${i}:${tok.name}`]; return n; });
+    setSaveState('idle');
+  };
   const [linePolishBusy, setLinePolishBusy] = useState<number | null>(null);
   const [linePolishError, setLinePolishError] = useState<Record<number, string>>({});
   const [addonPrePolish, setAddonPrePolish] = useState<Record<string, string>>({});
@@ -2571,13 +2675,17 @@ export default function EstimatorScreen({
         // The dedup pick (linkedLead) outranks the URL lead link: the rep
         // explicitly chose that record. An edit keeps its stored lead.
         leadId: editing?.leadId ?? linkedLead?.id ?? leadLink?.id ?? null,
-        // Custom saves write the scope themselves (with scope_edited_at). A
-        // standard save flags the document stale whenever one exists: with
-        // auto-regenerate gone (build 25, cost + edit safety), "the estimate
-        // may have moved under the document" is true of machine text too.
-        // The whole-document editedScope path is gone with its textarea
-        // (prompt 76 Part D); per-line edits ride the line items instead.
-        markScopeStale: isCustom ? false : (dbScopeEdited || scopeGenerated),
+        // Custom saves write the scope themselves (with scope_edited_at).
+        // Prompt 94: a standard save now WRITES the assembled document (the
+        // same line-text assembly localScopePreview shows) instead of
+        // flagging it stale, so estimates.scope_of_work keeps feeding
+        // jobs.scope and the crew scope with the AI writer gated off. The
+        // one exception is a legacy hand-edited document (scope_edited_at
+        // set): a human's words are never overwritten, so that save leaves
+        // every scope column alone. markScopeStale is never set anymore;
+        // the stale flag is dead once the prod cleanup clears old rows.
+        markScopeStale: false,
+        assembledScope: (!isCustom && !dbScopeEdited) ? localScopePreview : null,
         isCustom,
         customScope: isCustom ? customScope : null,
         customPrice: isCustom ? sellPrice : null,
@@ -2588,11 +2696,12 @@ export default function EstimatorScreen({
       });
       // Auto-first, then manual (build 25): the ONE automatic generation
       // happens on the save that has a scope-templated estimate with every
-      // scope question answered and no document yet. After that, saves only
-      // mark the document stale and the Regenerate button is the only writer.
+      // scope question answered and no document yet. Prompt 94 B4: only
+      // while the generate flag is on; with it off (prod), templates land
+      // at pick time and the save above wrote the assembled document.
       // Custom estimates NEVER generate: the typed text IS the scope, and the
       // template writer would replace it with add-on snippets.
-      const shouldAutoGen = !isCustom && !opts?.skipAutoScope &&
+      const shouldAutoGen = generateOn && !isCustom && !opts?.skipAutoScope &&
         !dbScopeEdited && !scopeGenerated && scopeQuestions.length === 0;
       let syncedNumber: number | null = editing?.estimateNumber ?? null;
       if (navigator.onLine) {
@@ -2610,8 +2719,9 @@ export default function EstimatorScreen({
         // Offline: owed generation fires when the outbox drains (effect above).
         pendingAutoGenRef.current = id;
       }
-      // Mirror what the save just wrote into local scope state.
-      if (!isCustom && (dbScopeEdited || scopeGenerated)) setScopeStale(true);
+      // Prompt 94: the save writes the current assembly (or, on a legacy
+      // hand-edited document, touches nothing), so nothing is stale after it.
+      setScopeStale(false);
       setSavedEstimateId(id);
       draftWriteRef.current = true; // the row exists; the early draft must never fire after a full save
       await refreshPending();
@@ -2639,7 +2749,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
+  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared, localScopePreview, generateOn]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // ---- Autosave engine (prompt 87 Task D) ----------------------------------
@@ -3166,23 +3276,26 @@ export default function EstimatorScreen({
               editable (name, system, sqft, price, options, scope description,
               internal notes) lives in the bottom-sheet editor a tap opens.
               "Regenerate scope" here is the whole-estimate writer the deleted
-              scope panel used to own (Part D3); the per-line Generate button
-              lives in the sheet. */}
+              scope panel used to own (Part D3); it renders only while the AI
+              generate flag is on (prompt 94 B4: off in prod, templates fill
+              line scopes at pick time and the save assembles the document). */}
           {!isCustom && <section className="card">
             <div className="areas-head">
               <span>Line items</span>
-              <span className="scope-actions">
-                <button
-                  type="button"
-                  className="link"
-                  onClick={regenerateScope}
-                  disabled={scopeBusy || !online || (!savedEstimateId && !canSave)}
-                >
-                  {scopeBusy ? 'Writing…' : scopeGenerated ? 'Regenerate scope' : 'Write scope now'}
-                </button>
-              </span>
+              {generateOn && (
+                <span className="scope-actions">
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={regenerateScope}
+                    disabled={scopeBusy || !online || (!savedEstimateId && !canSave)}
+                  >
+                    {scopeBusy ? 'Writing…' : scopeGenerated ? 'Regenerate scope' : 'Write scope now'}
+                  </button>
+                </span>
+              )}
             </div>
-            {!scopeBusy && scopeStale && (scopeGenerated || scopeEditedAny) && (
+            {generateOn && !scopeBusy && scopeStale && (scopeGenerated || scopeEditedAny) && (
               <p className="warn">The estimate changed after the scope was written. Tap Regenerate scope before sending.</p>
             )}
             {scopeGenerated && scopeContainsBlank(scopeText) && (
@@ -3724,7 +3837,6 @@ export default function EstimatorScreen({
           notes). BottomSheet owns the modal lifecycle. */}
       {openLine && (() => {
         const sheetBreakpoint = Number(config.lineSheetBreakpointPx) > 0 ? Number(config.lineSheetBreakpointPx) : 700;
-        const generateOn = config.estimateLineGenerateEnabled !== false;
         const close = () => { setOpenLine(null); setSheetFocusDesc(false); };
         if (openLine.kind === 'area') {
           const i = openLine.idx;
@@ -3739,6 +3851,8 @@ export default function EstimatorScreen({
           const isMvbOnly = !a.isCustom && isMvbOnlySystem(a.systemTypeId);
           const tpl = !a.isCustom && sys ? ((a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template) : null;
           const descValue = a.isCustom ? a.customScope : a.lineDescription;
+          // Prompt 94 B2: one input per distinct {{token}} still in the text.
+          const lineTokens = a.isCustom ? [] : scopeTokenFields(descValue);
           const title = a.isCustom ? (a.name.trim() || customLabelDefault) : (a.name || `Area ${i + 1}`);
           return (
             <BottomSheet
@@ -3776,7 +3890,7 @@ export default function EstimatorScreen({
                     </label>
                     {!isMvbOnly && (
                       <label className="check">
-                        <input type="checkbox" checked={a.mvb} onChange={(e) => setArea(i, { mvb: e.target.checked })} />
+                        <input type="checkbox" checked={a.mvb} onChange={(e) => onAreaMvbChange(i, e.target.checked)} />
                         <span>Add moisture vapor barrier (MVB) to this area</span>
                       </label>
                     )}
@@ -3868,11 +3982,10 @@ export default function EstimatorScreen({
                     )}
                   </span>
                 </div>
-                {/* Precedence (Part A3), stated where it happens: a template
-                    seeds this field through the scope writer, but a rep edit
-                    WINS (the save round-trips it verbatim and the refresh
-                    skips edited lines) until the rep presses Generate again,
-                    which is the one explicit way to ask for a rewrite. */}
+                {/* Precedence (prompt 94 B1), stated where it happens: the
+                    system's template lands here at pick time, but a rep edit
+                    WINS (the save round-trips it verbatim); changing systems
+                    over rep text asks first, defaulting to keep. */}
                 <textarea
                   data-sheet-desc="1"
                   className="custom-scope"
@@ -3884,17 +3997,39 @@ export default function EstimatorScreen({
                   }}
                   placeholder={a.isCustom
                     ? "Describe this line's work: prep, what gets done, what is excluded…"
-                    : 'The scope of work for this line. Generate fills it from the system template, or type your own.'}
+                    : 'The scope of work for this line. Picking a system fills it from that system’s template, or type your own.'}
                 />
+                {lineTokens.length > 0 && (
+                  <div className="sheet-token-form">
+                    <p className="hint">Fill in the job details below; each answer drops straight into the text. Sending is blocked until every field is filled.</p>
+                    {lineTokens.map((t) => (
+                      <label className="field" key={t.name}><span>{t.label}</span>
+                        <input
+                          type={t.type === 'date' ? 'date' : 'text'}
+                          value={tokenDraft[`${i}:${t.name}`] ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setTokenDraft((prev) => ({ ...prev, [`${i}:${t.name}`]: val }));
+                            // A date input's change IS the pick: commit now.
+                            if (t.type === 'date' && val) commitLineToken(i, t, val);
+                          }}
+                          onBlur={(e) => commitLineToken(i, t, e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitLineToken(i, t, (e.target as HTMLInputElement).value); } }}
+                          placeholder={t.type === 'date' ? '' : t.label}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                )}
                 {a.isCustom && <p className="hint">Used word for word on the customer proposal; the scope writer never rewrites it. Generate cleans up your typed text and can be undone.</p>}
                 {!a.isCustom && !tpl && (
                   <p className="warn">
-                    {skipReasonByIdx[i] ? `The scope writer skipped this line (${skipReasonByIdx[i]}). ` : `No scope template exists for ${sys?.name ?? 'this system'}, so nothing writes itself. `}
+                    {skipReasonByIdx[i] ? `The scope writer skipped this line (${skipReasonByIdx[i]}). ` : `No scope template exists for ${sys?.name ?? 'this system'}, so nothing fills itself in. `}
                     Type the scope here; the customer reads it word for word, and sending stays blocked until it has one.
                   </p>
                 )}
                 {!a.isCustom && tpl && descValue.trim() !== '' && (
-                  <p className="hint">Your edit wins: saves keep this text as-is until you press Generate again.</p>
+                  <p className="hint">Your edit wins: saves keep this text as-is. Re-picking the system swaps in its template again (it asks first over your own words).</p>
                 )}
                 {linePolishError[i] && <p className="warn">{linePolishError[i]}</p>}
                 {scopeError && <p className="warn">{scopeError}</p>}
