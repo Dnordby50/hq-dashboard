@@ -1443,16 +1443,34 @@ body.pec-portal-mode #pecHelp { display: none !important; }
   .rd-nav-scroll { overflow: visible; flex: none; }
   .rd-promo { display: none; }
 }
+/* Notification bell panel (prompt 92): sizing lives HERE, not inline on the
+   markup, so the phone media query below can reshape it. Width and height are
+   viewport-clamped at EVERY size, so the panel can never run off-screen and a
+   long notification list scrolls inside it. */
+#pecBellPanel { position: absolute; top: calc(100% + 8px); right: 0; width: min(340px, calc(100vw - 24px)); max-height: min(440px, calc(100vh - 120px)); overflow-y: auto; background: var(--rd-card, #fff); color: var(--rd-ink, #0f1420); border: 1px solid var(--rd-line, var(--border)); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,.2); z-index: 10001; text-align: left; }
 @media (max-width: 720px) {
   body { padding: 10px; }
   #rdMain { padding: 16px; }
   #rdTitle h1 { font-size: 24px; }
   #rdTopbar { flex-wrap: wrap; }
   #rdSearch { order: 3; width: 100%; }
+  /* Bell sits flush right against the user cluster instead of crushed
+     mid-row when the topbar wraps. */
+  #pecBell { margin-left: auto; }
+  /* Phone: viewport-anchored. The bell button's slot in the wrapped flex row
+     is not stable, so absolute anchoring could push the panel off either
+     edge; fixed + symmetric insets is always fully on screen (360/390/430px
+     all verified). wireBell sets the top just below the bell at open time. */
+  #pecBellPanel { position: fixed; left: 12px; right: 12px; width: auto; top: 64px; }
   /* Help panel goes near full-width on phones so it does not clip off-screen,
      and the launcher tucks into the corner. */
   #pecHelp { right: 12px; bottom: 12px; }
   .pec-help-panel { width: calc(100vw - 24px); height: calc(100vh - 92px); bottom: 66px; right: 0; }
+}
+@media (max-width: 480px) {
+  /* Tiny screens: the user block collapses to just the avatar + buttons so
+     refresh, bell, and user all fit on one uncrowded row. */
+  .rd-user-name, .rd-user-sub { display: none; }
 }
 </style>
 
@@ -5279,7 +5297,11 @@ if (document.readyState === 'loading') {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
             <span id="pecBellBadge" style="display:none;position:absolute;top:-5px;right:-5px;background:#dc2626;color:#fff;font-size:.6rem;line-height:1;min-width:15px;height:15px;border-radius:8px;align-items:center;justify-content:center;padding:0 3px;font-weight:700">0</span>
           </button>
-          <div id="pecBellPanel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;width:340px;max-height:440px;overflow:auto;background:var(--rd-card, #fff);color:var(--rd-ink, #0f1420);border:1px solid var(--rd-line, var(--border));border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.2);z-index:10001;text-align:left"></div>
+          <!-- Sizing/position live in CSS (see the #pecBellPanel rules by the
+               topbar media queries), NOT inline, so the phone breakpoint can
+               reshape the panel. Only the display toggle stays inline (the
+               bell JS flips style.display). -->
+          <div id="pecBellPanel" style="display:none"></div>
         </div>
         <div class="rd-user">
           <!-- SOPs hub button removed for now; the SOPs section + code stay in
@@ -6553,14 +6575,33 @@ function wireBell() {
   const btn = document.getElementById('pecBellBtn'), panel = document.getElementById('pecBellPanel');
   if (!btn || !panel || btn._wired) return;
   btn._wired = true;
+  // Phone (prompt 92): the panel is position:fixed (left/right 12px, see the
+  // 720px topbar media query, which this 720 must match), so its top is set
+  // at OPEN time to sit just below the bell wherever the wrapped topbar put
+  // it. Desktop keeps the CSS absolute anchoring; the inline top is cleared
+  // there so the stylesheet value wins after a resize across the breakpoint.
+  const positionPanel = () => {
+    if (window.matchMedia && window.matchMedia('(max-width:720px)').matches) {
+      const r = btn.getBoundingClientRect();
+      panel.style.top = Math.max(12, Math.round(r.bottom + 8)) + 'px';
+    } else {
+      panel.style.top = '';
+    }
+  };
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const open = panel.style.display !== 'none';
+    if (!open) positionPanel();
     panel.style.display = open ? 'none' : 'block';
     if (!open) refreshBell();
   });
+  // Outside click closes (click fires on touch taps too, so this covers
+  // phones); Escape closes from the keyboard.
   document.addEventListener('click', (e) => {
     if (panel.style.display !== 'none' && !panel.contains(e.target) && !btn.contains(e.target)) panel.style.display = 'none';
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && panel.style.display !== 'none') panel.style.display = 'none';
   });
 }
 
