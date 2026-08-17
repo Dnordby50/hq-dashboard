@@ -1,3 +1,21 @@
+## [2026-08-17 MST] SalesAsk secrets set in Netlify, webhook registered, ingestion verified live: 6 recordings landed, Kellogg Patton linked to EST-102133, lookback restored to 3.
+
+By: Cowork
+
+Changed: no code. Netlify env (prescottepoxy): added SALESASK_API_KEY and SALESASK_WEBHOOK_SECRET (all scopes, same value all contexts; no other var touched). Netlify deploy triggered 9:48:09 AM, published 9:48:59 AM (71 functions). SalesAsk: generated the org API key under Settings > Organization > Organization API Key (there was none before, so nothing was rotated); registered webhook "TopCoat" at https://prescottepoxy.netlify.app/api/salesask/webhook?secret=<SALESASK_WEBHOOK_SECRET> (Organization scope, All Sources, event recording.processed, Active). Supabase: `update settings set value='3' where key='salesask_pull_lookback_days'` after verification.
+
+**Verification (10:07 AM, one cron tick after deploy).** `select count(*), min(occurred_at), max(occurred_at) from pec_salesask_recordings` = 6 rows, 2026-08-04 16:42Z to 2026-08-14 21:08Z. Rows: Tom Bechtel (name_fuzzy, lead + customer + appt, EST-102054), Merlin P (unmatched), Adam Camacho Hockey Rink (name_fuzzy, EST-102095), Kellogg Patton epoxy (name_fuzzy, lead Kellogg Patton, EST-102133), Peter mcknight (name_fuzzy, customer + appt but NO lead), Jennifer Steichen (name_fuzzy, EST-102154). Acceptance count >= 4 passes; the Kellogg row has has_lead = true and resolves to EST-102133, so the Sales visit recording card on that estimate should now fill.
+
+**Two deviations from the acceptance text, flagged not fixed (task said do not change code):**
+1. Kellogg's match_method is `name_fuzzy`, not `rep_time_window` or `event_id`. Every row has rep_email = NULL, so the rep-based matcher had nothing to key on and the name matcher caught it instead. The outcome is correct (right lead, right estimate) but the rep_email mapping in the mapper or the 08-13 rep-uid backfill is not reaching this table. Worth a look in Claude Code: is rep_email supposed to be populated from the SalesAsk payload, and if so why is it null on all 6?
+2. The "Test" recording named in the acceptance list did not appear. Only 6 real meetings exist in SalesAsk for the window; if a Test recording was expected it may have been deleted in SalesAsk or excluded by the sync filter. Not chased.
+
+Also: Peter mcknight matched a customer and appointment via name_fuzzy but has no lead_id, so it will not surface on a lead or estimate card. Same class of question as item 1.
+
+Login note for future Cowork runs: Netlify's "Log in with Google" from the automation tab produced "invalid state key" once; Dylan logged in from a normal tab and the session carried over. Cowork cannot act on accounts.google.com.
+
+Next step for Dylan: open EST-102133 and confirm the recording card is filled. Next step for Claude Code (optional): the rep_email = NULL question above.
+
 ## [2026-08-16 MST] Cowork's prompt 94 findings fixed: the estimator's blank banner is token-aware, the stale-iframe cache hole is plugged with headers, and the three copy debts are paid.
 
 By: Claude Code
