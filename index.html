@@ -13647,7 +13647,7 @@ async function renderMetrics() {
       // flag + override (never re-derived here; the accept stamped it so
       // later appointment edits cannot rewrite history). Degrades
       // independently pre-migration.
-      supabase.from('estimates').select('id,estimate_number,price,accepted_at,sold_on_site,sold_on_site_override,intake,customers(name)').eq('status', 'accepted').is('deleted_at', null).not('accepted_at', 'is', null),
+      supabase.from('estimates').select('id,estimate_number,price,accepted_at,sold_on_site,sold_on_site_override,intake,customer_first_name,customer_last_name,customer_company,customers(name)').eq('status', 'accepted').is('deleted_at', null).not('accepted_at', 'is', null),
     ]), { label: 'renderMetrics' });
   } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
@@ -14248,7 +14248,9 @@ async function renderMetrics() {
       columns: ['Estimate', 'Customer', 'Accepted', 'Sold on site', 'Salesperson', 'Value'],
       rows: sosInWin.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '')).map(e => ({ cells: [
         e.estimate_number ? 'EST-' + e.estimate_number : '—',
-        (e.customers && e.customers.name) || '—',
+        // Estimates without a linked customers row still carry their own name
+        // columns (Cowork's cosmetic finding: two rows showed a dash).
+        (e.customers && e.customers.name) || [e.customer_first_name, e.customer_last_name].filter(Boolean).join(' ') || e.customer_company || '—',
         invFmtDate(e.day),
         e.sold_on_site_override != null
           ? (e.sold ? 'Yes (set by hand)' : 'No (set by hand)')
@@ -32199,7 +32201,9 @@ async function estimateSendGateOk(est) {
   // blocker (no sortOrder), renders as a plain row like the stale-scope one.
   const sowBlanks = estScopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
   if (sowBlanks.length) {
-    blockers.push({ msg: `The scope of work still has a blank: "${sowBlanks[0].snippet}". Fix the line scopes in the estimator, then send.` });
+    blockers.push({ msg: sowBlanks[0].kind === 'token'
+      ? `The scope of work still has an unfilled field: "${sowBlanks[0].snippet}". Fill it in on the line editor, then send.`
+      : `The scope of work still has a blank: "${sowBlanks[0].snippet}". Fix the line scopes in the estimator, then send.` });
   }
   // Rule 4: a schedule (when one exists) must resolve to the OPENING total
   // exactly; sub-cent percent rounding is fine (the render's last-row
@@ -32242,7 +32246,7 @@ function showEstimateSendBlockers(est, blockers) {
       ${blockers.map(b => b.sortOrder != null ? `
         <button type="button" class="pec-btn ghost est-blocker-link" data-sort="${b.sortOrder}" style="text-align:left;white-space:normal;line-height:1.45;display:block">
           ${esc(b.msg)}
-          <span style="display:block;font-size:.72rem;color:var(--rd-accent,var(--accent));margin-top:3px;font-weight:600">Tap to open this line and type or generate its scope →</span>
+          <span style="display:block;font-size:.72rem;color:var(--rd-accent,var(--accent));margin-top:3px;font-weight:600">Tap to open this line and fix its scope →</span>
         </button>` : `
         <div style="border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:9px 11px;font-size:.85rem;line-height:1.45">${esc(b.msg)}</div>`).join('')}
     </div>

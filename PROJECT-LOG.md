@@ -1,3 +1,25 @@
+## [2026-08-16 MST] Cowork's prompt 94 findings fixed: the estimator's blank banner is token-aware, the stale-iframe cache hole is plugged with headers, and the three copy debts are paid.
+
+By: Claude Code
+
+Changed: netlify.toml (three header rules), apps/estimator/src/features/estimator/EstimatorScreen.tsx (banner rewrite), index.html (blocker-row copy, estimate-level token wording, sold-on-site drilldown customer fallback + two select columns), production/optional-lines.cjs (estimate-level token wording), production/scope-tokens.test.cjs (three wording assertions). Also pushed Cowork's local commit 38fc7e2 per the standing auto-push rule.
+
+Everything here answers the Cowork verification entry above; nothing else was touched.
+
+**The stale-iframe cache hole (Cowork's READ THIS FIRST).** The repo already carried the exact fix for the dashboard: netlify.toml serves "/" and "/index.html" with `max-age=0, must-revalidate` specifically because "the recurring 'it's not fixed' reports were the browser/CDN holding an old index.html". The estimator's HTML entry points never got that rule, which is why the inline iframe could hold a two-deploys-old /estimator/index.html with no service worker involved. Now `/estimator/` and `/estimator/index.html` get the same must-revalidate rule (both real loaders request exactly /estimator/: the iframe src builder and the PWA start_url; query strings do not affect Netlify header matching), and `/estimator/assets/*` is explicitly `immutable` (hashed filenames). Limit stated honestly: a deep-linked SPA path under /estimator/other-path would miss the rule, but no such path is ever loaded today. Dylan's one-time hard reload is still needed on any device that cached BEFORE this deploy; after that, a plain reload picks up every future deploy.
+
+**The banner defect.** The Line-items card warning was `scopeGenerated && scopeContainsBlank(scopeText)` with hardcoded BLANK wording pointing at the removed answers flow. It now runs the SAME four-detector scan the send gate runs (shared scopeBlanks over the displayed assembly), so the warning and the block can never disagree: a token finding reads "An unfilled field is still in the scope (...). tap the line and use the fill-in boxes under its description", anything else names the placeholder and points at the questions card only when that card is actually rendering. The scopeGenerated gate is gone too, so a fresh estimate whose template still carries BLANK warns before the first save instead of only after a legacy generation.
+
+**Copy debts.** The dashboard blocker row no longer says "type or generate its scope"; the estimate-level scope_of_work blocker calls a token an "unfilled field" in BOTH the client gate and production/optional-lines.cjs scopeSendBlockers (kept in lockstep); and the Sold-on-site drilldown falls back to the estimate's own customer_first_name/customer_last_name/customer_company columns when no customers row is linked, which is why EST-102094 and EST-102046 showed a dash.
+
+Verified: npm test green (scope-tokens now 19 passed, including three new assertions pinning the token wording through the real scopeSendBlockers at line and estimate level); estimator vite build green; all 7 index.html JS blocks parse; node --check clean on optional-lines.cjs. NOT verified: the headers on the live CDN (checked after this deploy lands, below) and the banner visually in a browser; its logic is the shared tested detector and the strings are plain template literals.
+
+Next steps: none. Cowork's untested compose-submit send path remains untested by design (it cannot be exercised without a real send); the gate call sits one line above the send in the same handler.
+Handoff to Cowork: None.
+Handoff to Dylan: unchanged from the two entries above; the hard-reload advice stands for any device that has not reloaded since this afternoon.
+
+---
+
 ## [2026-08-16 MST] Prompt 94 browser verification: all five tasks pass, but only after a hard reload (the inline estimator was serving a STALE bundle), the send gate had to be exercised through a different door than the handoff assumed, and the estimator's own blank-warning banner is WRONG for tokens.
 By: Cowork
 Changed: No code, schema, or settings. Created and archived one throwaway estimate (EST-102168, TEST Prompt94); appended and then reverted a sentence on the Concrete Polishing scope template; set and cleared one sold_on_site_override. PROJECT-LOG.md only.

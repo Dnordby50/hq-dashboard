@@ -353,6 +353,29 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
+# The estimator's HTML entry points get the SAME rule (added 2026-08-16 after
+# the prompt-94 verification found the dashboard's inline-estimator iframe
+# serving a cached /estimator/index.html referencing a bundle two deploys old,
+# with no service worker involved -- the identical failure mode the "/" rule
+# above exists for). Both real loaders request exactly /estimator/ (the
+# dashboard iframe src and the PWA start_url; query strings do not affect
+# header matching), so these two paths cover them. Hashed Vite assets under
+# /estimator/assets/ cache hard: a new build is a new filename.
+[[headers]]
+  for = "/estimator/"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/estimator/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/estimator/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
 # Security headers (added 2026-07-25, security remediation P1). Applied to every
 # path; the cache rules above still apply per-path (Netlify merges header rules).
 #

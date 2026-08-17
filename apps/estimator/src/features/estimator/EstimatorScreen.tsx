@@ -49,7 +49,7 @@ import { computeScheduleCents, defaultScheduleRows, resolveDepositPct, scheduleV
 import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
-import { applyAnswers as scopeApplyAnswers, applyTokens as scopeApplyTokens, containsBlank as scopeContainsBlank, openQuestions as scopeOpenQuestions, tokenFields as scopeTokenFields, type ScopeQuestion, type TokenField } from '../../../../../production/scope.cjs';
+import { applyAnswers as scopeApplyAnswers, applyTokens as scopeApplyTokens, openQuestions as scopeOpenQuestions, scopeBlanks as scopeBlanksScan, tokenFields as scopeTokenFields, type ScopeQuestion, type TokenField } from '../../../../../production/scope.cjs';
 // Card-first draft + salesperson default rules (prompt 47): shared CJS module
 // (the scope.cjs pattern) so the fixture tests exercise the exact logic the
 // screen runs.
@@ -799,6 +799,15 @@ export default function EstimatorScreen({
   // else the live local preview. The whole-document textarea is GONE (prompt
   // 76 Part D); this now only feeds the crew-notes generator's source text.
   const scopeDisplay = scopeGenerated || scopeEditedAny ? scopeText : localScopePreview;
+  // The Line-items card banner runs the SAME four-detector scan the send gate
+  // runs (BLANK, is/is-not, ___, {{token}}), over the same assembled text, so
+  // the warning and the block can never disagree about what is unfilled.
+  // Cowork's prompt-94 verification caught the old banner naming "the word
+  // BLANK" for an unfilled token and pointing at a card that no longer helps.
+  const scopeSendFindings = useMemo(
+    () => (isCustom ? [] : scopeBlanksScan(scopeDisplay)),
+    [isCustom, scopeDisplay],
+  );
 
   // Call the ONE scope writer (pec-estimate-scope; the estimate page uses the
   // same function with the same semantics) and load the assembled document
@@ -3326,8 +3335,10 @@ export default function EstimatorScreen({
             {generateOn && !scopeBusy && scopeStale && (scopeGenerated || scopeEditedAny) && (
               <p className="warn">The estimate changed after the scope was written. Tap Regenerate scope before sending.</p>
             )}
-            {scopeGenerated && scopeContainsBlank(scopeText) && (
-              <p className="warn">The word BLANK is still in the scope. You will not be able to send this estimate until it is filled in. Answer the scope questions below, or edit the line descriptions.</p>
+            {scopeSendFindings.length > 0 && (
+              <p className="warn">{scopeSendFindings[0].kind === 'token'
+                ? `An unfilled field is still in the scope ("${scopeSendFindings[0].snippet}"). Sending is blocked until it is filled in; tap the line and use the fill-in boxes under its description.`
+                : `A placeholder is still in the scope ("${scopeSendFindings[0].snippet}"). Sending is blocked until it is filled in. ${scopeQuestions.length > 0 ? 'Answer the scope questions below, or edit' : 'Tap the line and edit'} the description.`}</p>
             )}
             {scopeError && <p className="warn">{scopeError}</p>}
             <div className="line-table">

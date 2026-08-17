@@ -204,8 +204,11 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
   const sowBlanks = scopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
   if (sowBlanks.length) {
     // Prompt 94: the answers card is gone; the document assembles from the
-    // line scopes, so the fix lives in the estimator's line editor.
-    blockers.push(`The scope of work still has a blank: "${sowBlanks[0].snippet}". Fix the line scopes in the estimator, then send.`);
+    // line scopes, so the fix lives in the estimator's line editor. An
+    // unfilled token gets token wording (Cowork's copy-debt finding).
+    blockers.push(sowBlanks[0].kind === 'token'
+      ? `The scope of work still has an unfilled field: "${sowBlanks[0].snippet}". Fill it in on the line editor, then send.`
+      : `The scope of work still has a blank: "${sowBlanks[0].snippet}". Fix the line scopes in the estimator, then send.`);
   }
   return blockers;
 }

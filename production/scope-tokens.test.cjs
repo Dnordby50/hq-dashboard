@@ -57,5 +57,23 @@ function ok(cond, label) {
   ok(scopeBlanks('Braces in code {like this} are fine.').length === 0, 'single braces never trip the scan');
 }
 
+// ---- scopeSendBlockers: token findings get token WORDING ------------------
+// Cowork's prompt-94 verification found surfaces calling an unfilled token a
+// "blank"; these pin the gate's line-level and estimate-level messages so the
+// wording can't regress (the dashboard mirrors these strings by convention).
+{
+  const { scopeSendBlockers } = require('./optional-lines.cjs');
+  const tokenLine = [{ estimate_area_id: 'a1', label: 'Garage', description: 'Install begins {{install_date}}.', sort_order: 0 }];
+  const b1 = scopeSendBlockers({ scopeStale: false, items: tokenLine, customAreaIds: new Set(), scopeOfWork: '' });
+  ok(b1.length === 1 && /unfilled field/.test(b1[0]) && !/has a blank/.test(b1[0]),
+    'line-level token blocker says "unfilled field", never "blank"');
+  const blankLine = [{ estimate_area_id: 'a1', label: 'Garage', description: 'Duration: BLANK', sort_order: 0 }];
+  const b2 = scopeSendBlockers({ scopeStale: false, items: blankLine, customAreaIds: new Set(), scopeOfWork: '' });
+  ok(b2.length === 1 && /has a blank/.test(b2[0]), 'line-level BLANK keeps the blank wording');
+  const b3 = scopeSendBlockers({ scopeStale: false, items: [], customAreaIds: new Set(), scopeOfWork: 'Ends {{finish_date}}.' });
+  ok(b3.length === 1 && /unfilled field/.test(b3[0]) && !/has a blank/.test(b3[0]),
+    'estimate-level token blocker says "unfilled field" too');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
