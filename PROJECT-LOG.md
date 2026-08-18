@@ -1,3 +1,33 @@
+## [2026-08-18 MST] Three of Dylan's asks scoped into four build prompts (95-98). The Routemize reschedule bug is diagnosed with live payload evidence, and TWO of the three asks turned out to rest on things that were never actually built.
+
+By: Cowork
+
+Changed: added claude-code-prompt-95-routemize-update-repair.md, claude-code-prompt-96-google-multi-calendar-sync.md, claude-code-prompt-97-lead-scoring-live.md, claude-code-prompt-98-estimate-followup-queue.md. No code, schema, or settings touched. Read-only queries against prod and Dylan's Google calendar list.
+
+Dylan's three asks: (1) a Routemize appointment was updated in Routemize and did not update in TopCoat, diagnose and repair; (2) all events from his Google Calendar should push to TopCoat; (3) a sales follow-up list ranked by Hot leads with indicators for who to call first. Fifteen scoping questions asked and answered before anything was written.
+
+**Ask 1, Routemize. Root cause confirmed and the naive fix is a trap.** `mapRoutemizeEnvelope` reads `data.startTime` only (pec-appt-intake.cjs:419); `AppointmentUpdated` carries `newStartTime`/`newEndTime` instead, so `parseApptDate` returns null (:657), the handler takes the defensive no-readable-start-time branch (:659-676), and the row stays stale. Four live occurrences in `pec_webhook_ingest_log`: Karen Adams twice (2026-08-13), Rob Rudman (08-10), Jay McCoy (07-29). Karen's real move was 3:00 PM to 9:15 AM on 8/14; appointment 01f84b13-99f7-4618-8da8-1ef10f4ba6ec still reads `2026-08-14 22:00:00+00`, and it has a google_event_id so the stale time also reached the calendar.
+
+The trap: `newStartTime` arrives WITH a Z on a TimeChanged (`2026-08-14T16:15:00Z`) and WITHOUT one on ordinary updates (`2026-07-31T16:15:00`), and `notificationVariables.AppointmentTime` proves both are UTC (9:15 AM Phoenix in each case). `parseApptDate` treats a bare datetime as Phoenix -07:00, so reading `newStartTime` without normalizing would shift every non-reschedule update seven hours. Routemize also echoes the unchanged time on address edits and cancellations, so the update path has to be safe when nothing moved.
+
+Second defect found in the same read: `newStatus` is numeric (`"1"` scheduled, `"3"` cancelled) and the cancel detector tests strings against `/cancel/i`, so it can never match. Rob Rudman's cancellation only landed because a separate AppointmentCancelled arrived 3 seconds later. This becomes dangerous once the update path starts running: it sets `status: 'scheduled'` unconditionally (:757), so an out-of-order update would resurrect a cancelled appointment.
+
+**Ask 2, Google Calendar: not a setting, a build.** `pec-google-calendar-pull.cjs` polls only the dedicated "TopCoat" secondary calendar created at connect (Dylan's is `c4b6b7e4...@group.calendar.google.com`), with ONE sync token per member. His account carries eleven calendars; his primary holds recurring focus blocks and GSR meetings, and Routemize does not write to it. Multi-calendar needs per-calendar sync tokens, a bounded time window (an unbounded `singleEvents:true` full sync of a personal calendar with daily recurring blocks would expand thousands of instances), write guardrails (owner/writer access, organizer-only, instance-not-series), and an audit proving `source='google'` rows never reach customer-facing automation.
+
+**Ask 3, Hot leads: the badge works, the data is empty, and prompt 49 was never run.** 22 leads, 4 scored; 17 of the 18 open leads have `score` null. `leads.score` is written only by pec-lead-ai on the web-form intake path and the Refresh button, and 13 leads now come from Routemize, whose `createRoutemizeLead` deliberately skips the AI kick. Sorting the pipeline Hot-first today returns nothing useful. Separately, claude-code-prompt-49-followup-queue.md (written 07-26, updated 07-29) never shipped: no Follow-ups view in index.html, no touch tables in the database, and `customers` has no notes column at all.
+
+**Dylan's answers, now locked in the prompts.** Routemize: accept everything Routemize sends on an update (with a customer_notes guard, because prompt 65 already sent raw question text to customers), map numeric statuses AND keep the separate Cancelled event, replay the four logged payloads to correct history, and surface future silent no-ops as an Ops Queue derived check plus a bell. Calendar: per-calendar toggles in Settings, full detail visible to all staff, two-way with guardrails, keep the dedicated TopCoat calendar as the push target. Follow-ups: fix scoring first then build the queue, score every lead and refresh nightly, rank on days-since-human-touch plus inbound engagement plus dollar value, scope to SENT ESTIMATES only for now (this narrows prompt 49 decision 9), one shared queue, exits are accepted/signed/paid, lost/declined, or snoozed until a date, and a logged touch writes a note on the customer file that also renders on the estimate detail and the pipeline card. Dylan's own words on the suggestions: "what Chuck Thokey with a top rep would say, or Tommy Mello, not just checking in on your proposal", so prompt 98 makes coaching-grade openers an acceptance criterion with a deterministic reject list, grounded in PEC-SALES-003 and the SalesAsk visit transcripts.
+
+Sequencing: 95 and 96 are independent, though both edit appointment-adjacent code so run 95 first if they land in one session. 97 is a hard prerequisite for 98.
+
+Files touched: the four prompt files above, PROJECT-LOG.md.
+
+Next steps: Dylan runs the prompts through Claude Code in the order above.
+Handoff to Cowork: prompt 98 Part D asks for a copy of the PEC Sales Process v3 playbook at docs/sales/pec-sales-process-v3.md (it currently lives in Drive as PEC-SALES-003). Cowork should place it there before prompt 98 runs.
+Handoff to Dylan: two things worth knowing before the builds run. Karen Adams' 8/14 appointment is still wrong in TopCoat until prompt 95's replay runs. And the Routemize to DripJobs push should stay on until you have watched a real reschedule move in TopCoat.
+
+---
+
 ## [2026-08-17 MST] Radar alert store shipped: pec_radar_alerts + 12 radar_* settings keys + a Settings > Radar card; Quo webhook gained a brand fallback map; both audit defects root-caused
 
 By: Claude Code
