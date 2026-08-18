@@ -2711,6 +2711,234 @@
           "name": "idx_pec_prod_jobs_crm_job_id"
         }
       ]
+    },
+    {
+      "file": "2026-08-30_salesask_uid.sql",
+      "date": "2026-08-30",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.salesask_uid"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-31_prompt83_companycam_estimates.sql",
+      "date": "2026-08-31",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.companycam_project_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.companycam_excluded"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.companycam_photos"
+        },
+        {
+          "kind": "setting",
+          "name": "companycam_estimate_photos_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "companycam_customer_photos_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "companycam_name_match_min_score"
+        },
+        {
+          "kind": "setting",
+          "name": "companycam_max_customer_photos"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-01_prompt92_schedule_mobile_breakpoint.sql",
+      "date": "2026-09-01",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "schedule_mobile_breakpoint_px"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-02_prompt92_payment_notifications.sql",
+      "date": "2026-09-02",
+      "hasHeader": true,
+      "none": "also creates a SECURITY DEFINER function (log_payment_recorded), not expressible as table/column/index/setting",
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "payment_notifications_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "payment_notify_min_amount"
+        },
+        {
+          "kind": "setting",
+          "name": "payment_notify_staff_recorded"
+        },
+        {
+          "kind": "setting",
+          "name": "payment_notify_ach_failed_priority"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-03_prompt93_warranty_and_charts.sql",
+      "date": "2026-09-03",
+      "hasHeader": true,
+      "none": "also widens the pec_presentation_sections.kind CHECK to include 'warranty' (constraint change, not expressible as table/column/index/setting)",
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.warranty_snapshot"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_warranty_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_color_chart_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_color_chart_min_products"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_color_chart_max_swatches"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_color_chart_print_mode"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-04_prompt94_sold_on_site_and_template_flip.sql",
+      "date": "2026-09-04",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.sold_on_site"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.sold_on_site_override"
+        },
+        {
+          "kind": "setting",
+          "name": "sold_on_site_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "sold_on_site_grace_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "sold_on_site_appt_types"
+        },
+        {
+          "kind": "setting",
+          "name": "sold_on_site_lookback_hours"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-05_radar_alerts.sql",
+      "date": "2026-09-05",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_radar_alerts"
+        },
+        {
+          "kind": "index",
+          "name": "pec_radar_alerts_dedupe_key_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_radar_alerts_status_idx"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_missed_call_grace_hours"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_missed_call_rate_threshold_pts"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_ar_balance_floor"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_ar_days_threshold"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_cold_estimate_value_floor"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_cold_estimate_days"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_callback_sla_days"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_escalation_call_count"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_mute_days"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_open_escalate_days"
+        },
+        {
+          "kind": "setting",
+          "name": "radar_feed_stale_hours"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-06_quo_number_brand_map.sql",
+      "date": "2026-09-06",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "quo_number_brand_map"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -2781,6 +3009,7 @@
     "pec_prod_recipe_slots",
     "pec_prod_system_types",
     "pec_prod_tasks",
+    "pec_radar_alerts",
     "pec_review_bonuses",
     "pec_review_requests",
     "pec_sales_member_google_tokens",
