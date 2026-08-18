@@ -75,7 +75,11 @@ For each open subject, assemble the deterministic inputs first, in code, not in 
 - Days since the estimate was sent.
 - Whether a SalesAsk recording exists for the visit, and its summary.
 
-Then one model call per subject returns `score`, `why_now`, `suggested_opener`, `suggested_channel`. Store the inputs blob alongside the output. The model orders and words; it does not decide membership, and its score is never allowed to remove a row.
+Then **batch roughly 25 subjects per Claude call, not one call per subject** (prompt 49's cost decision, still binding even though today's set is 8). The call returns `score`, `why_now`, `suggested_opener`, `suggested_channel` per subject. Store the inputs blob alongside the output. The model orders and words; it does not decide membership, and its score is never allowed to remove a row.
+
+A **deterministic `fallbackPriority`** must exist so the queue is never empty or unordered when the model call fails: rank by days-since-touch, then engagement recency, then value. Prompt 49 locked this; keep it.
+
+Put the shared rules in a pure module `production/followup-rules.cjs` required by the Netlify function, with a mirrored copy in index.html for the client render (the precedent is `pecInstallmentAsk` mirroring `_pec-installments.cjs`). Keep them in lockstep and test the module directly.
 
 A manual "Re-rank now" button on the view runs the same path for the current set.
 
@@ -104,7 +108,7 @@ Nav badge = the count of live rows (one head-count query at boot, the Ops Queue 
 
 ## Part F: the Slack digest
 
-Once a day, to the leads channel (`SLACK_LEADS_WEBHOOK`, falling back to `SLACK_OFFICE_WEBHOOK`, logged no-op when neither is set, matching `pec-lead-intake`): the top N rows with name, price, days quiet, the why-now line, and a TopCoat link. Time and N are settings. Skip the post entirely when the queue is empty rather than sending "nothing to do today" every morning.
+Once a day, to `SLACK_OFFICE_WEBHOOK` (prompt 49's locked channel; fall back to `SLACK_LEADS_WEBHOOK`, logged no-op when neither is set, matching `pec-lead-intake`): the top N rows with name, price, days quiet, the why-now line, and a TopCoat link. Time and N are settings. Skip the post entirely when the queue is empty rather than sending "nothing to do today" every morning.
 
 ## Part G: docs and ship
 
