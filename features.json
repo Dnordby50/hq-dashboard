@@ -1546,7 +1546,7 @@
     {
       "name": "Quo / OpenPhone integration",
       "area": "integrations",
-      "description": "Integration with the office phone (Quo/OpenPhone) powering two-way SMS from customer profiles and jobs, a Text invoice button that sends the pay link, STOP-based opt-out enforcement, and automatic call logging with AI summaries, next steps, and full transcripts on customer profiles and lead timelines.",
+      "description": "Integration with the office phone (Quo/OpenPhone) powering two-way SMS from customer profiles and jobs, a Text invoice button that sends the pay link, STOP-based opt-out enforcement, and automatic call logging with AI summaries, next steps, and full transcripts on customer profiles and lead timelines. 2026-08-17: brandForOurNumber (pec-webhook-quo.cjs) gained a fallback for inboxes that cannot have a pec_sms_senders row (that table is keyed one-row-per-brand): the quo_number_brand_map settings key, a JSON object of {number: brand}. The Aron personal inbox +19284931922 was the live case, 33 brand-null pec_call_log rows in 30 days; it stays unmapped (brand null) until Dylan picks its brand or retires the inbox.",
       "code": {
         "indexHtml": [
           "pecSendSms",
@@ -1562,7 +1562,10 @@
         "pec_sms_log",
         "pec_call_log"
       ],
-      "since": "2026-06"
+      "since": "2026-06",
+      "settings": [
+        "quo_number_brand_map"
+      ]
     },
     {
       "name": "DripJobs integration",
@@ -2395,6 +2398,35 @@
         "pec_appointments",
         "pec_sales_team_members",
         "settings"
+      ],
+      "since": "2026-08"
+    },
+    {
+      "name": "Radar alert store",
+      "area": "ops",
+      "description": "The finding store for the Business Radar Cowork project (a project OUTSIDE this repo that watches pec_call_log, the CRM tables, and email for operational misses: unreturned inbound calls, complaint language, completed jobs with money outstanding, big estimates gone cold, callback SLA breaches). One pec_radar_alerts row = one finding; dedupe_key is UNIQUE so the same finding is never raised twice, status walks open/acked/resolved/muted, and last_seen_at/seen_count let a recurring condition bump its existing row instead of minting a new one. Radar writes via the service role (MCP); staff read and write through RLS (is_admin_staff() on all verbs, no anon path). Deliberately NO metrics or snapshot table rides along: the 2026-08-18 audit confirmed every tracked rate is reconstructible from live data (pec_call_log alone holds direction/status/brand/occurred_at for every call), so a snapshot would store derivable data behind a cron that can silently stop. All twelve firing thresholds are radar_* settings rows (rule 12), surfaced in Settings > Radar: master switch + missed-call grace hours front of card, the other ten behind Advanced, plus a read-only list of open findings with age. No Netlify function and no schedule: the radar project itself is the writer and scheduler.",
+      "code": {
+        "indexHtml": [
+          "renderSettingsRadar"
+        ]
+      },
+      "tables": [
+        "pec_radar_alerts",
+        "settings"
+      ],
+      "settings": [
+        "radar_enabled",
+        "radar_missed_call_grace_hours",
+        "radar_missed_call_rate_threshold_pts",
+        "radar_ar_balance_floor",
+        "radar_ar_days_threshold",
+        "radar_cold_estimate_value_floor",
+        "radar_cold_estimate_days",
+        "radar_callback_sla_days",
+        "radar_escalation_call_count",
+        "radar_mute_days",
+        "radar_open_escalate_days",
+        "radar_feed_stale_hours"
       ],
       "since": "2026-08"
     }

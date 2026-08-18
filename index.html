@@ -19826,6 +19826,7 @@ const SETTINGS_PAGES = [
   { key: 'busybusy',     label: 'BusyBusy',     group: 'config', keywords: ['hours', 'import', 'payroll', 'geofence', 'time entries'] },
   { key: 'brand',        label: 'Brand',        group: 'config', keywords: ['logo', 'terms', 'invoice text', 'status descriptions'] },
   { key: 'health',       label: 'System health', group: 'config', keywords: ['heartbeat', 'monitor', 'scheduled functions', 'slack alert', 'uptime', 'stale'] },
+  { key: 'radar',        label: 'Radar',        group: 'config', keywords: ['alerts', 'missed calls', 'unreturned', 'ar aging', 'cold estimate', 'callback sla', 'thresholds', 'mute'] },
 ];
 const SETTINGS_GROUP_LABELS = { config: 'Configuration', records: 'Records' };
 
@@ -20133,6 +20134,119 @@ async function renderSettingsSystemHealth() {
       showToast('Heartbeat run failed: ' + (err.message || err), { ttl: 5000 });
     }
   });
+}
+
+// Settings > Radar (rule 12). The Business Radar Cowork project watches the
+// phone, the CRM, and email, and records findings in pec_radar_alerts; every
+// threshold it fires on lives in these radar_* settings rows so tuning needs
+// no code change (the radar reads settings on every run). Front of card: the
+// master switch and the missed-call grace window (the two tuned in normal
+// operation); the other ten thresholds sit behind Advanced. Below the knobs:
+// the open findings READ-ONLY with age, so the card shows state, not just
+// dials. Radar itself writes rows via the service role; this card only
+// writes settings.
+async function renderSettingsRadar() {
+  const root = $('pecViewRoot');
+  let map = {}, alerts = [];
+  try {
+    const [setRes, alertRes] = await withFreshSession(() => Promise.all([
+      supabase.from('settings').select('key,value').like('key', 'radar_%'),
+      supabase.from('pec_radar_alerts').select('title,brand,dollars,severity,fired_at,seen_count')
+        .eq('status', 'open').order('fired_at', { ascending: false }).limit(25),
+    ]), { label: 'settings-radar' });
+    map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+    alerts = (alertRes && !alertRes.error && alertRes.data) || [];
+  } catch (_) { /* renders with defaults; the card still shows */ }
+  const enabled = (map.radar_enabled || 'true') !== 'false';
+  const val = (key, dflt) => map[key] === undefined ? dflt : map[key];
+  const fmtAge = (iso) => {
+    if (!iso) return '';
+    const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+    if (h < 1) return `${Math.max(1, Math.round(h * 60))} min ago`;
+    if (h < 48) return `${Math.round(h)}h ago`;
+    return `${Math.round(h / 24)}d ago`;
+  };
+  const numField = (id, label, key, dflt, hint) => `
+    <div class="pec-field" style="max-width:280px"><label>${esc(label)}</label>
+      <input type="number" id="${id}" min="0" step="1" value="${esc(val(key, dflt))}">
+      ${hint ? `<div style="font-size:.68rem;color:var(--muted);margin-top:3px">${esc(hint)}</div>` : ''}</div>`;
+
+  root.innerHTML = `
+    ${settingsTabBar('radar')}
+    <div class="pec-card">
+      <h3 style="margin-top:0">Business Radar</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        Radar watches the phone log, the CRM, and email for balls on the floor (an unreturned
+        call, a complaint, money aging on a finished job) and for rates drifting against their
+        baseline. These thresholds control when a finding fires. Findings land in the list below
+        and never repeat while they stay open.
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;cursor:pointer;margin-bottom:10px">
+        <input type="checkbox" id="rdEnabled" style="width:auto" ${enabled ? 'checked' : ''}>
+        Radar runs and records findings</label>
+      ${numField('rdGraceHours', 'Missed call grace (business hours)', 'radar_missed_call_grace_hours', '2',
+        'An inbound call nobody called or texted back fires after this many business hours.')}
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:.78rem;color:var(--muted)">Advanced</summary>
+        <div style="padding:10px 0 0">
+          ${numField('rdRatePts', 'Missed call rate alarm (points over baseline)', 'radar_missed_call_rate_threshold_pts', '8',
+            'Weekly missed-call rate must move this many points past the trailing 8 week baseline to report.')}
+          ${numField('rdArFloor', 'AR balance floor ($)', 'radar_ar_balance_floor', '500', '')}
+          ${numField('rdArDays', 'AR days outstanding', 'radar_ar_days_threshold', '7',
+            'A completed job with balance above the floor fires after this many days unpaid.')}
+          ${numField('rdEstFloor', 'Cold estimate value floor ($)', 'radar_cold_estimate_value_floor', '5000', '')}
+          ${numField('rdEstDays', 'Cold estimate days', 'radar_cold_estimate_days', '5',
+            'An open estimate above the floor with no view for this many days fires.')}
+          ${numField('rdCbSla', 'Callback SLA (days)', 'radar_callback_sla_days', '10', '')}
+          ${numField('rdEscCalls', 'Escalation call count', 'radar_escalation_call_count', '3',
+            'The same number calling this many times inside 48 hours fires.')}
+          ${numField('rdMuteDays', 'Mute holds for (days)', 'radar_mute_days', '30', '')}
+          ${numField('rdOpenDays', 'Call out open findings after (days)', 'radar_open_escalate_days', '3',
+            'An open finding older than this gets re-surfaced in the morning brief with its age.')}
+          ${numField('rdFeedHours', 'Phone feed stale after (hours)', 'radar_feed_stale_hours', '12',
+            'If the newest call-log row is older than this on a business day, radar treats the feed as dead and says so.')}
+        </div>
+      </details>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="rdStatus"></div>
+    </div>
+    <div class="pec-card">
+      <h3 style="margin-top:0">Open findings</h3>
+      ${alerts.length ? alerts.map(a => `
+        <div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.78rem">
+          <span style="flex:none;min-width:38px;color:var(--muted)">${esc(a.brand || '')}</span>
+          <span style="flex:1">${esc(a.title)}${a.seen_count > 1 ? ` <span style="color:var(--muted)">(seen ${esc(String(a.seen_count))}x)</span>` : ''}</span>
+          ${a.dollars ? `<span style="flex:none;font-weight:700">$${esc(Number(a.dollars).toLocaleString())}</span>` : ''}
+          <span style="flex:none;color:var(--muted)">${esc(fmtAge(a.fired_at))}</span>
+        </div>`).join('')
+      : '<div class="pec-empty" style="padding:8px">No open findings. Radar records them here when one fires.</div>'}
+    </div>
+  `;
+  wireSettingsTabs(root);
+
+  const status = (msg) => { const el = $('rdStatus'); if (el) el.textContent = msg; };
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-radar-save' });
+    if (w && w.error) throw w.error;
+  };
+  const wire = (id, key, isCheckbox) => {
+    const el = $(id); if (!el) return;
+    el.addEventListener('change', async () => {
+      try { await saveSetting(key, isCheckbox ? String(el.checked) : el.value.trim()); status('Saved.'); setTimeout(() => status(''), 1500); }
+      catch (err) { status('Save failed: ' + (err.message || err)); }
+    });
+  };
+  wire('rdEnabled', 'radar_enabled', true);
+  wire('rdGraceHours', 'radar_missed_call_grace_hours', false);
+  wire('rdRatePts', 'radar_missed_call_rate_threshold_pts', false);
+  wire('rdArFloor', 'radar_ar_balance_floor', false);
+  wire('rdArDays', 'radar_ar_days_threshold', false);
+  wire('rdEstFloor', 'radar_cold_estimate_value_floor', false);
+  wire('rdEstDays', 'radar_cold_estimate_days', false);
+  wire('rdCbSla', 'radar_callback_sla_days', false);
+  wire('rdEscCalls', 'radar_escalation_call_count', false);
+  wire('rdMuteDays', 'radar_mute_days', false);
+  wire('rdOpenDays', 'radar_open_escalate_days', false);
+  wire('rdFeedHours', 'radar_feed_stale_hours', false);
 }
 
 // feature's knobs live in company Settings, settings-table backed, no code
@@ -23281,6 +23395,7 @@ async function renderSettings() {
   if (state.settingsTab === 'busybusy') return renderSettingsBusybusy();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   if (state.settingsTab === 'health') return renderSettingsSystemHealth();
+  if (state.settingsTab === 'radar') return renderSettingsRadar();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes, adminUsersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),

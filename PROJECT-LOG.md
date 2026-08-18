@@ -1,3 +1,37 @@
+## [2026-08-17 MST] Radar alert store shipped: pec_radar_alerts + 12 radar_* settings keys + a Settings > Radar card; Quo webhook gained a brand fallback map; both audit defects root-caused
+
+By: Claude Code
+
+Changed: migration 2026-09-05_radar_alerts.sql (new pec_radar_alerts table, applied to prod via MCP), migration 2026-09-06_quo_number_brand_map.sql (one settings seed, applied), index.html (SETTINGS_PAGES entry, renderSettings dispatch, new renderSettingsRadar), help/whats-new.json (radar-settings-card entry), netlify/functions/pec-webhook-quo.cjs (brandForOurNumber fallback), SCHEMA.md, features.json.
+
+Why: the Business Radar Cowork project (watches the phone, the CRM, and email for operational misses) needed exactly one thing from this repo, a finding store so it never raises the same finding twice and an unresolved finding can age visibly. Deliberately NO metrics or snapshot table rode along: the 2026-08-18 audit confirmed every tracked rate is reconstructible from live data.
+
+**The table.** pec_radar_alerts: one row = one finding, UNIQUE dedupe_key is the never-twice identity, status open/acked/resolved/muted (CHECK-enforced), last_seen_at + seen_count let a recurring condition bump its row instead of minting a new one, evidence jsonb carries the query and raw counts. Index (status, fired_at desc) serves the "what is open, newest first" read every brief starts with.
+
+**RLS deviation from the build prompt, on purpose.** The prompt said to mirror pec_user_todos and described it as "staff read and write". pec_user_todos is actually OWNER-ONLY (rows key on admin_user_id; deliberately private), which cannot apply to a table with no owner column. The repo's canonical staff-shared shape is is_admin_staff() on all verbs (policies.sql: customers_staff, jobs_staff and friends), and that is what pec_radar_alerts got: one FOR ALL policy, using + with check, no anon path. Radar itself writes via the service role, which bypasses RLS anyway.
+
+**Verified live (acceptance criteria).** RLS on; exactly one policy (pec_radar_alerts_staff, ALL); table empty; 12 radar_* settings rows. Behavioral checks ran in a ROLLED-BACK prod transaction (the prompt 92 rehearsal technique, since service-role queries bypass RLS and prove nothing): a duplicate dedupe_key insert raised unique_violation (23505), and a SELECT under role authenticated with Dylan's real auth uid in request.jwt.claims returned the test row without an RLS error. The final RAISE forced rollback, so no test residue.
+
+**Settings card (this IS the user-visible part, so a What's New entry shipped).** Settings > Radar: master switch + missed-call grace hours front of card, the other ten thresholds behind the collapsed Advanced disclosure (amended rule 12), plus a read-only Open findings list (brand, title, dollars, age, seen-count) so the card shows state, not just dials. Modeled line-for-line on renderSettingsSystemHealth, same save wiring (upsert on change, settings_staff policy means only admin role can actually write). All 7 index.html JS blocks parse (node --check per block; the 8th "block" is the importmap JSON).
+
+**Audit defect 1 (pec_job_ar completed with null completed_date): REAL, root cause found, fix deliberately NOT applied.** pec_job_ar is a view over jobs, so the defect is jobs.status='completed' with completed_date null. Every CLIENT completion path stamps (the status dropdown at index.html ~6166 checks-then-stamps). The leak is the DB trigger pec_prod_jobs_sync_public_status (2026-06-09_unified_status_trigger.sql): when a prod row is marked completed it stamps completed_date = v_end, and v_end is NULL when the prod row has no schedule days and no install_date at fire time. The status <> 'completed' guard then means the row is never revisited, so the null is permanent. Bryan Smith is exactly this: his 4 schedule days were all created 2026-08-13 19:13Z in one batch (retro-scheduled), no audit_log status_change exists for the CRM job (so no client path did it), the trigger completed it earlier with no span. Fix is one line, `coalesce(v_end, v_today)` in the stamp, but the trigger is SECURITY DEFINER and hangs on pec_prod_jobs, which is rule-14 territory AND inside this session's explicit "do not touch pec_prod_*" guardrail, so it goes to the next session with a rehearsal. See handoff.
+
+**Audit defect 2 (33 brand-null pec_call_log rows): REAL, cause fixed, mapping decision left to Dylan.** Every null-brand row in 30 days has +19284931922 (the Aron personal inbox) as our side. brandForOurNumber resolves via pec_sms_senders, which is keyed PRIMARY KEY (brand), one row per brand, so a personal inbox can NEVER get a senders row (and adding one with active=true would be dangerous anyway: pec-send-sms picks its send-from row by brand+active with limit 1). The webhook now falls back to the new quo_number_brand_map settings key, a JSON object of {number: brand}, seeded EMPTY: which brand the Aron line belongs to (Aron worked both companies) or whether the inbox should be retired is a business call, and a wrong brand is worse than a missing one. No Settings UI for this key on purpose (rare-edit webhook config); noting it here so the orphan inventory knows it is deliberate. node --check clean.
+
+NOT verified: the Radar card visually in a browser (its logic mirrors the health card verbatim and the queries were exercised live via SQL); the webhook fallback end-to-end (needs a real call on the Aron line after deploy AND a mapping in the key, which is still {}).
+
+Files touched: supabase/migrations/2026-09-05_radar_alerts.sql, supabase/migrations/2026-09-06_quo_number_brand_map.sql, index.html, netlify/functions/pec-webhook-quo.cjs, help/whats-new.json, SCHEMA.md, features.json, PROJECT-LOG.md.
+
+Next steps (next Claude Code session): the trigger fix, rehearsed per rule 14 (rolled-back prod transaction if a branch DB is still unavailable): in pec_prod_jobs_sync_public_status change the stamp to `when target = 'completed' and completed_date is null then coalesce(v_end, v_today)`.
+
+Handoff to Cowork: None (the two data backfills below need Dylan's word first).
+
+Handoff to Dylan:
+1. One word needed: which brand should the Aron inbox (+19284931922) count under, prescott-epoxy or finishing-touch, or should the inbox be retired in Quo? Once you say, the mapping is `update settings set value = '{"+19284931922": "<brand>"}' where key = 'quo_number_brand_map';` and the 33 historical rows backfill with `update pec_call_log set brand = '<brand>' where brand is null and (from_number = '+19284931922' or to_number = '+19284931922');`
+2. Bryan Smith's job shows completed with no completion date, which hides his $6,400 balance from AR aging. If you agree the fire-station job finished 2026-08-13 (his schedule's last day), the one-row fix is `update jobs set completed_date = '2026-08-13' where id = '3783eaf8-fd49-4ad9-b134-115fcb668236' and completed_date is null;`
+
+---
+
 ## [2026-08-17 MST] SalesAsk secrets set in Netlify, webhook registered, ingestion verified live: 6 recordings landed, Kellogg Patton linked to EST-102133, lookback restored to 3.
 
 By: Cowork

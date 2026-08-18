@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-17 (Claude Code, radar alert store) after applying `2026-09-05_radar_alerts.sql` live via MCP: new `pec_radar_alerts` table (the Business Radar Cowork project's finding store; one row = one finding, UNIQUE dedupe_key, status open/acked/resolved/muted, RLS staff-ALL via is_admin_staff(), radar itself writes via service role) plus twelve `radar_*` settings keys, all thresholds: `radar_enabled` ('true'), `radar_missed_call_grace_hours` ('2'), `radar_missed_call_rate_threshold_pts` ('8'), `radar_ar_balance_floor` ('500'), `radar_ar_days_threshold` ('7'), `radar_cold_estimate_value_floor` ('5000'), `radar_cold_estimate_days` ('5'), `radar_callback_sla_days` ('10'), `radar_escalation_call_count` ('3'), `radar_mute_days` ('30'), `radar_open_escalate_days` ('3'), `radar_feed_stale_hours` ('12'). Surfaced in Settings > Radar (master switch + grace hours front of card, the rest behind Advanced, open findings listed read-only). Same session, `2026-09-06_quo_number_brand_map.sql`: settings key `quo_number_brand_map` (seeded '{}'; JSON map of extra Quo workspace numbers to a brand, the pec-webhook-quo.cjs brandForOurNumber fallback for inboxes that cannot have a pec_sms_senders row because that table is keyed PRIMARY KEY (brand); the Aron inbox +19284931922 is the live case, left unmapped until Dylan picks its brand; deliberately no Settings UI). Settings 127 rows to 140. Only the new pec_radar_alerts section and the settings section changed.
 Refreshed 2026-08-16 (Claude Code, prompt 94) after applying `2026-09-04_prompt94_sold_on_site_and_template_flip.sql` live via MCP: `estimates.sold_on_site` + `estimates.sold_on_site_override` (both boolean nullable; see the estimates note), four settings keys `sold_on_site_enabled` ('true'), `sold_on_site_grace_minutes` ('120'), `sold_on_site_appt_types` ('on_site_estimate'), `sold_on_site_lookback_hours` ('0'), plus two DATA flips: `estimate_line_generate_enabled` set to 'false' (system scope templates fill line descriptions at pick time now; the AI writer + polish endpoints are gated server-side on this key) and `estimates.scope_stale` cleared on the 3 rows stuck true (nothing sets the flag anymore; the Regenerate button that cleared it is gone). Settings 123 rows to 127. Only the estimates and settings sections changed.
 Refreshed 2026-08-16 (Claude Code, prompt 93) after applying `2026-09-03_prompt93_warranty_and_charts.sql` live via MCP: `pec_presentation_sections.kind` CHECK widened to include `'warranty'` (constraint re-created as pec_presentation_sections_kind_check; warranty sections render PINNED after the estimate terms card, never among the floating literature, and Present mode shows them as slides); `estimates.warranty_snapshot` (jsonb, nullable; `{sections:[{id,title,body,images}],frozen_at}` written by markEstimateSent on every send, the prompt 83 live-until-sent contract; NULL = never sent since the feature, and an accepted estimate with no snapshot renders no warranty); five settings keys `estimate_warranty_enabled` ('true'), `estimate_color_chart_enabled` ('true'), `estimate_color_chart_min_products` ('6'), `estimate_color_chart_max_swatches` ('60'), `estimate_color_chart_print_mode` ('omit'), all read server-side by pec-public-estimate.cjs (charts additionally read pec_prod_recipe_slots / pec_prod_products / pec_prod_system_types; estimate_areas.answers now rides the customer render's areas select for the Your-selection marker). Settings 118 rows to 123. Only those sections changed.
 Refreshed 2026-08-16 (Claude Code, prompt 92) after applying two migrations live via MCP: (1) `2026-09-01_prompt92_schedule_mobile_breakpoint.sql`: settings key `schedule_mobile_breakpoint_px` ('720'; below this width the Job Schedule 3-week view renders as the one-week swipe grid). (2) `2026-09-02_prompt92_payment_notifications.sql`: four settings keys `payment_notifications_enabled` ('true'), `payment_notify_min_amount` ('0'), `payment_notify_staff_recorded` ('true'), `payment_notify_ach_failed_priority` ('high'), plus the SECURITY DEFINER function `log_payment_recorded(p_job_id uuid, p_amount numeric, p_method text)` (EXECUTE: authenticated/postgres/service_role only, anon+PUBLIC revoked; reads its gates from `settings` itself; branch rehearsal was impossible on the free plan, so it was rehearsed via rolled-back prod transactions under a simulated staff JWT). No table or column changed. Live settings count at refresh: 118 (documented 105 had drifted; the live schema wins). Only the settings and pec_notifications sections changed.
@@ -1719,6 +1720,37 @@ RLS: enabled · rows: 14
 PK: id
 FK: crew_id → pec_prod_crews.id
 
+### pec_radar_alerts
+RLS: enabled (staff ALL via `pec_radar_alerts_staff`, is_admin_staff() on using and with check; no anon path) · rows: 0 at creation
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| dedupe_key | text | no |  |
+| kind | text | no |  |
+| severity | text | no | 'tier1' |
+| brand | text | yes |  |
+| subject_type | text | yes |  |
+| subject_id | text | yes |  |
+| title | text | no |  |
+| detail | text | yes |  |
+| dollars | numeric | yes |  |
+| evidence | jsonb | yes |  |
+| status | text | no | 'open' |
+| fired_at | timestamptz | no | now() |
+| acked_at | timestamptz | yes |  |
+| resolved_at | timestamptz | yes |  |
+| muted_until | timestamptz | yes |  |
+| last_seen_at | timestamptz | no | now() |
+| seen_count | integer | no | 1 |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+UNIQUE: dedupe_key (pec_radar_alerts_dedupe_key_idx). Index: (status, fired_at desc).
+CHECKs: status in ('open','acked','resolved','muted'); severity in ('tier1','tier2','info').
+Added 2026-08-17 (migration 2026-09-05_radar_alerts.sql). The Business Radar Cowork project's finding store: one row = one finding, `dedupe_key` is the never-raise-twice identity, `last_seen_at`/`seen_count` let a recurring condition bump its row instead of minting a new one. Radar writes via the service role; staff read/write through the app (Settings > Radar shows open rows read-only). Deliberately NO metrics/snapshot table rides along: every tracked rate is reconstructible from pec_call_log / pec_job_ar / estimates / leads. The twelve `radar_*` settings keys are the thresholds (rule 12).
+
 ### pec_review_bonuses
 RLS: enabled · rows: 0
 
@@ -2102,7 +2134,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 127 (live count 2026-08-16, after prompt 94)
+RLS: enabled · rows: 140 (live count 2026-08-17, after the radar and quo_number_brand_map migrations)
 
 | column | type | nullable | default |
 |---|---|---|---|

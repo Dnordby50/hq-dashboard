@@ -1,5 +1,16 @@
 [
   {
+    "id": "radar-settings-card",
+    "date": "2026-08-17",
+    "title": "New Settings page: Radar, the early warning system's dials and its open findings.",
+    "summary": "Business Radar watches the phone log, the CRM, and email for problems (an unreturned call, a complaint, money aging on a finished job, a big estimate going cold) and records findings so nothing gets raised twice. The new Settings, Radar page holds every threshold it fires on and shows the findings that are still open, with their age.",
+    "howto": [
+      "Open Settings and pick Radar in the left rail.",
+      "The switch turns radar on or off. Missed call grace sets how long an unreturned call can sit before it fires.",
+      "Open Advanced for the other thresholds: AR aging, cold estimates, callback SLA, escalation and mute windows."
+    ]
+  },
+  {
     "id": "scope-templates-replace-generate",
     "date": "2026-08-16",
     "title": "The Generate Scope button is gone. Picking a system writes the scope now.",
