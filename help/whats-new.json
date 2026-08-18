@@ -1,5 +1,16 @@
 [
   {
+    "id": "google-multi-calendar-sync",
+    "date": "2026-08-18",
+    "title": "See your whole Google calendar in TopCoat.",
+    "summary": "Each salesperson can now pick which of their Google calendars sync into TopCoat, not just the dedicated TopCoat calendar. Imported events show on the Appointments calendar with a small G badge, visible to all staff. Events you own move both ways (drag them in TopCoat and Google follows); events you cannot edit in Google (subscriptions, other people's invites) show as read only with the reason. Imported events are time blocks only: they never text a customer, never send a reminder, and never move a lead.",
+    "howto": [
+      "Go to Settings, then Appointments. Under Google Calendar sync, click Refresh list next to a connected salesperson to load their calendars.",
+      "Tick the calendars to sync. Events land on the Appointments calendar within about 15 minutes.",
+      "On the Appointments calendar, use the Hide Google-imported checkbox when you only want to see real bookings."
+    ]
+  },
+  {
     "id": "routemize-reschedule-repair",
     "date": "2026-08-18",
     "title": "Rescheduling in Routemize now moves the appointment in TopCoat.",

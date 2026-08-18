@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-18 (Claude Code, prompt 96) after applying `2026-09-08_prompt96_google_multi_calendar.sql` live via MCP: new `pec_sales_member_google_calendars` table (one row per member x Google calendar; per-calendar `sync_token` because Google sync tokens are per-calendar, `access_role` as of the last calendarList refresh, `sync_enabled` toggle, `last_synced_at`/`last_error` diagnostics; UNIQUE (member_id, calendar_id); RLS on, ZERO policies = default-deny service-role only, same posture as the token vault) plus the definer view `pec_member_google_calendars_v` (all columns EXCEPT sync_token, SELECT granted to authenticated: the Settings toggle list and the appointment modal's provenance read through it; writes go through pec-google-calendars.cjs). `pec_appointments.google_recurring_event_id` (text; Google's recurringEventId when the row is an expanded instance, the push patches the instance only) and `pec_appointments.google_readonly_reason` (text; non-null = TopCoat must not write the event back: calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit, computed at pull time, the UI renders read-only straight off it). Six settings keys: `google_pull_window_days_past` ('30'), `google_pull_window_days_future` ('180') front-of-card; `google_pull_max_pages_per_calendar` ('6'), `google_imported_default_appt_type` ('other'), `google_pull_include_all_day` ('true'), `google_pull_include_declined` ('false') behind Advanced on Settings > Appointments. Seeded one row per connected member for the existing TopCoat calendar (sync_enabled true; the multi-calendar pull loop skips it, it is the push target). Settings 143 rows to 149. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 95) after applying `2026-09-07_prompt95_routemize_update_repair.sql` live via MCP: three settings keys only, no table or column changed. `routemize_status_map` ('{"1":"scheduled","2":"scheduled","3":"canceled"}'; Routemize reports appointment status as a NUMBER and pec-appt-intake maps it through this key, so a new Routemize status code is a Settings edit, not a deploy; surfaced behind Advanced on Settings > Appointments > Routemize booking intake; the server falls back to exactly this default when the row is missing or broken, and an unmapped code is treated as an update, never a cancellation), `ops_check_appt_intake` ('true') and `ops_appt_intake_days` ('7'), the toggle + lookback window for the new Ops Queue derived check appt_intake_not_applied (webhook events that answered 200 without changing the appointment). Settings 140 rows to 143. Only the settings section changed.
 Refreshed 2026-08-17 (Claude Code, radar alert store) after applying `2026-09-05_radar_alerts.sql` live via MCP: new `pec_radar_alerts` table (the Business Radar Cowork project's finding store; one row = one finding, UNIQUE dedupe_key, status open/acked/resolved/muted, RLS staff-ALL via is_admin_staff(), radar itself writes via service role) plus twelve `radar_*` settings keys, all thresholds: `radar_enabled` ('true'), `radar_missed_call_grace_hours` ('2'), `radar_missed_call_rate_threshold_pts` ('8'), `radar_ar_balance_floor` ('500'), `radar_ar_days_threshold` ('7'), `radar_cold_estimate_value_floor` ('5000'), `radar_cold_estimate_days` ('5'), `radar_callback_sla_days` ('10'), `radar_escalation_call_count` ('3'), `radar_mute_days` ('30'), `radar_open_escalate_days` ('3'), `radar_feed_stale_hours` ('12'). Surfaced in Settings > Radar (master switch + grace hours front of card, the rest behind Advanced, open findings listed read-only). Same session, `2026-09-06_quo_number_brand_map.sql`: settings key `quo_number_brand_map` (seeded '{}'; JSON map of extra Quo workspace numbers to a brand, the pec-webhook-quo.cjs brandForOurNumber fallback for inboxes that cannot have a pec_sms_senders row because that table is keyed PRIMARY KEY (brand); the Aron inbox +19284931922 is the live case, left unmapped until Dylan picks its brand; deliberately no Settings UI). Settings 127 rows to 140. Only the new pec_radar_alerts section and the settings section changed.
 Refreshed 2026-08-16 (Claude Code, prompt 94) after applying `2026-09-04_prompt94_sold_on_site_and_template_flip.sql` live via MCP: `estimates.sold_on_site` + `estimates.sold_on_site_override` (both boolean nullable; see the estimates note), four settings keys `sold_on_site_enabled` ('true'), `sold_on_site_grace_minutes` ('120'), `sold_on_site_appt_types` ('on_site_estimate'), `sold_on_site_lookback_hours` ('0'), plus two DATA flips: `estimate_line_generate_enabled` set to 'false' (system scope templates fill line descriptions at pick time now; the AI writer + polish endpoints are gated server-side on this key) and `estimates.scope_stale` cleared on the 3 rows stuck true (nothing sets the flag anymore; the Regenerate button that cleared it is gone). Settings 123 rows to 127. Only the estimates and settings sections changed.
@@ -648,10 +649,12 @@ RLS: enabled · rows: 0
 | routemize_appt_id | text | yes |  |
 | salesask_synced_at | timestamptz | yes |  |
 | salesask_sync_hash | text | yes |  |
+| google_recurring_event_id | text | yes |  |
+| google_readonly_reason | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
-Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google / routemize. Unique (google_event_id) where not null; unique (routemize_appt_id) where not null (the Routemize intake idempotency + lookup key; routemize_appt_id = external Routemize appointment id, set when source = 'routemize'). notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google).
+Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google / routemize. Unique (google_event_id) where not null; unique (routemize_appt_id) where not null (the Routemize intake idempotency + lookup key; routemize_appt_id = external Routemize appointment id, set when source = 'routemize'). notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google). Prompt 96: google_recurring_event_id = Google's recurringEventId when the row is an expanded recurring instance (the push patches the instance id only, never the series); google_readonly_reason non-null = an imported event TopCoat must not write back (calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit), computed at pull time, rendered read-only in the UI straight off the column. source='google' rows never trigger customer-facing automation (reminders, bell, stage moves, sold-on-site).
 
 ### pec_bonus_payouts
 RLS: enabled · rows: 16
@@ -1808,6 +1811,28 @@ RLS: enabled · rows: 0
 PK: id
 FK: job_id → jobs.id (cascade); prod_job_id → pec_prod_jobs.id; customer_id → customers.id; review_id → reviews.id
 Note: added 2026-07-31 (prompt 60). One row per review ask; token is the /r/&lt;token&gt; tracking-link key (UNIQUE). status CHECK in ('asked','clicked','reviewed','skipped','stopped'). crew_lead/crew_id are SNAPSHOTS taken at ask time from pec_prod_jobs and never re-derived (schedule edits must not rewrite attribution history). job_completed_date preserves the real completion date for backfilled asks (asked_at is stamped at enrollment). PARTIAL UNIQUE idx_pec_review_req_one_open on (job_id) WHERE status in ('asked','clicked'): a job never holds two open asks. Index idx_pec_review_req_status_asked on (status, asked_at). RLS staff-only, no anon policy (the public redirect uses the service key).
+
+### pec_sales_member_google_calendars
+RLS: enabled (NO policies — default-deny, service-role only; browser reads go through the `pec_member_google_calendars_v` definer view, which excludes sync_token and grants SELECT to authenticated) · rows: 1 (the seeded TopCoat calendar row)
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| member_id | uuid | no |  |
+| calendar_id | text | no |  |
+| summary | text | yes |  |
+| access_role | text | yes |  |
+| sync_enabled | boolean | no | false |
+| sync_token | text | yes |  |
+| last_synced_at | timestamptz | yes |  |
+| last_error | text | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: member_id → pec_sales_team_members.id (on delete cascade)
+Unique: (member_id, calendar_id)
+Note: added 2026-08-18 (prompt 96). One row per (member, Google calendar): the per-calendar sync ledger for the multi-calendar pull. sync_token is PER CALENDAR (Google sync tokens are per-calendar); access_role is Google's accessRole at the last calendarList refresh (owner/writer = TopCoat may write the rep's own events back, reader/freeBusyReader = import-only); sync_enabled is the Settings > Appointments toggle. The member's dedicated TopCoat calendar is seeded sync_enabled=true but the pull loop always skips it (it is the push target) and the toggle endpoint refuses to flip it. Writes go through pec-google-calendars.cjs (list refresh + toggles) and the pull runner (tokens, last_synced_at, last_error).
 
 ### pec_sales_member_google_tokens
 RLS: enabled (NO policies — default-deny token vault, service-role only) · rows: 0

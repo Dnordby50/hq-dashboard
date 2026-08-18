@@ -46,7 +46,11 @@ function deriveSoldOnSite({ acceptedAt, appointments, graceMinutes, lookbackHour
   const t = new Date(acceptedAt || '').getTime();
   if (!Number.isFinite(t)) return { sold: false, appointment: null, reason: 'no_appointment' };
   const cands = (Array.isArray(appointments) ? appointments : [])
-    .filter((p) => p && types.includes(String(p.appt_type)) && String(p.status) !== 'canceled')
+    // Prompt 96: imported Google events are time blocks, never sales visits;
+    // they must not anchor a sold-on-site verdict. Rows without a source
+    // column (older callers) pass through unchanged.
+    .filter((p) => p && types.includes(String(p.appt_type)) && String(p.status) !== 'canceled'
+      && String(p.source || '') !== 'google')
     .map((p) => ({ p, s: new Date(p.start_at).getTime(), e: new Date(p.end_at).getTime() }))
     .filter((x) => Number.isFinite(x.s) && Number.isFinite(x.e));
   if (!cands.length) return { sold: false, appointment: null, reason: 'no_appointment' };

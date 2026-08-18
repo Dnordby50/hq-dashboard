@@ -1938,7 +1938,7 @@ async function handleAccept(est, body, event) {
     const set = await sb('GET', '/settings?key=in.(sold_on_site_enabled,sold_on_site_grace_minutes,sold_on_site_appt_types,sold_on_site_lookback_hours)&select=key,value');
     const cfg = Object.fromEntries((Array.isArray(set) ? set : []).map((r) => [r.key, r.value]));
     if (String(cfg.sold_on_site_enabled || 'true') !== 'false') {
-      const apptSel = 'select=id,appt_type,status,start_at,end_at';
+      const apptSel = 'select=id,appt_type,status,start_at,end_at,source';
       let appts = [];
       if (est.lead_id) {
         appts = await sb('GET', `/pec_appointments?lead_id=eq.${encodeURIComponent(est.lead_id)}&${apptSel}`);

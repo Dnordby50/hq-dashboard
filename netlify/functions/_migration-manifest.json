@@ -2939,6 +2939,70 @@
           "name": "quo_number_brand_map"
         }
       ]
+    },
+    {
+      "file": "2026-09-07_prompt95_routemize_update_repair.sql",
+      "date": "2026-09-07",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "routemize_status_map"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_appt_intake"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_appt_intake_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-08_prompt96_google_multi_calendar.sql",
+      "date": "2026-09-08",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_sales_member_google_calendars"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.google_recurring_event_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.google_readonly_reason"
+        },
+        {
+          "kind": "setting",
+          "name": "google_pull_window_days_past"
+        },
+        {
+          "kind": "setting",
+          "name": "google_pull_window_days_future"
+        },
+        {
+          "kind": "setting",
+          "name": "google_pull_max_pages_per_calendar"
+        },
+        {
+          "kind": "setting",
+          "name": "google_imported_default_appt_type"
+        },
+        {
+          "kind": "setting",
+          "name": "google_pull_include_all_day"
+        },
+        {
+          "kind": "setting",
+          "name": "google_pull_include_declined"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3012,6 +3076,7 @@
     "pec_radar_alerts",
     "pec_review_bonuses",
     "pec_review_requests",
+    "pec_sales_member_google_calendars",
     "pec_sales_member_google_tokens",
     "pec_sales_team_members",
     "pec_salesask_recordings",

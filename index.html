@@ -2143,6 +2143,19 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
 #pecApptCal .pec-appt-xs .pec-appt-type { display: none; }
 #pecApptCal .pec-appt-xs .pec-appt-block { padding: 1px 6px; justify-content: center; }
 
+/* Imported-from-Google marker (prompt 96): a small G badge on the chip, plus
+   a dashed left edge so a wall of focus blocks reads as background, not
+   bookings. Colors inherit; the badge works on tint and solid alike. */
+#pecApptCal .pec-appt-gmark {
+  flex: none; width: 12px; height: 12px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: .56rem; font-weight: 700; line-height: 1;
+  background: rgba(255,255,255,.85); color: #334155;
+  border: 1px solid rgba(51,65,85,.35);
+}
+#pecApptCal .pec-appt-imported .pec-appt-pill { border-left-style: dashed; }
+#pecApptCal .pec-appt-imported .pec-appt-block { border-left: 3px dashed rgba(255,255,255,.55); }
+
 /* Chrome polish: hover lift + today emphasis. The toolbar and legend are
    deliberately untouched beyond the token block above. */
 #pecApptCal .fc-event.pec-appt-chip:hover .pec-appt-pill,
@@ -7212,7 +7225,7 @@ const state = {
   // selects; apptView/apptDate survive re-renders so a filter change does not
   // yank the calendar back to today. openAppointmentId: a bell tap or
   // deep-link opens that appointment's edit modal after the view mounts.
-  apptFilters: { type: '', member: '' },
+  apptFilters: { type: '', member: '', hideImported: false },
   apptView: 'dayGridMonth', apptDate: null, openAppointmentId: null,
 };
 window.pecState = state;
@@ -21116,7 +21129,7 @@ function openPresentationSectionModal(existing, brandKey, allSections) {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes, gcalRes, gcSetRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
     supabase.from('settings').select('key,value').like('key', 'salesask_%'),
@@ -21124,8 +21137,20 @@ async function renderSettingsAppointments() {
     supabase.from('settings').select('value').eq('key', 'routemize_service_type_map').maybeSingle(),
     supabase.from('settings').select('value').eq('key', 'routemize_answer_routing').maybeSingle(),
     supabase.from('settings').select('value').eq('key', 'routemize_status_map').maybeSingle(),
+    // Prompt 96: the per-member calendar rows (read-only view; the table is
+    // service-role only) and the pull-window knobs.
+    supabase.from('pec_member_google_calendars_v').select('*').order('summary'),
+    supabase.from('settings').select('key,value').in('key', ['google_pull_window_days_past', 'google_pull_window_days_future', 'google_pull_max_pages_per_calendar', 'google_imported_default_appt_type', 'google_pull_include_all_day', 'google_pull_include_declined']),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
+  // Multi-calendar sync rows keyed by member (empty pre-migration: the card
+  // simply shows no calendar list).
+  const gcalRows = (gcalRes && !gcalRes.error && gcalRes.data) || [];
+  const calsByMember = {};
+  for (const c of gcalRows) (calsByMember[c.member_id] = calsByMember[c.member_id] || []).push(c);
+  const gcMigrated = !(gcalRes && gcalRes.error);
+  const gcSettings = {};
+  for (const s of ((gcSetRes && gcSetRes.data) || [])) gcSettings[s.key] = s.value;
   const rules = (rulesRes.error ? [] : rulesRes.data || []);
   const saSettings = {};
   for (const s of ((saSetRes && saSetRes.data) || [])) saSettings[s.key] = s.value;
@@ -21187,7 +21212,10 @@ async function renderSettingsAppointments() {
       <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
         Each salesperson connects their own Google account. Connecting creates a calendar named
         "TopCoat" in that account: TopCoat appointments appear there, and events added to it show
-        up here within about 15 minutes. Personal calendars are never read or written.
+        up here within about 15 minutes. Tick any other calendar below to import its events into
+        TopCoat too (visible to all staff, two-way where the salesperson can edit the event);
+        unticked calendars are never read or written. Imported events are time blocks: they never
+        text a customer or move a lead.
       </div>
       ${members.length ? members.map(m => `
         <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--rd-line,var(--border))">
@@ -21201,7 +21229,60 @@ async function renderSettingsAppointments() {
                  <button class="pec-btn sm" data-gconn="${esc(m.id)}">Reconnect</button>`
               : `<span style="font-size:.76rem;color:var(--muted)">Not connected</span>
                <button class="pec-btn sm" data-gconn="${esc(m.id)}">Connect Google</button>`}
-        </div>`).join('') : '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>'}
+        </div>
+        ${m.google_connected && gcMigrated ? `
+        <div style="margin:6px 0 10px 21px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+            <span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Calendars synced into TopCoat</span>
+            <button class="pec-btn ghost sm" data-gcal-refresh="${esc(m.id)}">Refresh list</button>
+            <span data-gcal-status="${esc(m.id)}" style="font-size:.7rem;color:var(--muted)"></span>
+          </div>
+          ${(calsByMember[m.id] || []).length ? (calsByMember[m.id] || []).map(c => {
+            const isTopcoat = c.calendar_id === m.google_calendar_id;
+            const roleLabel = isTopcoat ? 'push target'
+              : (['owner', 'writer'].includes(String(c.access_role || '')) ? 'can edit' : 'view only');
+            return `
+            <div style="display:flex;align-items:center;gap:10px;padding:4px 0;font-size:.8rem">
+              ${isTopcoat
+                ? '<span style="width:30px;flex:none;text-align:center;color:var(--muted)">&#8594;</span>'
+                : `<label style="width:30px;flex:none;text-align:center;margin:0;cursor:pointer"><input type="checkbox" style="width:auto" data-gcal-toggle="${esc(m.id)}" data-gcal-id="${esc(c.calendar_id)}" ${c.sync_enabled ? 'checked' : ''}></label>`}
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.summary || c.calendar_id)}</span>
+              <span class="pec-badge" style="font-size:.66rem">${esc(roleLabel)}</span>
+              <span style="font-size:.7rem;color:var(--muted);min-width:110px;text-align:right">${c.last_error ? '' : c.last_synced_at ? 'synced ' + esc(new Date(c.last_synced_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : (c.sync_enabled && !isTopcoat ? 'first sync pending' : '')}</span>
+              ${c.last_error ? `<span style="font-size:.7rem;color:#dc2626;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.last_error)}">${esc(c.last_error)}</span>` : ''}
+            </div>`;
+          }).join('')
+          : '<div style="font-size:.76rem;color:var(--muted)">Click Refresh list to load the calendars on this account.</div>'}
+        </div>` : ''}`).join('') : '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>'}
+      ${gcMigrated ? `
+      <div style="margin-top:12px;border-top:1px solid var(--rd-line,var(--border));padding-top:10px">
+        <div class="pec-row-2" style="max-width:460px">
+          <div class="pec-field"><label>Pull window: days back</label>
+            <input type="number" id="gcPast" min="0" step="1" value="${esc(gcSettings.google_pull_window_days_past || '30')}"></div>
+          <div class="pec-field"><label>Pull window: days ahead</label>
+            <input type="number" id="gcFuture" min="1" step="1" value="${esc(gcSettings.google_pull_window_days_future || '180')}"></div>
+        </div>
+        <div style="color:var(--muted);font-size:.68rem;margin:2px 0 6px">
+          How far back and forward the first sync of a newly ticked calendar reaches. Keeps a
+          personal calendar full of recurring blocks from importing years of history.
+        </div>
+        <details>
+          <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+          <div class="pec-row-2" style="max-width:460px;margin-top:8px">
+            <div class="pec-field"><label>Max pages per calendar per tick</label>
+              <input type="number" id="gcMaxPages" min="1" step="1" value="${esc(gcSettings.google_pull_max_pages_per_calendar || '6')}"></div>
+            <div class="pec-field"><label>Imported events come in as</label>
+              <select id="gcDefaultType">${APPT_TYPES.map(t => `<option value="${esc(t.key)}"${(gcSettings.google_imported_default_appt_type || 'other') === t.key ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:6px 0;cursor:pointer">
+            <input type="checkbox" id="gcAllDay" style="width:auto" ${gcSettings.google_pull_include_all_day !== 'false' ? 'checked' : ''}>
+            Import all-day events</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:6px 0;cursor:pointer">
+            <input type="checkbox" id="gcDeclined" style="width:auto" ${gcSettings.google_pull_include_declined === 'true' ? 'checked' : ''}>
+            Import invitations the salesperson declined</label>
+        </details>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:6px" id="gcSetStatus"></div>
+      </div>` : ''}
     </div>
 
     <div class="pec-card">
@@ -21379,6 +21460,68 @@ async function renderSettingsAppointments() {
       showToast('Could not disconnect: ' + (err.message || err), { ttl: 7000 });
     }
   }));
+
+  // Multi-calendar wiring (prompt 96). The table is service-role only, so
+  // refresh and toggles go through pec-google-calendars; reads came in
+  // through the view above.
+  const gcalPost = async (payload) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const res = await fetch('/.netlify/functions/pec-google-calendars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+      body: JSON.stringify(payload),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) throw new Error(out.error || `Request failed (${res.status})`);
+    return out;
+  };
+  root.querySelectorAll('[data-gcal-refresh]').forEach(btn => btn.addEventListener('click', async () => {
+    const statusEl = root.querySelector(`[data-gcal-status="${btn.dataset.gcalRefresh}"]`);
+    btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Refreshing…';
+    try {
+      await gcalPost({ member_id: btn.dataset.gcalRefresh, refresh: true });
+      renderSettingsAppointments();
+    } catch (err) {
+      btn.disabled = false;
+      if (statusEl) statusEl.textContent = 'Refresh failed: ' + (err.message || err);
+    }
+  }));
+  root.querySelectorAll('[data-gcal-toggle]').forEach(box => box.addEventListener('change', async () => {
+    const statusEl = root.querySelector(`[data-gcal-status="${box.dataset.gcalToggle}"]`);
+    const on = box.checked;
+    box.disabled = true;
+    try {
+      await gcalPost({ member_id: box.dataset.gcalToggle, calendar_id: box.dataset.gcalId, sync_enabled: on });
+      if (statusEl) statusEl.textContent = on ? 'On. Events land within about 15 minutes.' : 'Off.';
+      setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 4000);
+    } catch (err) {
+      box.checked = !on; // the DB did not flip; the box must not lie
+      if (statusEl) statusEl.textContent = 'Could not save: ' + (err.message || err);
+    }
+    box.disabled = false;
+  }));
+  const gcStatus = (msg) => { const el = root.querySelector('#gcSetStatus'); if (el) el.textContent = msg; };
+  const gcSaveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-gcal-save' });
+    if (w.error) { gcStatus('Save failed: ' + w.error.message); return; }
+    gcStatus('Saved.'); setTimeout(() => gcStatus(''), 2000);
+  };
+  root.querySelector('#gcPast')?.addEventListener('change', e => {
+    const v = Math.max(0, parseInt(e.target.value, 10) || 30); e.target.value = v;
+    gcSaveSetting('google_pull_window_days_past', v);
+  });
+  root.querySelector('#gcFuture')?.addEventListener('change', e => {
+    const v = Math.max(1, parseInt(e.target.value, 10) || 180); e.target.value = v;
+    gcSaveSetting('google_pull_window_days_future', v);
+  });
+  root.querySelector('#gcMaxPages')?.addEventListener('change', e => {
+    const v = Math.max(1, parseInt(e.target.value, 10) || 6); e.target.value = v;
+    gcSaveSetting('google_pull_max_pages_per_calendar', v);
+  });
+  root.querySelector('#gcDefaultType')?.addEventListener('change', e => gcSaveSetting('google_imported_default_appt_type', e.target.value));
+  root.querySelector('#gcAllDay')?.addEventListener('change', e => gcSaveSetting('google_pull_include_all_day', e.target.checked ? 'true' : 'false'));
+  root.querySelector('#gcDeclined')?.addEventListener('change', e => gcSaveSetting('google_pull_include_declined', e.target.checked ? 'true' : 'false'));
 
   // SalesAsk card wiring (rule 12: knobs in the settings table, per-member
   // emails on the roster row). Saves fire on change, no Save button, matching
@@ -27154,6 +27297,8 @@ async function loadAppointmentsRange(startIso, endIso) {
       .order('start_at', { ascending: true }).limit(1000);
     if (f.type) q = q.eq('appt_type', f.type);
     if (f.member) q = q.eq('sales_member_id', f.member);
+    // Prompt 96: one-click relief from a wall of imported focus blocks.
+    if (f.hideImported) q = q.neq('source', 'google');
     return q;
   };
   try {
@@ -27191,21 +27336,30 @@ function apptEventFromRow(row, members) {
   // FullCalendar would beat the stylesheet).
   const durMin = (row.start_at && row.end_at)
     ? Math.max(0, (new Date(row.end_at) - new Date(row.start_at)) / 60000) : 60;
-  return {
+  const imported = row.source === 'google';
+  const ev = {
     id: row.id,
     title: name,
     start: row.start_at,
     end: row.end_at,
     allDay: !!row.all_day,
-    classNames: ['pec-appt-chip'].concat(durMin < 30 ? ['pec-appt-xs'] : durMin < 60 ? ['pec-appt-sm'] : []),
+    classNames: ['pec-appt-chip']
+      .concat(durMin < 30 ? ['pec-appt-xs'] : durMin < 60 ? ['pec-appt-sm'] : [])
+      .concat(imported ? ['pec-appt-imported'] : []),
     extendedProps: {
       chipName: name,
       typeLabel: type.label,
       typeAccent: type.accent,
       memberColor: apptMemberColor(members, row.sales_member_id),
       place: row.location_city || (row.location_address ? String(row.location_address).split(',')[0] : ''),
+      imported,
+      readonlyReason: row.google_readonly_reason || null,
     },
   };
+  // Guardrail-failed imports (prompt 96, Part C): the event lives in Google
+  // and TopCoat cannot edit it, so drag and resize are off at the source.
+  if (imported && row.google_readonly_reason) ev.editable = false;
+  return ev;
 }
 
 // Custom chip renderer (prompt 67), Google Calendar's two-treatment shape:
@@ -27233,10 +27387,12 @@ function apptChipContent(arg) {
     el.appendChild(mk('pec-appt-dot'));
     if (!ev.allDay && ev.start) el.appendChild(mk('pec-appt-time', apptChipTime(ev.start)));
     el.appendChild(mk('pec-appt-name', p.chipName || ev.title || ''));
+    if (p.imported) el.appendChild(mk('pec-appt-gmark', 'G'));
   } else {
     el.className = 'pec-appt-block';
     const head = mk('pec-appt-line pec-appt-head');
     head.appendChild(mk('pec-appt-name', p.chipName || ev.title || ''));
+    if (p.imported) head.appendChild(mk('pec-appt-gmark', 'G'));
     if (ev.start) head.appendChild(mk('pec-appt-time', apptChipTime(ev.start)));
     el.appendChild(head);
     if (p.typeLabel) el.appendChild(mk('pec-appt-line pec-appt-type', p.typeLabel));
@@ -27278,6 +27434,8 @@ async function renderAppointments() {
       <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
         <div class="pec-field" style="margin:0"><label>Type</label><select id="pecApptTypeFilter">${typeOpts}</select></div>
         <div class="pec-field" style="margin:0"><label>Salesperson</label><select id="pecApptMemberFilter">${memberOpts}</select></div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;font-size:.8rem;cursor:pointer;padding-bottom:8px">
+          <input type="checkbox" id="pecApptHideImported" style="width:auto" ${f.hideImported ? 'checked' : ''}> Hide Google-imported</label>
         <button class="pec-btn primary" id="pecApptNew">+ New Appointment</button>
       </div>
     </div>
@@ -27290,6 +27448,7 @@ async function renderAppointments() {
   $('pecApptNew').addEventListener('click', () => openAppointmentForm(null, { members }));
   $('pecApptTypeFilter').addEventListener('change', e => { f.type = e.target.value; apptRefresh(members); });
   $('pecApptMemberFilter').addEventListener('change', e => { f.member = e.target.value; apptRefresh(members); });
+  $('pecApptHideImported').addEventListener('change', e => { f.hideImported = e.target.checked; apptRefresh(members); });
 
   const holder = $('pecApptCal');
   try {
@@ -27500,6 +27659,11 @@ async function apptKickPushSync(payload) {
 // lead/customer stay silent by design.
 async function apptBookingSideEffects(appt) {
   if (!appt || (appt.appt_type === 'other' && !appt.lead_id && !appt.customer_id)) return;
+  // Prompt 96 automation guard (locked decision 5): an imported Google event
+  // is a time block, not a booking. No bell, no confirmation kick, no stage
+  // advance. (New rows born in this modal are source 'topcoat'; this is
+  // defense in depth.)
+  if (appt.source === 'google') return;
   try {
     let salesName = '';
     if (appt.sales_member_id) {
@@ -27556,6 +27720,8 @@ async function apptBookingSideEffects(appt) {
 // update is guarded on stage so a concurrent move writes nothing.
 async function apptCancelLeadEffects(appt) {
   if (!appt || !appt.lead_id || appt.appt_type !== 'on_site_estimate') return;
+  // Prompt 96 automation guard: imported Google events never move a lead.
+  if (appt.source === 'google') return;
   try {
     const leadRes = await supabase.from('leads').select('id,stage').eq('id', appt.lead_id).maybeSingle();
     if (leadRes.error || !leadRes.data || leadRes.data.stage !== 'estimate_scheduled') return;
@@ -27608,6 +27774,18 @@ async function openAppointmentForm(existing, prefill = {}) {
   const curMember = a.sales_member_id || (activeMembers[0] ? activeMembers[0].id : '');
   const leadId = a.lead_id || prefill.lead_id || null;
   const customerId = a.customer_id || prefill.customer_id || null;
+
+  // Imported Google event (prompt 96): show provenance, and when the Part C
+  // guardrails failed at pull/push time the row carries the reason and the
+  // whole form renders read-only (the reason is stored, never re-derived).
+  const isImported = !isNew && a.source === 'google';
+  const roReason = isImported ? (a.google_readonly_reason || null) : null;
+  const RO_REASON_TEXT = {
+    calendar_read_only: 'You have view-only access to its calendar.',
+    not_organizer: 'It belongs to someone else; you were invited.',
+    recurring_patch_failed: 'Google rejected an edit to this recurring event.',
+    google_rejected_edit: 'Google rejected the last edit from TopCoat.',
+  };
 
   // Customer link (prompt 89, replacing the old lead dropdown): the modal
   // links a CUSTOMER, the source of truth; the lead resolves FROM the
@@ -27663,7 +27841,10 @@ async function openAppointmentForm(existing, prefill = {}) {
     <div class="pec-field"><label>Company notes (internal)</label>
       <textarea id="afNotes" rows="3">${esc(a.notes || '')}</textarea>
       <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Private. Shows on the salesperson's Google Calendar event, never sent to the customer.</div></div>
-    ${a.google_event_id ? '<div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Synced with Google Calendar.</div>' : ''}
+    ${isImported
+      ? `<div id="afGoogleProv" style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Imported from Google Calendar.</div>`
+      : a.google_event_id ? '<div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Synced with Google Calendar.</div>' : ''}
+    ${roReason ? `<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This event lives in Google and TopCoat cannot edit it. ${esc(RO_REASON_TEXT[roReason] || '')}</div>` : ''}
     ${isNew ? '' : '<div id="afSalesAskRow"></div>'}
     ${a.status === 'canceled' ? '<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This appointment is canceled.</div>' : ''}
     <div class="prod-msg-err" id="afErr" style="min-height:16px"></div>
@@ -27681,6 +27862,20 @@ async function openAppointmentForm(existing, prefill = {}) {
   `, { onMount: modal => {
     const errEl = modal.querySelector('#afErr');
     const val = (id) => (modal.querySelector('#' + id) ? modal.querySelector('#' + id).value : '').trim();
+    // Imported provenance: name the source calendar (best-effort, via the
+    // read-only view; the raw calendar id is a poor label).
+    if (isImported && a.google_calendar_id) {
+      (async () => {
+        try {
+          const r = await supabase.from('pec_member_google_calendars_v')
+            .select('summary').eq('calendar_id', a.google_calendar_id).limit(1);
+          const provEl = modal.querySelector('#afGoogleProv');
+          if (provEl && !r.error && r.data && r.data[0] && r.data[0].summary) {
+            provEl.textContent = `Imported from Google Calendar: ${r.data[0].summary}.`;
+          }
+        } catch (_) { /* the generic line stands */ }
+      })();
+    }
     modal.querySelector('#afAllDay').addEventListener('change', e => {
       modal.querySelector('#afTimesRow').style.display = e.target.checked ? 'none' : '';
     });
@@ -27989,6 +28184,18 @@ async function openAppointmentForm(existing, prefill = {}) {
         errEl.textContent = 'Could not update: ' + (err && err.message ? err.message : err);
       }
     });
+
+    // Guardrail-failed import (prompt 96): the whole form is a viewer. Every
+    // field disables and the write buttons hide; Close and Start estimate
+    // (which creates an ESTIMATE, never edits the event) stay live. Runs
+    // last so it wins over the pickers' own enable logic.
+    if (roReason) {
+      modal.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true; });
+      ['afSave', 'afDelete', 'afCancelAppt'].forEach(id => {
+        const b = modal.querySelector('#' + id);
+        if (b) { b.disabled = true; b.style.display = 'none'; }
+      });
+    }
   }});
 }
 
@@ -32310,7 +32517,10 @@ function pecDeriveSoldOnSite({ acceptedAt, appointments, graceMinutes, lookbackH
   const t = new Date(acceptedAt || '').getTime();
   if (!Number.isFinite(t)) return { sold: false, appointment: null, reason: 'no_appointment' };
   const cands = (Array.isArray(appointments) ? appointments : [])
-    .filter(p => p && types.includes(String(p.appt_type)) && String(p.status) !== 'canceled')
+    // Prompt 96: imported Google events never anchor a sold-on-site verdict
+    // (lockstep with production/sold-on-site.cjs).
+    .filter(p => p && types.includes(String(p.appt_type)) && String(p.status) !== 'canceled'
+      && String(p.source || '') !== 'google')
     .map(p => ({ p, s: new Date(p.start_at).getTime(), e: new Date(p.end_at).getTime() }))
     .filter(x => Number.isFinite(x.s) && Number.isFinite(x.e));
   if (!cands.length) return { sold: false, appointment: null, reason: 'no_appointment' };
@@ -32334,11 +32544,11 @@ async function pecSoldOnSiteContext(est, acceptedAtIso) {
   if (String(cfg.sold_on_site_enabled || 'true') === 'false') return { enabled: false, sold: null, appointment: null, reason: null };
   let appts = [];
   if (est.lead_id) {
-    const { data } = await supabase.from('pec_appointments').select('id,appt_type,status,start_at,end_at').eq('lead_id', est.lead_id);
+    const { data } = await supabase.from('pec_appointments').select('id,appt_type,status,start_at,end_at,source').eq('lead_id', est.lead_id);
     appts = data || [];
   }
   if (!appts.length && est.customer_id) {
-    const { data } = await supabase.from('pec_appointments').select('id,appt_type,status,start_at,end_at').eq('customer_id', est.customer_id);
+    const { data } = await supabase.from('pec_appointments').select('id,appt_type,status,start_at,end_at,source').eq('customer_id', est.customer_id);
     appts = data || [];
   }
   const d = pecDeriveSoldOnSite({

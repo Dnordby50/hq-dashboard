@@ -99,11 +99,108 @@ function eventBodyFromAppt(appt, contactLines) {
 
 // Token for whichever member OWNS a calendar id (used to clean up after a
 // reassignment or a hard delete). Null when nobody on the roster owns it.
+// Prompt 96: falls back to the multi-calendar sync rows, so an event on an
+// imported calendar deletes with the token of the member syncing it.
 async function tokenForCalendar(db, calendarId) {
   if (!calendarId) return null;
   const rows = await db('GET', `/pec_sales_team_members?google_calendar_id=eq.${encodeURIComponent(calendarId)}&google_connected=eq.true&select=id&limit=1`);
   const m = Array.isArray(rows) && rows[0];
-  return m ? await getFreshAccessToken(db, m.id) : null;
+  if (m) return await getFreshAccessToken(db, m.id);
+  try {
+    const cals = await db('GET', `/pec_sales_member_google_calendars?calendar_id=eq.${encodeURIComponent(calendarId)}&select=member_id&limit=1`);
+    const c = Array.isArray(cals) && cals[0];
+    return c ? await getFreshAccessToken(db, c.member_id) : null;
+  } catch (_) { return null; } // pre-migration: no multi-calendar rows
+}
+
+// The sync row for an IMPORTED calendar, or null when calendarId is a
+// member's dedicated TopCoat calendar (or unknown). The TopCoat check runs
+// first because seeded rows exist for TopCoat calendars too; matching them
+// here would misroute the normal push through the imported path.
+async function importedCalendarRow(db, calendarId) {
+  if (!calendarId) return null;
+  const own = await db('GET', `/pec_sales_team_members?google_calendar_id=eq.${encodeURIComponent(calendarId)}&select=id&limit=1`);
+  if (Array.isArray(own) && own[0]) return null;
+  try {
+    const rows = await db('GET', `/pec_sales_member_google_calendars?calendar_id=eq.${encodeURIComponent(calendarId)}&select=*&limit=1`);
+    return (Array.isArray(rows) && rows[0]) || null;
+  } catch (_) { return null; }
+}
+
+// Minimal PATCH body for an event TopCoat did not create (prompt 96): times,
+// title, location, and the plain notes text. No contact/link block, no
+// extendedProperties tagging, no attendee or recurrence fields: this is the
+// rep's own event and TopCoat edits only what its UI can edit. Empty
+// title/location/notes are left OFF the patch (undefined drops out of the
+// JSON) rather than sent as blanks, so TopCoat can never wipe a field it
+// cannot distinguish "cleared" from "never ingested" for. The explicit
+// date/dateTime nulls matter: PATCH merges nested objects, and switching a
+// timed event to all-day (or back) must clear the other bound.
+function importedEventPatch(appt) {
+  const location = [appt.location_address, appt.location_city, appt.location_state, appt.location_zip]
+    .filter(Boolean).join(', ');
+  const body = {
+    summary: appt.title || undefined,
+    location: location || undefined,
+    description: appt.notes || undefined,
+  };
+  if (appt.all_day) {
+    body.start = { date: phxDateStr(appt.start_at), dateTime: null };
+    body.end = { date: phxDateStr(appt.start_at, 1), dateTime: null };
+  } else {
+    body.start = { dateTime: appt.start_at, timeZone: 'America/Phoenix', date: null };
+    body.end = { dateTime: appt.end_at, timeZone: 'America/Phoenix', date: null };
+  }
+  return body;
+}
+
+const IMPORT_WRITE_ROLES = ['owner', 'writer'];
+
+// Part C: write an IMPORTED event back to its home calendar, in place. The
+// three guardrails: (1) calendar access owner/writer, re-checked here off
+// the sync row so a role downgrade between pulls cannot slip a write
+// through; (2) the rep organizes the event, checked at pull time and stored
+// as google_readonly_reason; (3) instance-not-series is structural: the only
+// id ever patched is google_event_id, the expanded instance id. A rejected
+// patch downgrades the row to read-only instead of escalating.
+async function pushImportedAppt(db, appt, cal) {
+  if (appt.google_readonly_reason || !IMPORT_WRITE_ROLES.includes(String(cal.access_role || ''))) {
+    return { ok: true, skipped: 'imported_read_only', reason: appt.google_readonly_reason || 'calendar_read_only' };
+  }
+  const token = await getFreshAccessToken(db, cal.member_id);
+  if (!token) return { ok: true, skipped: 'token_refresh_failed' };
+
+  // A TopCoat-side cancel removes the rep's own event from its home
+  // calendar (two-way parity with the TopCoat calendar) and clears the
+  // mapping; 404/410 = already gone over there, which IS the end state.
+  if (appt.status === 'canceled') {
+    if (!appt.google_event_id) return { ok: true, skipped: 'never_synced' };
+    const res = await gcalFetch(token, 'DELETE',
+      `/calendars/${encodeURIComponent(cal.calendar_id)}/events/${encodeURIComponent(appt.google_event_id)}`);
+    const gone = res.ok || res.status === 404 || res.status === 410;
+    if (gone) {
+      await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`,
+        { google_event_id: null, google_calendar_id: null, google_etag: null, google_updated: null });
+    }
+    return { ok: gone, canceled: true, imported: true, status: res.status };
+  }
+
+  const res = await gcalFetch(token, 'PATCH',
+    `/calendars/${encodeURIComponent(cal.calendar_id)}/events/${encodeURIComponent(appt.google_event_id)}`,
+    importedEventPatch(appt));
+  if (!res.ok || !res.body || !res.body.id) {
+    const reason = appt.google_recurring_event_id ? 'recurring_patch_failed' : 'google_rejected_edit';
+    console.error(`_pec-appt-push: imported patch failed for ${appt.id} (${res.status}); row goes read-only (${reason})`);
+    await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, { google_readonly_reason: reason });
+    return { ok: false, error: `Google rejected the imported-event edit (${res.status})`, reason };
+  }
+  // Echo-prevention bookkeeping, same as the TopCoat path.
+  await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, {
+    google_etag: res.body.etag || null,
+    google_updated: res.body.updated || null,
+  });
+  console.log(`_pec-appt-push: imported appt ${appt.id} patched in place on ${cal.calendar_id}`);
+  return { ok: true, google_event_id: res.body.id, imported: true };
 }
 
 async function deleteEvent(db, calendarId, eventId) {
@@ -124,6 +221,16 @@ async function pushApptById(db, appointmentId) {
   const rows = await db('GET', `/pec_appointments?id=eq.${encodeURIComponent(appointmentId)}&select=*&limit=1`);
   const appt = Array.isArray(rows) && rows[0];
   if (!appt) return { ok: true, skipped: 'row_gone' };
+
+  // Imported event (prompt 96): a source='google' row living on one of the
+  // rep's OWN calendars rather than the dedicated TopCoat calendar. It is
+  // NEVER re-homed: this branch must run before the reassignment cleanup
+  // below, which would otherwise DELETE the event from the rep's personal
+  // calendar and recreate it on the TopCoat calendar.
+  if (appt.source === 'google' && appt.google_calendar_id && appt.google_event_id) {
+    const cal = await importedCalendarRow(db, appt.google_calendar_id);
+    if (cal) return await pushImportedAppt(db, appt, cal);
+  }
 
   // Cancellation: remove the Google event and clear the mapping, so a later
   // restore pushes as a brand-new event.
@@ -181,4 +288,8 @@ async function pushApptById(db, appointmentId) {
   return { ok: true, google_event_id: res.body.id };
 }
 
-module.exports = { pushApptById, deleteEvent, eventBodyFromAppt, contactLinesForAppt, APPT_TYPE_LABELS };
+module.exports = {
+  pushApptById, deleteEvent, eventBodyFromAppt, contactLinesForAppt, APPT_TYPE_LABELS,
+  // Prompt 96, exported for the fixture test.
+  importedCalendarRow, importedEventPatch, pushImportedAppt,
+};

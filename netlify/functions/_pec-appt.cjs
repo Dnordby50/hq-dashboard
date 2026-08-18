@@ -247,6 +247,11 @@ async function processSalespersonRule(sb, rule, appt, ctx, summary) {
 async function apptBookingLeadEffects(sb, appt, opts = {}) {
   const out = { staged: false, drip_stopped: 0 };
   if (!appt || !appt.lead_id) return out;
+  // Prompt 96 automation guard (locked decision 5): an imported Google event
+  // is a time block, not a booking. No stage advance, no drip pause. Imported
+  // rows never carry lead_id today, so this is defense in depth, not the
+  // primary exclusion.
+  if (appt.source === 'google') return out;
   const nowIso = (opts.now ? opts.now() : new Date()).toISOString();
 
   if (opts.advanceStage && appt.appt_type === 'on_site_estimate') {
@@ -319,6 +324,8 @@ async function apptBookingLeadEffects(sb, appt, opts = {}) {
 async function apptCancelLeadEffects(sb, appt) {
   const out = { reverted: false };
   if (!appt || !appt.lead_id || appt.appt_type !== 'on_site_estimate') return out;
+  // Prompt 96 automation guard: imported Google events never move a lead.
+  if (appt.source === 'google') return out;
   try {
     const others = await sb('GET',
       `/pec_appointments?lead_id=eq.${encodeURIComponent(appt.lead_id)}&appt_type=eq.on_site_estimate&status=eq.scheduled&id=neq.${encodeURIComponent(appt.id)}&select=id&limit=1`);
@@ -401,6 +408,13 @@ async function runApptReminders(deps, opts = {}) {
   const caches = { sms: {}, email: {} };
   const salesNames = {};
   for (const appt of appts) {
+    // Prompt 96 automation guard (locked decision 5, acceptance criterion):
+    // NOTHING fires for a source='google' row. Not a confirmation, not a
+    // reminder, not a bell. That covers imported personal-calendar events
+    // (which have no one to message anyway) AND events hand-created in the
+    // TopCoat calendar (the salesperson made them; a reminder would be
+    // noise). Routemize and in-app bookings are untouched.
+    if (appt.source === 'google') { summary.skipped++; continue; }
     // Ad-hoc blocks with nobody attached are private busy time, not comms.
     const adHoc = appt.appt_type === 'other' && !appt.lead_id && !appt.customer_id;
     let salesName = '';
