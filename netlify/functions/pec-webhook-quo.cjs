@@ -124,11 +124,24 @@ async function matchCustomerByPhone(e164) {
   return (Array.isArray(rows) && rows.length === 1) ? rows[0] : null;
 }
 
-// Brand from OUR workspace number (the pec_sms_senders map, same as texting).
+// Brand from OUR workspace number: pec_sms_senders first (same map texting
+// uses), then the quo_number_brand_map settings row. The senders table is
+// keyed one-row-per-brand, so an inbox that is not a brand's send-from line
+// (the Aron personal inbox was the live case: every call on +19284931922
+// landed with brand null, and anything grouped by brand silently dropped it)
+// can never get a senders row. The settings map covers exactly those:
+// a JSON object of {"+1928...": "prescott-epoxy" | "finishing-touch"},
+// tunable with no code change. Unmapped numbers still resolve null on
+// purpose; a wrong brand is worse than a missing one.
 async function brandForOurNumber(e164) {
   if (!e164) return null;
   const senders = await sb('GET', `/pec_sms_senders?from_number=eq.${encodeURIComponent(e164)}&select=brand&limit=1`);
-  return (Array.isArray(senders) && senders[0]) ? senders[0].brand : null;
+  if (Array.isArray(senders) && senders[0]) return senders[0].brand;
+  try {
+    const rows = await sb('GET', `/settings?key=eq.quo_number_brand_map&select=value&limit=1`);
+    const map = JSON.parse((Array.isArray(rows) && rows[0] && rows[0].value) || '{}');
+    return map[e164] || null;
+  } catch (_) { return null; }
 }
 
 // Upsert a pec_call_log row keyed on quo_call_id: PATCH what this event knows
