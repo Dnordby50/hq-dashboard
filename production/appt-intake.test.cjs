@@ -51,7 +51,7 @@ function baseTables(over = {}) {
 }
 
 function stubDeps(fx) {
-  const captured = { logs: [], kicks: [] };
+  const captured = { logs: [], kicks: [], pushes: [] };
   return {
     captured,
     deps: {
@@ -59,6 +59,7 @@ function stubDeps(fx) {
       now: () => NOW,
       logIngest: async (f) => { captured.logs.push(f); },
       runReminders: async (d, o) => { captured.kicks.push(o.appointmentId); },
+      kickPush: async (id) => { captured.pushes.push(id); },
     },
   };
 }
@@ -413,10 +414,14 @@ const CREATED = {
     const out2 = await processApptIntake(deps, rzEnvelope({ eventType: 'AppointmentStatusChanged' }, { status: 'Cancelled By Customer' }));
     ok(out2.status === 200 && fx.db.pec_appointments.find(a => a.id === apptId).status === 'canceled', 'cancel-ish status value cancels the booking');
 
-    // A non-cancel status with full data patches as an update and re-lives it.
+    // A non-cancel status with full data patches as an update, but it does
+    // NOT resurrect the row it just cancelled (prompt 95 Part B): the status
+    // stays canceled, the ambiguity is noted, and the stalled bell rings.
     const out3 = await processApptIntake(deps, rzEnvelope({ eventType: 'AppointmentStatusChanged' }, { status: 'Confirmed' }));
     const row3 = fx.db.pec_appointments.find(a => a.id === apptId);
-    ok(out3.status === 200 && row3.status === 'scheduled' && /status changed to "Confirmed"/.test(row3.notes || ''), 'non-cancel status is an update with the status noted');
+    ok(out3.status === 200 && row3.status === 'canceled' && /status changed to "Confirmed"/.test(row3.notes || ''), 'non-cancel status is an update with the status noted, never a resurrection');
+    ok(/left canceled/.test(row3.notes || ''), 'resurrection block noted on the row');
+    ok(fx.db.pec_notifications.some(n => n.type === 'appt_intake_stalled'), 'resurrection block rings the stalled bell');
   }
 
   console.log('# routemize native: pre-migration column tolerance (landmine 8)');
@@ -452,6 +457,155 @@ const CREATED = {
     const m = fx.db.pec_appointments.find(a => a.routemize_appt_id === 'rz-appt-m');
     ok(m.appt_type === 'on_site_estimate', 'unmapped service defaults to on_site_estimate');
     ok(m.title === 'On-site estimate for Al B', 'unmapped service: auto-title from the defaulted type');
+  }
+
+  // -------------------------------------------------------------------------
+  // Prompt 95: AppointmentUpdated must actually move the appointment. The
+  // fixtures are the four REAL payloads out of pec_webhook_ingest_log,
+  // verbatim (production/routemize-update-payloads.json), against rows shaped
+  // like the live pec_appointments rows they hit.
+  // -------------------------------------------------------------------------
+  const RZ95 = require('./routemize-update-payloads.json');
+  const { apptTimeStr } = require('../netlify/functions/_pec-appt.cjs');
+  const KAREN_DESC = RZ95.karen_updated.data.customerAnswers[1].answer;
+  // The live routing seed: the free-text project description reaches the
+  // customer note, the service picker stays internal (prompt 73).
+  const RZ95_ROUTING = '{"605f816a-b861-c865-3e12-3a2177755a80":"customer","1077d4b4-4c1d-1f34-52a1-3a2177807ce1":"internal"}';
+  function tables95() {
+    return baseTables({
+      leads: [
+        { id: 'leadK', full_name: 'Karen Adams', first_name: 'Karen', phone: '7609172694', email: 'karenquilter3@gmail.com', stage: 'estimate_scheduled', sms_consent: false, opted_out: false, customer_id: 'custK', contacted_at: '2026-08-01T00:00:00Z', deleted_at: null, created_at: '2026-08-01T00:00:00Z', source: 'angi' },
+        { id: 'leadJ', full_name: 'Jay McCoy', first_name: 'Jay', phone: '6023705033', email: 'junkyou4u@gmail.com', stage: 'estimate_scheduled', sms_consent: false, opted_out: false, customer_id: null, contacted_at: '2026-07-20T00:00:00Z', deleted_at: null, created_at: '2026-07-20T00:00:00Z', source: 'google' },
+        { id: 'leadR', full_name: 'Rob Rudman', first_name: 'Rob', phone: '8053289039', email: 'roblori1980@aol.com', stage: 'estimate_scheduled', sms_consent: false, opted_out: false, customer_id: null, contacted_at: '2026-08-01T00:00:00Z', deleted_at: null, created_at: '2026-08-01T00:00:00Z', source: 'google' },
+      ],
+      customers: [{ id: 'custK', name: 'Karen Adams', phone: '7609172694', email: 'karenquilter3@gmail.com', archived_at: null, created_at: '2026-08-01T00:00:00Z' }],
+      pec_sales_team_members: [
+        { id: 'smD', name: 'Dylan Nordby', google_email: 'dnordby50@gmail.com', active: true },
+        { id: 'smA', name: 'Aron Bronson', google_email: 'aron@prescottepoxy.com', active: true },
+      ],
+      settings: [
+        { id: 'setR', key: 'routemize_service_type_map', value: '{"estimate":"on_site_estimate"}' },
+        { id: 'setA', key: 'routemize_answer_routing', value: RZ95_ROUTING },
+      ],
+      pec_appointments: [
+        { id: 'apptK', routemize_appt_id: 'd783f1d5-efb8-db1b-4122-3a230e95691f', appt_type: 'on_site_estimate', title: 'On-site estimate for Karen Adams', lead_id: 'leadK', customer_id: 'custK', sales_member_id: 'smD', start_at: '2026-08-14T22:00:00.000Z', end_at: '2026-08-14T23:00:00.000Z', all_day: false, status: 'scheduled', source: 'routemize', google_event_id: 'gevK', google_calendar_id: 'calK', notes: 'Service requested: Epoxy Patio / Pool Deck', customer_notes: KAREN_DESC, created_at: '2026-08-10T00:00:00Z' },
+        { id: 'apptJ', routemize_appt_id: '5a213677-f851-b022-aa9a-3a22c1e08a08', appt_type: 'on_site_estimate', title: 'Jay McCoy, Estimate', lead_id: 'leadJ', customer_id: null, sales_member_id: 'smA', start_at: '2026-07-31T16:15:00.000Z', end_at: '2026-07-31T17:15:00.000Z', all_day: false, status: 'scheduled', source: 'routemize', google_event_id: null, notes: null, customer_notes: '3 car garage', created_at: '2026-07-25T00:00:00Z' },
+        { id: 'apptR', routemize_appt_id: '704bae82-a6d7-f6fc-7a26-3a22f4d78221', appt_type: 'on_site_estimate', title: 'Rob Rudman, Estimate', lead_id: 'leadR', customer_id: null, sales_member_id: 'smA', start_at: '2026-08-11T15:05:00.000Z', end_at: '2026-08-11T16:05:00.000Z', all_day: false, status: 'scheduled', source: 'routemize', google_event_id: null, notes: 'Service requested: Grind and Seal', customer_notes: null, created_at: '2026-08-05T00:00:00Z' },
+      ],
+    });
+  }
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+
+  console.log('# prompt 95: bare newStartTime is UTC with the Z dropped (Jay McCoy, real payload)');
+  {
+    const fx = makeDb(tables95());
+    const { deps, captured } = stubDeps(fx);
+    const out = await processApptIntake(deps, clone(RZ95.jay));
+    ok(out.status === 200 && out.body.updated === true, 'AppointmentUpdated with bare times applies as an update (no more defensive branch)');
+    const appt = fx.db.pec_appointments.find(a => a.id === 'apptJ');
+    ok(appt.start_at === '2026-07-31T16:15:00.000Z', 'bare 2026-07-31T16:15:00 read as 16:15Z, NOT Phoenix (that would be 23:15Z)');
+    ok(apptTimeStr(appt.start_at) === '9:15 AM', "Phoenix rendering matches Routemize's own AppointmentTime (9:15 AM)");
+    ok(appt.end_at === '2026-07-31T17:15:00.000Z', 'bare newEndTime read as UTC too');
+    ok(!/cross-check/.test(appt.notes || ''), 'no cross-check mismatch on a correctly-read payload');
+    ok(!fx.db.lead_events.some(e => e.payload && e.payload.via === 'routemize_reschedule'), 'unchanged time: no reschedule note (echoed times are a no-op on start_at)');
+    ok(!fx.db.pec_notifications.some(n => n.type === 'appointment_rescheduled'), 'unchanged time: no reschedule bell');
+    ok(captured.kicks.length === 0, 'an update never re-fires the customer confirmation (locked decision 6)');
+    ok(captured.pushes.includes('apptJ'), 'google push kicked on the update path');
+    ok(appt.status === 'scheduled', 'newStatus 1 maps to scheduled, row stays live');
+  }
+
+  console.log('# prompt 95: Z-suffixed newStartTime moves the appointment (Karen Adams TimeChanged, real payload)');
+  {
+    const fx = makeDb(tables95());
+    const { deps, captured } = stubDeps(fx);
+    const out = await processApptIntake(deps, clone(RZ95.karen_timechanged));
+    ok(out.status === 200 && out.body.updated === true, '200 updated');
+    const appt = fx.db.pec_appointments.find(a => a.id === 'apptK');
+    ok(appt.start_at === '2026-08-14T16:15:00.000Z' && appt.end_at === '2026-08-14T17:15:00.000Z', 'the reschedule lands: 22:00Z -> 16:15Z (3:00 PM -> 9:15 AM Phoenix)');
+    ok(apptTimeStr(appt.start_at) === '9:15 AM', 'Phoenix rendering matches AppointmentTime');
+    ok(appt.google_event_id === 'gevK' && captured.pushes.includes('apptK'), 'google_* untouched, push kicked so the calendar follows');
+    const ev = fx.db.lead_events.find(e => e.payload && e.payload.via === 'routemize_reschedule');
+    ok(ev && ev.lead_id === 'leadK' && /Rescheduled via Routemize/.test(ev.payload.text) && /3:00 PM/.test(ev.payload.text) && /9:15 AM/.test(ev.payload.text), 'reschedule trail: lead note names both times');
+    const bell = fx.db.pec_notifications.find(n => n.type === 'appointment_rescheduled');
+    ok(bell && bell.target_id === 'apptK' && /9:15 AM/.test(bell.body) && !/—/.test(bell.body), 'reschedule bell written, no em dash');
+    ok(captured.kicks.length === 0, 'no customer confirmation re-fire on a reschedule (Routemize already notified them)');
+    ok(!fx.db.pec_notifications.some(n => n.type === 'appt_intake_stalled'), 'a cleanly applied update raises no alarm');
+  }
+
+  console.log('# prompt 95: oldStartTime is never read; a payload with only old fields takes the defensive branch');
+  {
+    const fx = makeDb(tables95());
+    const { deps } = stubDeps(fx);
+    const env = clone(RZ95.karen_timechanged);
+    delete env.data.newStartTime; delete env.data.newEndTime;
+    delete env.data.startTime; delete env.data.endTime;
+    const out = await processApptIntake(deps, env);
+    ok(out.status === 200 && out.body.updated === true, '200, noted-not-applied');
+    const appt = fx.db.pec_appointments.find(a => a.id === 'apptK');
+    ok(appt.start_at === '2026-08-14T22:00:00.000Z', 'oldStartTime (22:00Z) did NOT rewrite the appointment backwards; row left as-is');
+    ok(/no readable start time/.test(appt.notes || ''), 'defensive branch noted it');
+    ok(fx.db.pec_notifications.some(n => n.type === 'appt_intake_stalled' && n.target_view === 'ops'), 'the not-applied alarm bell rings (Part D)');
+  }
+
+  console.log('# prompt 95: numeric newStatus 3 cancels with no second event (Rob Rudman, real payload)');
+  {
+    const fx = makeDb(tables95());
+    const { deps, captured } = stubDeps(fx);
+    const out = await processApptIntake(deps, clone(RZ95.rob));
+    ok(out.status === 200 && out.body.canceled === true, 'the Updated envelope itself cancels');
+    const appt = fx.db.pec_appointments.find(a => a.id === 'apptR');
+    ok(appt.status === 'canceled', 'newStatus 3 (a JSON number) maps to canceled via the status map');
+    ok(captured.pushes.includes('apptR'), 'push kicked so the Google event clears');
+
+    console.log('# prompt 95: a later live update does NOT resurrect the cancelled row');
+    const resurrect = clone(RZ95.rob);
+    resurrect.data.newStatus = 1;
+    resurrect.data.reason = 'Updated';
+    const out2 = await processApptIntake(deps, resurrect);
+    ok(out2.status === 200 && out2.body.updated === true, '200 updated');
+    const appt2 = fx.db.pec_appointments.find(a => a.id === 'apptR');
+    ok(appt2.status === 'canceled', 'status left canceled: an un-cancel wants a human');
+    ok(/left canceled/.test(appt2.notes || ''), 'resurrection block noted on the row');
+    ok(fx.db.pec_notifications.some(n => n.type === 'appt_intake_stalled'), 'and it rings the alarm');
+  }
+
+  console.log('# prompt 95: identical customerAnswers never rewrite customer_notes (Karen Adams Updated, real payload)');
+  {
+    const fx = makeDb(tables95());
+    const patches = [];
+    const spySb = async (method, path, payload, ret) => {
+      if (method === 'PATCH' && /^\/pec_appointments/.test(path)) patches.push(payload);
+      return fx.sb(method, path, payload, ret);
+    };
+    const captured = { logs: [] };
+    const out = await processApptIntake({ sb: spySb, now: () => NOW, logIngest: async (f) => captured.logs.push(f), runReminders: async () => {}, kickPush: async () => {} }, clone(RZ95.karen_updated));
+    ok(out.status === 200 && out.body.updated === true, '200 updated');
+    const appt = fx.db.pec_appointments.find(a => a.id === 'apptK');
+    ok(appt.start_at === '2026-08-14T22:00:00.000Z', 'echoed unchanged time is a no-op on start_at');
+    ok(patches.length === 1 && !('customer_notes' in patches[0]), 'customer_notes NOT in the PATCH: incoming answers match what is stored (locked decision 2)');
+    ok(!('status' in patches[0]), 'status not in the update PATCH either: only a cancel changes status');
+    ok(appt.customer_notes === KAREN_DESC, 'stored customer note untouched');
+
+    // A REAL answer change writes; format-only recomposition of the same
+    // answers does not (that distinction is the whole guard).
+    const changed = clone(RZ95.karen_updated);
+    changed.data.customerAnswers[1].answer = 'Customer now wants the pool deck done too.';
+    await processApptIntake({ sb: spySb, now: () => NOW, logIngest: async () => {}, runReminders: async () => {}, kickPush: async () => {} }, changed);
+    ok(fx.db.pec_appointments.find(a => a.id === 'apptK').customer_notes === 'Customer now wants the pool deck done too.', 'a genuinely different answer set does update customer_notes');
+  }
+
+  console.log('# prompt 95: the wall-clock cross-check flags a parse that disagrees with Routemize');
+  {
+    const fx = makeDb(tables95());
+    const { deps } = stubDeps(fx);
+    const env = clone(RZ95.karen_timechanged);
+    env.data.notificationVariables.AppointmentTime = '8:00 AM'; // says 15:00Z; newStartTime says 16:15Z
+    const out = await processApptIntake(deps, env);
+    ok(out.status === 200, '200: a mismatch never rejects the event');
+    const appt = fx.db.pec_appointments.find(a => a.id === 'apptK');
+    ok(appt.start_at === '2026-08-14T16:15:00.000Z', 'the parsed value is kept (never silently pick the other reading)');
+    ok(/cross-check mismatch/.test(appt.notes || '') && /8:00 AM/.test(appt.notes || ''), 'both readings named in the internal notes');
+    ok(fx.db.pec_notifications.some(n => n.type === 'appt_intake_stalled'), 'mismatch rings the alarm');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

@@ -234,6 +234,8 @@ function findNestedKey(data, key) {
 
 // AppointmentStatusChanged's payload shape is UNVERIFIED (landmine 5): read
 // the status from the likely candidates, never depend on one silently.
+// Prompt 95: live AppointmentUpdated events carry newStatus as a JSON NUMBER
+// (1 = scheduled, 3 = cancelled), so numbers are stringified, not skipped.
 const STATUS_FIELD_CANDIDATES = [
   'status', 'newStatus', 'appointmentStatus', 'statusName', 'statusText',
   'Status', 'NewStatus', 'AppointmentStatus', 'StatusName',
@@ -242,8 +244,79 @@ function readRoutemizeStatus(data) {
   for (const k of STATUS_FIELD_CANDIDATES) {
     const v = findNestedKey(data, k);
     if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number' && isFinite(v)) return String(v);
   }
   return null;
+}
+
+// Prompt 95 Part A: AppointmentUpdated carries newStartTime/newEndTime where
+// Created carries startTime/endTime. new* wins; old* is NEVER read (those are
+// the pre-change values and would rewrite the appointment backwards).
+const START_FIELD_CANDIDATES = ['newStartTime', 'startTime'];
+const END_FIELD_CANDIDATES = ['newEndTime', 'endTime'];
+function readRoutemizeTime(data, candidates) {
+  for (const k of candidates) {
+    const v = data[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+// A BARE Routemize datetime is UTC with the Z dropped, NOT Phoenix wall clock
+// (proven live: Jay McCoy's update carried newStartTime 2026-07-31T16:15:00
+// while Routemize's own notificationVariables read 9:15 AM Phoenix = 16:15Z).
+// parseApptDate's bare-datetime branch is the Phoenix convention for the
+// hand-rolled contract and must not change, so the Z is appended HERE, on the
+// native path only. Only strings with a time component are touched; a bare
+// date (never observed from Routemize) falls through to parseApptDate as-is.
+function normalizeRoutemizeUtc(s) {
+  const str = cleanStr(s);
+  if (!str) return null;
+  if (/(z|[+-]\d{2}:?\d{2})$/i.test(str)) return str;
+  return /^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}/.test(str) ? str + 'Z' : str;
+}
+
+// Routemize's own Phoenix wall-clock rendering of the appointment time
+// (notificationVariables.AppointmentDate "Aug 14, 2026" + .AppointmentTime
+// "9:15 AM"), parsed to a UTC instant at the fixed -07:00 so Part A's
+// cross-check can compare it against what we parsed from newStartTime.
+// Null when either piece is missing or unreadable.
+const RZ_MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function parseNotificationWallClock(dateStr, timeStr) {
+  const dm = String(dateStr || '').trim().match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2}),\s*(\d{4})$/);
+  const tm = String(timeStr || '').trim().match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/i);
+  if (!dm || !tm) return null;
+  const mon = RZ_MONTHS[dm[1].slice(0, 3).toLowerCase()];
+  if (mon == null) return null;
+  let h = Number(tm[1]) % 12;
+  if (/^pm$/i.test(tm[3])) h += 12;
+  const d = new Date(Date.UTC(Number(dm[3]), mon, Number(dm[2]), h + 7, Number(tm[2])));
+  return isNaN(d) ? null : d.toISOString();
+}
+
+// Prompt 95 Part B: numeric status code -> appointment status, tunable from
+// Settings (rule 12: a new Routemize status code is a Settings edit, not a
+// deploy; the control sits behind Advanced on the Appointments card). A
+// missing or broken setting falls back to the shipped default rather than an
+// empty map: an empty map would silently turn every coded cancel back into
+// an update.
+const ROUTEMIZE_STATUS_MAP_KEY = 'routemize_status_map';
+const DEFAULT_ROUTEMIZE_STATUS_MAP = { '1': 'scheduled', '2': 'scheduled', '3': 'canceled' };
+const APPT_STATUSES = ['scheduled', 'completed', 'canceled'];
+async function getRoutemizeStatusMap(db) {
+  try {
+    const rows = await db('GET', `/settings?key=eq.${ROUTEMIZE_STATUS_MAP_KEY}&select=value&limit=1`);
+    const raw = Array.isArray(rows) && rows[0] ? rows[0].value : null;
+    const parsed = raw ? JSON.parse(raw) : null;
+    const out = {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [k, v] of Object.entries(parsed)) {
+        if (APPT_STATUSES.includes(v)) out[String(k).trim().toLowerCase()] = v;
+      }
+    }
+    if (Object.keys(out).length) return out;
+  } catch (_) { /* fall through to the default */ }
+  return DEFAULT_ROUTEMIZE_STATUS_MAP;
 }
 
 // serviceName/eventTypeId -> appt_type map, tunable from Settings (standing
@@ -348,18 +421,36 @@ async function mapRoutemizeEnvelope(db, env) {
   const data = (env.data && typeof env.data === 'object') ? env.data : {};
   const contact = (data.contact && typeof data.contact === 'object') ? data.contact : {};
   const address = (data.address && typeof data.address === 'object') ? data.address : {};
+  const nv = (data.notificationVariables && typeof data.notificationVariables === 'object')
+    ? data.notificationVariables : {};
   const assigned = (Array.isArray(data.assignedUsers) && data.assignedUsers[0] && typeof data.assignedUsers[0] === 'object')
     ? data.assignedUsers[0] : {};
 
-  // Status-changed maps by status VALUE (decision 3): cancel-ish stops the
-  // booking; anything else (or no readable status at all) is an update,
-  // NEVER a cancellation, with the ambiguity noted in the internal notes.
+  // Cancel detection is the union of three signals (prompt 95, locked
+  // decision 3): the settings-mapped numeric status says canceled, OR the
+  // status text matches /cancel/i, OR data.reason does. Any one is enough.
+  // Applied to AppointmentUpdated too, not just StatusChanged: a live
+  // cancellation arrives as an Updated with newStatus 3 (Rob Rudman,
+  // 2026-08-10), and before this it only landed because a separate
+  // AppointmentCancelled happened to follow three seconds later. An unknown
+  // or unmapped status stays an update and NEVER cancels (prompt 56
+  // decision 3 stands). The separate Cancelled/Deleted events keep working
+  // unchanged (belt and braces).
   let statusNote = null;
-  if (action === 'status_changed') {
+  let mappedStatus = null;
+  if (action === 'status_changed' || action === 'updated') {
     const status = readRoutemizeStatus(data);
-    if (status && /cancel/i.test(status)) {
+    const reason = cleanStr(data.reason);
+    if (status) {
+      const statusMap = await getRoutemizeStatusMap(db);
+      mappedStatus = statusMap[status.toLowerCase()] || null;
+    }
+    const cancelish = mappedStatus === 'canceled'
+      || (status && /cancel/i.test(status))
+      || (reason && /cancel/i.test(reason));
+    if (cancelish) {
       action = 'canceled';
-    } else {
+    } else if (action === 'status_changed') {
       action = 'updated';
       statusNote = status
         ? `Routemize status changed to "${status}".`
@@ -409,15 +500,27 @@ async function mapRoutemizeEnvelope(db, env) {
 
   const addr = [cleanStr(address.addressLine1), cleanStr(address.addressLine2)].filter(Boolean).join(', ');
 
+  // Internal-note candidates: the nested AppointmentNotes plus the
+  // update-path names projectDetail and notes (prompt 95 Part C). Deduped:
+  // Routemize mirrors the same text across fields on some events, and the
+  // rep does not need it twice.
+  const noteCandidates = [
+    cleanStr(findNestedKey(data, 'AppointmentNotes')),
+    cleanStr(data.projectDetail),
+    cleanStr(data.notes),
+  ].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i);
+
   const body = {
     action,
     routemize_appt_id: rmId,
     appt_type: apptType,
     title,
-    // startTime/endTime carry an explicit Z; parseApptDate trusts an explicit
-    // offset, so the Phoenix bare-datetime branch never runs on these.
-    start_at: data.startTime,
-    end_at: data.endTime,
+    // Candidate order newStartTime -> startTime (never old*), normalized so a
+    // bare Routemize datetime reads as the UTC it actually is; parseApptDate
+    // then takes its trusted-offset path, and the Phoenix bare-datetime
+    // branch never runs on the native path.
+    start_at: normalizeRoutemizeUtc(readRoutemizeTime(data, START_FIELD_CANDIDATES)),
+    end_at: normalizeRoutemizeUtc(readRoutemizeTime(data, END_FIELD_CANDIDATES)),
     customer_name: customerName,
     phone: contact.phoneNumber,
     email: contact.email,
@@ -431,9 +534,9 @@ async function mapRoutemizeEnvelope(db, env) {
     assigned_member_name: cleanStr(assigned.firstName)
       ? `${cleanStr(assigned.firstName)}${cleanStr(assigned.lastName) ? ' ' + cleanStr(assigned.lastName) : ''}`
       : null,
-    // Internal answers (the service picker) append after AppointmentNotes so
+    // Internal answers (the service picker) append after the note fields so
     // the rep still sees them; they just never reach a customer message.
-    notes: [cleanStr(findNestedKey(data, 'AppointmentNotes')), ...answers.internal].filter(Boolean).join('\n') || null,
+    notes: [...noteCandidates, ...answers.internal].filter(Boolean).join('\n') || null,
     // Null, never '' when nothing routes to the customer: _pec-appt.cjs trims
     // and skips falsy, but the column is nullable and null is the honest value.
     customer_notes: answers.customer.length ? answers.customer.join('\n') : null,
@@ -451,6 +554,12 @@ async function mapRoutemizeEnvelope(db, env) {
     leadSource: slugSource(cleanStr(contact.leadSourceText) || cleanStr(contact.leadSource)) || 'routemize',
     memberEmails: [cleanStr(assigned.userName), cleanStr(assigned.email)].filter(Boolean),
     statusNote,
+    mappedStatus,
+    // Part A cross-check inputs: Routemize's own Phoenix rendering of the
+    // appointment time, both as a comparable instant and as display text.
+    wallClockIso: parseNotificationWallClock(nv.AppointmentDate, nv.AppointmentTime),
+    wallClockText: (cleanStr(nv.AppointmentDate) && cleanStr(nv.AppointmentTime))
+      ? `${cleanStr(nv.AppointmentDate)} ${cleanStr(nv.AppointmentTime)}` : null,
   };
   return { recognized: true, body, rz };
 }
@@ -545,6 +654,24 @@ async function notifyBell(db, appt, salesName) {
     target_view: 'appointments',
     target_id: appt.id,
   });
+}
+
+// Prompt 95 Part D: the "this event landed but was not applied" bell. Fires
+// beside the ingest-log write for the three not-applied families (no readable
+// start time, time cross-check mismatch, blocked resurrection), so each
+// qualifying log row bells exactly once. target_view 'ops' lands the click on
+// the Ops Queue, whose appt_intake_not_applied derived check shows the
+// detail. Best-effort like every side effect here.
+async function notifyIntakeStalled(db, text) {
+  try {
+    await db('POST', '/pec_notifications', {
+      type: 'appt_intake_stalled',
+      body: text,
+      target_view: 'ops',
+    });
+  } catch (e) {
+    console.warn('pec-appt-intake: stalled bell failed (non-fatal):', e && e.message);
+  }
 }
 
 // The whole behavior with injectable deps ({ sb, logIngest, runReminders,
@@ -656,10 +783,12 @@ async function processApptIntake(deps, body) {
     // ---- created / updated -------------------------------------------------
     const startAt = parseApptDate(body.start_at);
     if (!startAt) {
-      // Native events with no readable times (the unverified StatusChanged
-      // shape is the expected culprit, landmine 5): never a 4xx and NEVER a
+      // Native events with no readable times: never a 4xx and NEVER a
       // cancellation. Append the status note to the matched row's internal
-      // notes and answer 200; no row is a clean no-op.
+      // notes and answer 200; no row is a clean no-op. Since prompt 95 reads
+      // newStartTime, this stopped being the normal AppointmentUpdated path
+      // and is the floor for genuinely time-less events; each hit now raises
+      // the Part D alarm so it can never be silent again.
       if (rz) {
         const rows = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=id,notes&limit=1`);
         const appt = Array.isArray(rows) && rows[0];
@@ -671,6 +800,7 @@ async function processApptIntake(deps, body) {
         await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`,
           { notes: [cleanStr(appt.notes), noteAdd].filter(Boolean).join('\n') });
         await kickPush(appt.id); // notes ride the Google event description
+        await notifyIntakeStalled(db, `Routemize sent an ${action}${customerName ? ` for ${customerName}` : ''} with no readable start time; the appointment was not changed.`);
         await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no readable start time; noted on appointment ${appt.id}`, payload: rawPayload });
         return { status: 200, body: { success: true, updated: true, appointment_id: appt.id } };
       }
@@ -743,8 +873,36 @@ async function processApptIntake(deps, body) {
       noteLines.push(`Routemize assigned rep not matched to the roster: ${memberEmail || memberName}`);
     }
 
+    // Part A cross-check: never trust the parsed instant blindly. Every
+    // Routemize envelope carries its own Phoenix wall-clock rendering; more
+    // than a minute apart means a format was read wrong. Keep the parsed
+    // value (the machine field is the system of record), name both readings
+    // in the internal notes, and raise the Part D alarm. Never silently pick.
+    // Alert lines APPEND to whatever notes the row ends up with, unlike the
+    // payload-carried noteLines which replace on an update: losing our own
+    // warning in a later rewrite would defeat its purpose.
+    const alertLines = [];
+    const timeMismatch = !!(rz && rz.wallClockIso
+      && Math.abs(new Date(startAt).getTime() - new Date(rz.wallClockIso).getTime()) > 60000);
+    if (timeMismatch) {
+      alertLines.push(`Time cross-check mismatch: parsed ${startAt} but Routemize's own rendering says ${rz.wallClockText} Phoenix; kept the parsed value.`);
+    }
+
     const existing = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=*&limit=1`);
     const existingRow = Array.isArray(existing) && existing[0];
+
+    // Part B: never resurrect a cancelled appointment. A cancel goes through
+    // its own branch above, so an update never needs to CHANGE status at all;
+    // status is stamped 'scheduled' only on a fresh insert. When Routemize
+    // sends a live update for a row TopCoat has cancelled (out-of-order
+    // delivery, or someone editing a dead booking), the other fields still
+    // apply but the status stays canceled, with a note and the Part D alarm:
+    // an un-cancel is rare enough to want a human, a silent resurrection on
+    // the crew calendar is not acceptable.
+    const resurrectionBlocked = !!(existingRow && existingRow.status === 'canceled');
+    if (resurrectionBlocked) {
+      alertLines.push('Routemize sent a live update for an appointment TopCoat has cancelled; status left canceled. Un-cancel it by hand if the booking is really back on.');
+    }
 
     // Field set common to insert and update. Built only from what the payload
     // carries (an omitted optional field never nulls out a stored value), and
@@ -754,7 +912,6 @@ async function processApptIntake(deps, body) {
       start_at: startAt,
       end_at: endAt,
       all_day: body.all_day === true,
-      status: 'scheduled', // an 'updated' from Routemize means the booking is live
     };
     // Auto-title (prompt 89): "{Type label} for {Name}". An explicit title
     // in the hand-rolled contract still wins (manual curls stay honest); the
@@ -767,7 +924,20 @@ async function processApptIntake(deps, body) {
     if (cleanStr(body.state)) fields.location_state = cleanStr(body.state);
     if (cleanStr(body.zip)) fields.location_zip = cleanStr(body.zip);
     if (noteLines.length || !existingRow) fields.notes = noteLines.join('\n') || null;
-    if (cleanStr(body.customer_notes)) fields.customer_notes = cleanStr(body.customer_notes);
+    if (alertLines.length) {
+      const base = ('notes' in fields) ? fields.notes : (existingRow ? cleanStr(existingRow.notes) : null);
+      fields.notes = [cleanStr(base), ...alertLines].filter(Boolean).join('\n');
+    }
+    // Locked decision 2 (prompt 95): customer_notes rides every
+    // customer-facing appointment text and email, so a Routemize edit may
+    // rewrite it ONLY when the incoming customer-routed answers actually
+    // differ from what is stored (the prompt-65 incident is why). Same-value
+    // writes are skipped, so a formatting change in our own composition can
+    // never re-push old answers at a customer.
+    if (cleanStr(body.customer_notes)
+      && (!existingRow || cleanStr(body.customer_notes) !== cleanStr(existingRow.customer_notes))) {
+      fields.customer_notes = cleanStr(body.customer_notes);
+    }
     if (member) fields.sales_member_id = member.id;
 
     if (existingRow) {
@@ -775,9 +945,45 @@ async function processApptIntake(deps, body) {
       // staff member set by hand in TopCoat is never clobbered.
       if (!existingRow.lead_id && contact.lead_id) fields.lead_id = contact.lead_id;
       if (!existingRow.customer_id && contact.customer_id) fields.customer_id = contact.customer_id;
+      const rescheduled = !!(existingRow.start_at
+        && new Date(existingRow.start_at).getTime() !== new Date(startAt).getTime());
       await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(existingRow.id)}`, fields);
       await kickPush(existingRow.id);
-      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${existingRow.id} updated`, payload: rawPayload });
+      // Part C3: a reschedule leaves a trail, a lead-timeline note plus a
+      // bell row. Deliberately NO customer confirmation re-fire (locked
+      // decision 6): Routemize notifies the customer itself, and the
+      // reminder runner picks up the new time on its own schedule; this is
+      // why the update path never calls runReminders. Both best-effort.
+      if (rescheduled) {
+        const fromTxt = `${apptDateStr(existingRow.start_at)}, ${apptTimeStr(existingRow.start_at)}`;
+        const toTxt = `${apptDateStr(startAt)}, ${apptTimeStr(startAt)}`;
+        const leadId = fields.lead_id || existingRow.lead_id;
+        if (leadId) {
+          await db('POST', '/lead_events', {
+            lead_id: leadId,
+            event_type: 'note',
+            payload: {
+              text: `Rescheduled via Routemize: ${fromTxt} to ${toTxt}`,
+              via: 'routemize_reschedule',
+              appointment_id: existingRow.id,
+            },
+          }).catch(e => console.warn('pec-appt-intake: reschedule note event failed (non-fatal):', e && e.message));
+        }
+        await db('POST', '/pec_notifications', {
+          type: 'appointment_rescheduled',
+          body: `Routemize moved ${existingRow.title || TYPE_LABELS[apptType] || 'an appointment'} to ${toTxt} (was ${fromTxt})`,
+          target_view: 'appointments',
+          target_id: existingRow.id,
+        }).catch(e => console.warn('pec-appt-intake: reschedule bell failed (non-fatal):', e && e.message));
+      }
+      const flags = [
+        timeMismatch ? 'time cross-check mismatch' : null,
+        resurrectionBlocked ? 'canceled appointment not resurrected' : null,
+      ].filter(Boolean);
+      if (flags.length) {
+        await notifyIntakeStalled(db, `Routemize update${customerName ? ` for ${customerName}` : ''} needs a look: ${flags.join('; ')}.`);
+      }
+      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${existingRow.id} updated${flags.length ? `; ${flags.join('; ')}` : ''}`, payload: rawPayload });
       return { status: 200, body: { success: true, updated: true, appointment_id: existingRow.id, lead_id: fields.lead_id || existingRow.lead_id || null } };
     }
 
@@ -786,6 +992,7 @@ async function processApptIntake(deps, body) {
     try {
       inserted = await db('POST', '/pec_appointments', {
         ...fields,
+        status: 'scheduled',
         routemize_appt_id: rmId,
         source: 'routemize',
         lead_id: contact.lead_id,
@@ -836,7 +1043,10 @@ async function processApptIntake(deps, body) {
     catch (e) { console.warn('pec-appt-intake: confirmation kick failed (non-fatal):', e && e.message); }
     await kickPush(appt.id);
 
-    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `created: appointment ${appt.id}${appt.lead_id ? ` linked to lead ${appt.lead_id}` : ''}${member ? '' : (memberEmail || memberName ? ' (rep unmatched)' : '')}`, payload: rawPayload });
+    if (timeMismatch) {
+      await notifyIntakeStalled(db, `Routemize booking${customerName ? ` for ${customerName}` : ''} needs a look: time cross-check mismatch.`);
+    }
+    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `created: appointment ${appt.id}${appt.lead_id ? ` linked to lead ${appt.lead_id}` : ''}${member ? '' : (memberEmail || memberName ? ' (rep unmatched)' : '')}${timeMismatch ? '; time cross-check mismatch' : ''}`, payload: rawPayload });
     return {
       status: 200,
       body: {
@@ -873,3 +1083,5 @@ exports.normalizeEventType = normalizeEventType;
 exports.mapRoutemizeEnvelope = mapRoutemizeEnvelope;
 exports.mapCustomerAnswers = mapCustomerAnswers;
 exports.isIdLikeQuestionKey = isIdLikeQuestionKey;
+exports.normalizeRoutemizeUtc = normalizeRoutemizeUtc;
+exports.parseNotificationWallClock = parseNotificationWallClock;

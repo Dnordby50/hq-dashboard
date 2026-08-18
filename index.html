@@ -21116,13 +21116,14 @@ function openPresentationSectionModal(existing, brandKey, allSections) {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
     supabase.from('settings').select('key,value').like('key', 'salesask_%'),
     supabase.from('people').select('sales_team_member_id,email').not('sales_team_member_id', 'is', null),
     supabase.from('settings').select('value').eq('key', 'routemize_service_type_map').maybeSingle(),
     supabase.from('settings').select('value').eq('key', 'routemize_answer_routing').maybeSingle(),
+    supabase.from('settings').select('value').eq('key', 'routemize_status_map').maybeSingle(),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
   const rules = (rulesRes.error ? [] : rulesRes.data || []);
@@ -21152,6 +21153,20 @@ async function renderSettingsAppointments() {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) raMap = parsed;
   } catch (_) { /* bad JSON renders empty; the next save rewrites it clean */ }
   const RA_ROUTES = [['customer', 'Customer note'], ['internal', 'Internal note (reps only)'], ['drop', 'Dropped']];
+  // Routemize numeric status code -> appointment status (prompt 95 Part B,
+  // rule 12): one settings row of JSON; pec-appt-intake reads it on every
+  // native delivery, so a new Routemize status code is an edit here, never a
+  // deploy. Behind Advanced: tuned only when Routemize adds a code. A
+  // missing/broken row renders the server's shipped default, which is also
+  // what the server falls back to.
+  const RS_DEFAULT = { '1': 'scheduled', '2': 'scheduled', '3': 'canceled' };
+  let rsMap = null;
+  try {
+    const parsed = JSON.parse((rsSetRes && rsSetRes.data && rsSetRes.data.value) || 'null');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) rsMap = parsed;
+  } catch (_) { /* falls back to the default below */ }
+  if (!rsMap || !Object.keys(rsMap).length) rsMap = { ...RS_DEFAULT };
+  const RS_STATUSES = [['scheduled', 'Scheduled'], ['canceled', 'Canceled'], ['completed', 'Completed']];
 
   const whenLabel = (r) => {
     if (r.on_book) return 'On booking';
@@ -21247,6 +21262,26 @@ async function renderSettingsAppointments() {
       </div>
       <button class="pec-btn ghost sm" id="rzMapAdd" style="margin-top:4px">+ Add mapping</button>
       <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="rzStatus"></div>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <div style="font-size:.75rem;color:var(--muted);margin:8px 0 6px">
+          Status codes: Routemize reports an appointment's status as a number. Each code maps to a
+          TopCoat status here; an unmapped code is treated as a plain update and never cancels
+          anything. If Routemize adds a new code, add a row here, no code change needed.
+        </div>
+        <div id="rsMapRows">
+          ${Object.entries(rsMap).map(([k, v]) => `
+          <div style="display:flex;gap:8px;align-items:center;padding:5px 0" data-rs-row>
+            <input data-rs-key value="${esc(k)}" placeholder="Routemize status code" style="max-width:180px;font-size:.8rem">
+            <select data-rs-status style="max-width:160px;font-size:.8rem">
+              ${RS_STATUSES.map(([sk, lbl]) => `<option value="${sk}"${v === sk ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
+            </select>
+            <button class="pec-btn ghost sm danger" data-rs-del>Remove</button>
+          </div>`).join('')}
+        </div>
+        <button class="pec-btn ghost sm" id="rsMapAdd" style="margin-top:4px">+ Add status code</button>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="rsStatus"></div>
+      </details>
     </div>
 
     <div class="pec-card">
@@ -21423,6 +21458,42 @@ async function renderSettingsAppointments() {
     holder.appendChild(div);
     rzWireRow(div);
     div.querySelector('[data-rz-key]').focus();
+  });
+
+  // Status-map wiring (prompt 95 Part B): same rows-are-the-editor /
+  // one-JSON-settings-row pattern as the service map above.
+  const rsStatus = (msg) => { const el = root.querySelector('#rsStatus'); if (el) el.textContent = msg; };
+  const rsSave = async () => {
+    const m = {};
+    root.querySelectorAll('[data-rs-row]').forEach(row => {
+      const k = row.querySelector('[data-rs-key]').value.trim().toLowerCase();
+      const v = row.querySelector('[data-rs-status]').value;
+      if (k && RS_STATUSES.some(([sk]) => sk === v)) m[k] = v;
+    });
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key: 'routemize_status_map', value: JSON.stringify(m) }, { onConflict: 'key' }), { label: 'settings-routemize-status-save' });
+    if (w.error) { rsStatus('Save failed: ' + w.error.message); return; }
+    rsStatus('Saved.'); setTimeout(() => rsStatus(''), 2000);
+  };
+  const rsWireRow = (row) => {
+    row.querySelector('[data-rs-key]').addEventListener('change', rsSave);
+    row.querySelector('[data-rs-status]').addEventListener('change', rsSave);
+    row.querySelector('[data-rs-del]').addEventListener('click', () => { row.remove(); rsSave(); });
+  };
+  root.querySelectorAll('[data-rs-row]').forEach(rsWireRow);
+  root.querySelector('#rsMapAdd')?.addEventListener('click', () => {
+    const holder = root.querySelector('#rsMapRows');
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;gap:8px;align-items:center;padding:5px 0';
+    div.setAttribute('data-rs-row', '');
+    div.innerHTML = `
+      <input data-rs-key value="" placeholder="Routemize status code" style="max-width:180px;font-size:.8rem">
+      <select data-rs-status style="max-width:160px;font-size:.8rem">
+        ${RS_STATUSES.map(([sk, lbl]) => `<option value="${sk}">${esc(lbl)}</option>`).join('')}
+      </select>
+      <button class="pec-btn ghost sm danger" data-rs-del>Remove</button>`;
+    holder.appendChild(div);
+    rsWireRow(div);
+    div.querySelector('[data-rs-key]').focus();
   });
 
   // Answer-routing wiring (prompt 73 Part A): same rows-are-the-editor /
@@ -23103,6 +23174,7 @@ async function renderOpsQueue() {
   const daysOf = (k, d) => { const n = parseInt(cfg[k], 10); return Number.isFinite(n) && n >= 0 ? n : d; };
   const tuDays = daysOf('ops_touchup_age_days', 7);
   const depDays = daysOf('ops_deposit_age_days', 7);
+  const aiDays = daysOf('ops_appt_intake_days', 7);
 
   // Prod core + the shared estimate facts: checks 2/3/6/8 read state.prodJobs
   // and the Part A helper (prodJobEstimateFacts) — the SAME loaders the
@@ -23125,13 +23197,17 @@ async function renderOpsQueue() {
       // The daily system-heartbeat monitor's stored latest run (prompt 90):
       // check 10 derives its machine-health lines from this row at render.
       supabase.from('pec_heartbeats').select('function_name,last_ok_at,details').eq('function_name', 'pec-system-heartbeat').maybeSingle(),
+      // Check 11 (prompt 95): recent appt-intake webhook attempts, so events
+      // that landed without being applied surface here. Admin-read RLS on
+      // the ingest log matches this view's admin gate.
+      supabase.from('pec_webhook_ingest_log').select('id,deal_id,message,outcome,created_at').eq('endpoint', 'appt-intake').gte('created_at', new Date(Date.now() - aiDays * 86400000).toISOString()).order('created_at'),
     ]), { label: 'renderOpsQueue' });
   } catch (e) {
     root.innerHTML = `<div class="pec-empty">Could not load the Ops Queue: ${esc(e.message || e)}</div>`;
     return;
   }
   if (state.view !== 'ops') return; // user navigated away mid-read
-  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes] = res;
+  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes, apptIngestRes] = res;
   const admins = adminsRes.error ? [] : (adminsRes.data || []);
   if (admins.length) state.adminUsers = admins;
   const adminName = id => { const a = admins.find(x => x.id === id); return a ? (a.name || a.email) : ''; };
@@ -23276,11 +23352,39 @@ async function renderOpsQueue() {
     }
     push('health', 'System health', 'Aggregate signals with their own screens.', rows);
   }
+  // 11. Routemize/appt-intake events that landed but were not applied
+  //     (prompt 95): the webhook answered 200 but the appointment did not
+  //     change. Three families plus outright errors: no readable start time,
+  //     the parsed time disagreeing with Routemize's own wall-clock rendering
+  //     (cross-check mismatch), and an update blocked from resurrecting a
+  //     cancelled appointment. A row self-clears when a LATER intake or
+  //     replay applies cleanly for the same Routemize appointment; Dismiss
+  //     follows the auto-row convention like every other check.
+  if (on('ops_check_appt_intake')) {
+    const ingRows = (apptIngestRes && !apptIngestRes.error) ? (apptIngestRes.data || []) : [];
+    const NOT_APPLIED = /no readable start time|time cross-check mismatch|not resurrected/i;
+    const NOOP = /no-op|ignored|deduped|no matching appointment/i;
+    const clearedBy = (r) => r.deal_id && ingRows.some(s => s.deal_id === r.deal_id
+      && s.created_at > r.created_at && s.outcome === 'ok'
+      && !NOT_APPLIED.test(s.message || '') && !NOOP.test(s.message || ''));
+    push('apptintake', `Routemize events not applied (last ${aiDays} day${aiDays === 1 ? '' : 's'})`,
+      'The booking webhook answered 200 but the appointment was not (or could not be) changed. Sync Health shows the raw webhook; a row clears once a later event or replay applies cleanly.',
+      ingRows.filter(r => r.outcome !== 'ok' || NOT_APPLIED.test(r.message || ''))
+        .filter(r => !clearedBy(r))
+        .map(r => {
+          const m = String(r.message || '').match(/appointment ([0-9a-f-]{36})/i);
+          return {
+            key: `appt_intake_not_applied:${r.id}`,
+            label: `${esc(fmtDate(r.created_at))} · ${esc(r.message || r.outcome)}${(!m && r.deal_id) ? ` · Routemize appt ${esc(r.deal_id)}` : ''}`,
+            nav: m ? { view: 'appointments', apptId: m[1] } : { view: 'dripjobs-sync-health' },
+          };
+        }));
+  }
 
   const derivedCount = sections.reduce((s, x) => s + x.rows.length, 0);
   const total = manualOpen.length + derivedCount;
 
-  const navAttrs = (nav) => `data-ops-view="${esc(nav.view)}"${nav.jobId ? ` data-ops-job="${esc(nav.jobId)}"` : ''}${nav.unifiedId ? ` data-ops-unified="${esc(nav.unifiedId)}"` : ''}${nav.invoiceId ? ` data-ops-invoice="${esc(nav.invoiceId)}"` : ''}${nav.tab ? ` data-ops-tab="${esc(nav.tab)}"` : ''}`;
+  const navAttrs = (nav) => `data-ops-view="${esc(nav.view)}"${nav.jobId ? ` data-ops-job="${esc(nav.jobId)}"` : ''}${nav.unifiedId ? ` data-ops-unified="${esc(nav.unifiedId)}"` : ''}${nav.invoiceId ? ` data-ops-invoice="${esc(nav.invoiceId)}"` : ''}${nav.apptId ? ` data-ops-appt="${esc(nav.apptId)}"` : ''}${nav.tab ? ` data-ops-tab="${esc(nav.tab)}"` : ''}`;
   const rowHtml = (r) => `<tr class="nohover">
       <td style="font-size:.85rem">${r.muted ? `<span style="color:var(--muted)">${r.label}</span>` : r.label}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -23337,6 +23441,7 @@ async function renderOpsQueue() {
     if (el.dataset.opsJob) { state.openUnifiedJobId = null; state.openJobId = el.dataset.opsJob; }
     if (el.dataset.opsUnified) { state.openJobId = null; state.openUnifiedJobId = el.dataset.opsUnified; }
     if (el.dataset.opsInvoice) state.openInvoiceJobId = el.dataset.opsInvoice;
+    if (el.dataset.opsAppt) state.openAppointmentId = el.dataset.opsAppt;
     switchView(view);
   }));
   root.querySelectorAll('[data-ops-dismiss]').forEach(el => el.addEventListener('click', async () => {
@@ -23658,6 +23763,7 @@ async function renderSettings() {
           ['ops_check_touchup_age', 'Touch-ups open too long'],
           ['ops_check_deposit_uncollected', 'Deposits not collected'],
           ['ops_check_system_health', 'System health (drift + stuck syncs)'],
+          ['ops_check_appt_intake', 'Routemize events not applied'],
         ].map(([k, l]) => `<div class="pec-field"><label>${l}</label>
           <select name="${k}">
             <option value="true" ${(map[k] || 'true') !== 'false' ? 'selected' : ''}>On</option>
@@ -23665,6 +23771,7 @@ async function renderSettings() {
           </select></div>`).join('')}
         <div class="pec-field"><label>Touch-up open threshold (days)</label><input name="ops_touchup_age_days" type="number" min="0" step="1" value="${esc(map.ops_touchup_age_days || '7')}"><span style="color:var(--muted);font-size:.68rem">An open touch-up appears on the Ops Queue after this many days.</span></div>
         <div class="pec-field"><label>Deposit threshold (days)</label><input name="ops_deposit_age_days" type="number" min="0" step="1" value="${esc(map.ops_deposit_age_days || '7')}"><span style="color:var(--muted);font-size:.68rem">A signed job with no deposit collected (and not waived) appears on the Ops Queue after this many days.</span></div>
+        <div class="pec-field"><label>Routemize event window (days)</label><input name="ops_appt_intake_days" type="number" min="0" step="1" value="${esc(map.ops_appt_intake_days || '7')}"><span style="color:var(--muted);font-size:.68rem">How far back the Routemize-events-not-applied check looks in the webhook log.</span></div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>

@@ -1,5 +1,16 @@
 [
   {
+    "id": "routemize-reschedule-repair",
+    "date": "2026-08-18",
+    "title": "Rescheduling in Routemize now moves the appointment in TopCoat.",
+    "summary": "Before this fix, editing or rescheduling an appointment in Routemize left the old time on the TopCoat calendar and on Google. Updates now apply everything Routemize sends (new time, address, assigned rep, notes), cancellations made inside a Routemize edit are recognized, and any webhook event that lands without being applied raises an alert instead of staying silent.",
+    "howto": [
+      "Nothing to set up. Reschedule in Routemize as usual; the TopCoat calendar and the Google event follow automatically.",
+      "A reschedule shows up in the notification bell and on the lead's timeline, with the old and new times.",
+      "If an event ever fails to apply, it appears on the Ops Queue under Routemize events not applied, and a bell notification points you there."
+    ]
+  },
+  {
     "id": "radar-settings-card",
     "date": "2026-08-17",
     "title": "New Settings page: Radar, the early warning system's dials and its open findings.",
