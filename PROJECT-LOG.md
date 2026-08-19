@@ -1,3 +1,66 @@
+## [2026-08-18 MST] Prompt 98 verification: the queue, the touch log and the reject list all work, but the AI rank endpoint returns ZERO subjects while the client mirror on the same commit finds 5 due and 1 cold. No openers exist to audit.
+
+By: Cowork
+
+(Placed at the TOP per CLAUDE.md standing rule 2. The handoff asked for it directly under the prompt-98 entry; that entry is no longer at the top of the file, and burying a new entry mid-file breaks the newest-first convention every other reader depends on.)
+
+Changed: no code, no schema, no settings. One pec_customer_notes row created deliberately as the task-4 verification touch (id c37e1c6d, counts_as_touch = false, so no clock moved). PROJECT-LOG.md.
+
+**Task 1, deploy: PASS.** Netlify Deploys shows commit 55bb9dc Published; the functions list shows _pec-followup, pec-followup-rank (Scheduled, next 2026-08-19 6:15 AM), pec-followup-digest (Scheduled) and pec-followup-rank-run all created at 9:09 PM. The endpoint answers 401 unauthenticated, so it is really deployed.
+
+**Task 2, first rank: FAILED, and this is the finding of the session.**
+
+```
+{"ok":true,"live":0,"cold":0,"written":0,"ai":0,"fallback":0}
+```
+
+Run twice (Netlify log, request ids 56331e97 and 86872da9): identical, HTTP 200, durations 1048 ms and 690 ms, no warnings logged. No 504, no error, no `settings read failed` line. `select count(*) from pec_followup_ranks` = **0**.
+
+**The same commit's CLIENT mirror disagrees.** Opening Sales Activity > Follow-ups renders **NEED CONTACT 5, COLD (21+ DAYS) 1**, with correct per-row clocks, and the nav badge reads 5. So membership is not the problem: the deterministic rules produce 5 due + 1 cold in the browser and 0 + 0 in the function, on the same deploy, against the same database.
+
+**Independent check, so neither implementation is being taken on faith.** Reconstructing "last human touch" in raw SQL (outbound calls by customer_id or last-10-digit phone, outbound non-drip SMS, non-drip emails) over the 7 live sent estimates gives: Gary Kuehn last touched 2026-07-27 (22 days, cold), Jason Magimel 08-10 (8d, due), Tom Bechtel 08-11 (7d, due), Adam Camacho 08-12 (6d, due), Kellogg Patton 08-14 (4d, due), Jennifer Steichen 08-14 (4d, due), Leslie Clauson 08-17 (1d, correctly not due). That is exactly the client's 5 due + 1 cold. **The data says the client is right and the function is wrong.**
+
+**Ranked hypotheses for Claude Code, with the evidence for each:**
+1. **`gatherQueueData` returns an empty (or near-empty) `estimates` array at runtime.** Strongest signal: the whole pass finished in 690-1048 ms while it is supposed to pull ~1,931 call rows, 436 SMS, 101 estimate views and the recordings table. That is too fast for the real payload, which suggests SEVERAL of the nine parallel fetches came back empty, pointing at a shared cause (env, key, URL or schema) rather than a typo in one query string. `sb()` throws on any non-2xx, and nothing threw, so whatever came back was a 200 with `[]`.
+2. If `estimates` is in fact populated, then every subject is landing in `out`/`not_due` server-side, which would most likely be an over-broad touch match setting `humanLastAt` to "now" for everyone. Less likely: the same `humanTouchesFor` code is what the client mirror runs, and the client gets it right.
+3. Not a deploy-lag artifact: `_pec-followup.cjs` is committed at 55bb9dc, matches the published deploy, and the file at HEAD reads correctly on inspection (query string valid, all 17 selected estimate columns exist in the live schema, destructuring order matches the Promise.all order).
+
+First instrumentation to add: log `estimates.length` plus each log array's length at the top of `computeQueue`, then re-run the endpoint. That one line separates hypothesis 1 from 2 in a single invocation.
+
+**Task 3, opener audit: BLOCKED.** With `pec_followup_ranks` empty there is nothing to audit. What the UI shows instead is the **client-side deterministic fallback copy**, and the header says so honestly ("LAST AI RANKING: Not yet").
+
+The fallback copy passes the reject list: a full-page scan for "checking in", "following up", "touching base" and "let me know if you have any questions" returns **0 occurrences**, and every opener asks for a decision. Verbatim, Kellogg Patton (EST-102133, $6,200):
+
+> Hi Kellogg, this is Prescott Epoxy. We are setting the install schedule for the next couple of weeks and I want to know whether to hold a spot for your floor for $6,200. Are you ready to pick a date, or is something still in the way I can help with?
+
+And Adam Camacho (EST-102095, $39,750):
+
+> Hi Adam, this is Prescott Epoxy. We are setting the install schedule for the next couple of weeks and I want to know whether to hold a spot for your floor for $39,750. Are you ready to pick a date, or is something still in the way I can help with?
+
+Those two are the "verbatim pairs" the handoff asked for, and putting them side by side is the point: **they are byte-identical apart from the name and the price, and neither references a SalesAsk visit, because no AI ranking has run.** Adam's estimate has a linked SalesAsk recording. Until task 2 is fixed, the queue's headline feature (Dylan's "what Chuck Thokey with a top rep would say, not just checking in") is not live. The fallback is a good floor, not the product.
+
+**Task 4, the view: PASS, every part.**
+- Rows render ranked with the quiet-days headline ("4 days since a human touch · sent 4d ago"), engagement chips ("Viewed 14x · 6d ago", "Reached in 1x · 1d ago"), the lead band badge ("Warm 58"), price, tel: link, and Copy buttons on both the call opener and the text.
+- Cold section collapsed behind "Cold (1): quiet past 21 days" and contains **Gary Kuehn**, EST-102030, "22 days since a human touch", exactly as the handoff predicted.
+- Nav item carries the count badge (reads "Follow-ups 5").
+- **Log a touch: PASS end to end.** Logged on Kellogg Patton: channel Other, outcome Not applicable, body "verification touch by Cowork, reached nobody", "counts as outreach" UNTICKED. One row written (pec_customer_notes c37e1c6d) carrying customer_id AND lead_id AND estimate_id, `counts_as_touch = false`. It renders on the ESTIMATE page's "Touches & notes" card and on the CUSTOMER page's "Touches & notes" card, both reading "just now · Other · Dylan Nordby · not outreach". The one-write-four-surfaces design works. Kellogg stayed in the queue at 4 days quiet, which is correct for a non-outreach note.
+
+**Ordering note for Dylan's read (task 5's tuning conversation, early):** under fallback ordering Kellogg ($6,200, 4 days quiet, 3 views) outranks Adam Camacho ($39,750, 6 days quiet, 5 views) 66 to 54. Dollar value is in the fallback formula but is outweighed by recency and engagement. Whether that is right is Dylan's call, and it is exactly the kind of thing the AI rank was supposed to arbitrate.
+
+**Unrelated observation worth flagging:** the working tree has **uncommitted local changes to index.html (103 insertions, 20 deletions)** and to production/calculator.js. Whatever that is, it is not deployed, and the client behavior verified above is the committed 55bb9dc version.
+
+**Task 5 (digest, heartbeats, Dylan's read) plus the pending prompt-97 freshness check: SCHEDULED.** Both need tomorrow's ticks (rank 06:15, digest 07:30, lead score runner 08:30 AZ). Cowork has one wake-up scheduled for 2026-08-19 09:44 MST covering all of it in a single entry.
+
+Files touched: PROJECT-LOG.md.
+
+Handoff to Claude Code:
+1. Fix the rank endpoint's zero-subject bug (hypotheses and the one-line instrumentation above). Nothing else in prompt 98 is blocked by it, but the AI grounding, the digest content and acceptance criterion 5 all are.
+2. Consider whether `pec-followup-digest` will post an empty or fallback-only digest tomorrow morning while ranks are empty; a digest that says nothing is due, when five estimates are due, is worse than no digest.
+
+Handoff to Dylan:
+1. The Follow-ups screen is usable right now: 5 estimates need contact, Gary Kuehn is in the Cold tail, and the Log a touch button works from the queue, the estimate page and the customer page.
+2. What you asked for and did NOT get yet: openers that reference the actual visit. Every suggestion on the screen today is the same sentence with the name swapped, because the AI ranking pass is returning zero subjects. Claude Code has the diagnosis.
+3. There is one test note on Kellogg Patton's record from this verification, marked "not outreach". Leave it or delete it, it changes no clocks.
 ## [2026-08-18 MST] Prompt 97 backfill executed: all 16 open leads now scored (0 hot / 11 warm / 5 cold). The on-demand endpoint cannot finish in one call, it took 7 passes against Netlify's 26 second ceiling.
 
 By: Cowork
