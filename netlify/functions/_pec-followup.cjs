@@ -339,6 +339,37 @@ async function runFollowupRank(deps = {}) {
   const live = queue.filter(r => r.state === 'due');
   const cold = queue.filter(r => r.state === 'cold');
 
+  // Diagnostics (Cowork's 2026-08-18 zero-subject finding): the deployed
+  // endpoint returned live:0 while the client mirror found 5 due on the same
+  // commit and database, and a local run of THIS code over the same rows
+  // (pulled via SQL) returned 5/1, so the difference has to be in what the
+  // runtime queries returned. The response now carries the per-source row
+  // counts and a per-estimate membership verdict so one invocation separates
+  // "gather came back empty" from "membership filtered everything". Cheap,
+  // internal-only, and worth keeping permanently: a queue that quietly
+  // computes zero should always be able to say why.
+  const diag = {
+    gathered: {
+      estimates: data.estimates.length,
+      leads: Object.keys(data.leadsById).length,
+      calls: data.logs.calls.length,
+      texts: data.logs.texts.length,
+      emails: data.logs.emails.length,
+      notes: data.logs.notes.length,
+      views: data.views.length,
+      salesask: data.salesask.length,
+    },
+    settings: { overdueDays: settings.overdueDays, coldDays: settings.coldDays, enabled: settings.enabled, aiEnabled: settings.aiEnabled },
+    states: data.estimates.map(est => {
+      const lead = est.lead_id ? data.leadsById[est.lead_id] || null : null;
+      const keys = rules.subjectKeys(est, lead);
+      const touch = rules.humanTouchesFor(keys, est.id, est.lead_id, data.logs);
+      const m = rules.membershipState(est, lead, touch.humanLastAt, settings, now);
+      return { n: est.estimate_number, state: m.state, daysQuiet: m.daysQuiet ?? null, lastTouch: touch.humanLastAt || null, reason: m.reason || null };
+    }),
+  };
+  console.log('pec-followup-rank diag:', JSON.stringify(diag));
+
   let results = {};
   if (settings.aiEnabled && (ANTHROPIC_API_KEY || deps.fetch) && live.length) {
     results = await aiRank(live, settings, fetchFn);
@@ -355,7 +386,7 @@ async function runFollowupRank(deps = {}) {
   withResults.sort((a, b) => (b.result.score - a.result.score) || (b.fallback - a.fallback));
   const up = await upsertRanks(db, withResults, settings);
   const aiCount = withResults.filter(r => r.result.source === 'ai').length;
-  return { ok: true, live: live.length, cold: cold.length, written: up.written, ai: aiCount, fallback: withResults.length - aiCount };
+  return { ok: true, live: live.length, cold: cold.length, written: up.written, ai: aiCount, fallback: withResults.length - aiCount, diag };
 }
 
 // ---- Slack digest ---------------------------------------------------------

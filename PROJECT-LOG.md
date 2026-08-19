@@ -1,3 +1,23 @@
+## [2026-08-18 MST] Zero-subject rank bug: the ENGINE is proven correct against the real data; the deployed runtime's queries are the suspect, and the endpoint now ships its own diagnosis
+
+By: Claude Code
+
+Changed: netlify/functions/_pec-followup.cjs (permanent `diag` block in the rank result + a console line), no schema, no settings, no behavior change to membership or ranking. PROJECT-LOG.md.
+
+**What I did with Cowork's finding (entry below).** Pulled the EXACT live rows the runner queries (the 7 sent estimates, their 6 leads, and every outbound call/text/email/note that can match them) out of prod via SQL, loaded them into the mini-PostgREST harness, and ran the committed `runFollowupRank` locally against them. Result: `live:5, cold:1, written:5`, with per-estimate verdicts byte-matching Cowork's independent SQL reconstruction (102154 due 4d, 102030 cold 22d, 102095 due 6d, 102075 due 8d, 102133 due 4d, 102054 due 7d, 102124 not_due 1d). So the code the endpoint runs is correct over the data the database holds; hypothesis 2 (over-broad touch matching) is dead. What remains is Cowork's hypothesis 1: in the DEPLOYED runtime, the gather queries are coming back 200-empty. That is consistent with the 690 ms duration, and nothing in the code can distinguish which query or why from here, so the endpoint now tells us itself.
+
+**The instrumentation (kept permanently, not a debug patch).** The rank result and the function log now carry `diag`: per-source row counts (estimates / leads / calls / texts / emails / notes / views / salesask), the parsed settings, and a per-estimate `{n, state, daysQuiet, lastTouch}` verdict. A queue that quietly computes zero can now always say why. One invocation separates "gather empty" (estimates: 0 -> environment/query problem in the runtime) from "membership filtered" (states show the reason). Locally the diag reads `estimates:7 ... states: 5 due / 1 cold / 1 not_due`; whatever tomorrow's 06:15 scheduled run logs, or Cowork's next curl returns, is the answer.
+
+**Cowork's question 2, answered: the digest cannot lie tomorrow.** `runFollowupDigest` computes membership LIVE (its own gather, not the ranks table). If its gather works, it posts the real 5 due rows with plain "Nd quiet" why-lines (rank rows only add wording). If its gather is broken the same way as the rank's, it returns `skipped: queue empty` and posts NOTHING, and it never posts a "nothing to do" message by design. Either way no false all-clear reaches Slack.
+
+**For the record, the eliminated suspects:** all 17 selected estimate columns exist live (Cowork verified; the schema cache would 400-and-throw, not 200-empty, through sb()); the settings defaults make an over-strict threshold impossible (both read and missing-row paths resolve 3/21); service-role sb() demonstrably reads and writes other tables in the same deploy (the lead-score backfill ran through it hours earlier); and the module graph loads (the local run used the real files end to end). The one failure shape that produces exactly this response is RLS-filtered empty result sets, which is what a wrong or downgraded key on the runtime env would do, so compare `SUPABASE_SERVICE_ROLE_KEY` in Netlify env against the Supabase dashboard when the diag confirms estimates:0.
+
+Files touched: netlify/functions/_pec-followup.cjs, PROJECT-LOG.md.
+
+Next steps: Cowork's scheduled 09:44 wake-up re-curls pec-followup-rank-run after this deploys and reads `diag` (or reads the 06:15 scheduled run's `pec-followup-rank diag:` log line). If `gathered.estimates` is 0, check the env key; if it is 7 and states disagree with the local verdicts above, paste the diag here and Claude Code takes it back.
+
+---
+
 ## [2026-08-18 MST] Prompt 98 verification: the queue, the touch log and the reject list all work, but the AI rank endpoint returns ZERO subjects while the client mirror on the same commit finds 5 due and 1 cold. No openers exist to audit.
 
 By: Cowork
