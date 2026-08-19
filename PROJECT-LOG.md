@@ -1,3 +1,34 @@
+## [2026-08-19 MST] Routemize replacement scoped into prompts 101 and 102. Dylan is cancelling the subscription now, so online booking goes dark until 101 ships, and two live findings turned up in the audit.
+
+By: Cowork
+
+Changed: added claude-code-prompt-101-topcoat-booking.md and claude-code-prompt-102-booking-form-builder.md. No code, schema, or settings touched. Read-only queries against prod.
+
+Dylan's ask: "Routemize has been nothing but issues. What we need: ability to create and edit an online form we can put on our website where customers can book onto our calendar similar to Routemize. Use the address so appointments do not overlap, nothing outside our service area. I am dropping the Routemize subscription." Twelve scoping questions asked and answered before anything was written.
+
+**Finding 1: the misses Dylan felt were the prompt-95 bug, and they predate its fix.** `pec_webhook_ingest_log` holds exactly three "no readable start time" rows (08-10, and 08-13 twice), all before the 08-18 deploy. The two Routemize bookings since (08-17, 08-18) landed clean, and the replay applied Karen Adams' correction on 08-19 03:08 UTC. Told Dylan the emergency is smaller than it feels; he is cancelling anyway, which is a defensible call on control grounds, not a fire.
+
+**Finding 2: `routemize_booking_url` is empty in prod and always has been.** Drip step 0's fixed template wraps the self-booking sentence in `{{#booking_link}}`, so the sentence has silently been omitted from every instant-touch message ever sent. No lead has ever been offered the self-booking link in the day-0 touch. Prompt 101 repoints that key at the new TopCoat booking URL, which turns the sentence on for the first time.
+
+**Volume for sizing:** Routemize was carrying 7 bookings the week of 08-03, 6 on 08-10, 2 so far on 08-17. Roughly one self-booked estimate per working day is what goes to voicemail during the gap.
+
+**Locked decisions (Dylan, 2026-08-19):** availability from the real calendar including prompt-96 Google imports, not a fixed grid; zip/city allowlist for the service area; round robin assignment (one active rep today, so it must degrade cleanly); 60 minute appointments with a drive-time-varying buffer measured live via the Google Routes API; same-day allowed with a 30 day horizon (Cowork added a 120 minute minimum-notice default as a setting, since zero notice lets a customer book 40 minutes out); out-of-area captures a lead and shows no slots; PEC only, with a brand column so FTP is a row not a refactor; questions editable without a deploy with per-answer routing to customer or internal notes; hosted page plus iframe embed; customer self-serve reschedule and cancel from a private link.
+
+**Prompt 101 (the build).** New `pec-booking.cjs` serving `/book`, a pure `production/booking-availability.cjs` engine (testable, no network inside), new tables `pec_booking_forms`, `pec_booking_service_areas`, `pec_booking_requests`, `pec_drive_time_cache`, plus `pec_appointments.booking_manage_token` / `booking_request_id` and `'booking'` added to `pec_appointments_source_check` (constraint name verified live). The write path mirrors `processApptIntake` (pec-appt-intake.cjs:716) rather than reimplementing it: `resolveOrCreateCustomer`, `apptBookingLeadEffects`, `pushApptById`, the existing on-book confirmation, and `logIngest` under endpoint `booking`. Three guardrails called out as the parts most likely to be skipped: a `pg_advisory_xact_lock` SECURITY DEFINER insert so two simultaneous visitors cannot double-book (a table-wide exclusion constraint is wrong here, `source='google'` imports legitimately overlap), a leash on the Routes API (one batched computeRouteMatrix per booking session, cached, budgeted, timed out, degrading to a flat buffer so the slot list never fails because Google did), and the TCPA consent checkbox that closes the `sms_consent` gap features.json has been carrying as a ROOT CAUSE NOTE since prompt 73.
+
+**Prompt 102 (after 101 is live):** the visual form builder with drag-to-reorder and per-question routing, a booking funnel card in Metrics off `pec_booking_requests`, and the FTP form as configuration.
+
+Files touched: claude-code-prompt-101-topcoat-booking.md, claude-code-prompt-102-booking-form-builder.md, PROJECT-LOG.md.
+
+Next steps: Claude Code runs prompt 101. Two things it cannot do itself are called out inside it and repeated here.
+
+## Handoff to Dylan
+1. The zip and city list for the PEC service area. Prompt 101 deliberately refuses to invent it, and an active form with an empty allowlist would put every visitor on the out-of-area path.
+2. Google Cloud: enable the Routes API on the project with billing, create a SERVER key restricted to Routes API only (the referrer-restricted PEC_MAPS_KEY cannot authenticate a server call), and set `GOOGLE_ROUTES_API_KEY` in Netlify env. The build ships and works without it, on the flat buffer.
+3. After deploy: put the embed on prescottepoxycompany.com, repoint the Google Business Profile booking link, and only then cancel Routemize.
+
+---
+
 ## [2026-08-19 MST] Ordering audit for Robert Brass: the calculator was right, the page around it was not. Prompt 99 scoped.
 
 By: Cowork
