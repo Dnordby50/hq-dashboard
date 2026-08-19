@@ -1,5 +1,16 @@
 [
   {
+    "id": "lead-scoring-live",
+    "date": "2026-08-18",
+    "title": "Every lead now gets a score, and it refreshes nightly.",
+    "summary": "The Hot, Warm, Cold badge on the Pipeline is now real for every lead. A lead gets its AI score the moment it arrives, whether it came from the website form, a Routemize booking, or was typed in by hand. Each morning the open pipeline re-scores automatically, so the badge reflects what has happened since (an estimate sent, a call logged), not just how the lead looked the day it came in. Hover a badge to see when it was last scored. A lead with no score yet shows Not scored yet instead of nothing.",
+    "howto": [
+      "On the Pipeline, set Sort to AI score: hot first to work the hottest leads first. Leads without a score group at the end until their first nightly run.",
+      "Hover any Hot, Warm, or Cold badge to see the score reason and when it was scored.",
+      "Tune it in Settings, then Drips, under Lead scoring: turn the nightly re-score on or off and cap how many leads score per night."
+    ]
+  },
+  {
     "id": "google-multi-calendar-sync",
     "date": "2026-08-18",
     "title": "See your whole Google calendar in TopCoat.",

@@ -51,7 +51,7 @@ function baseTables(over = {}) {
 }
 
 function stubDeps(fx) {
-  const captured = { logs: [], kicks: [], pushes: [] };
+  const captured = { logs: [], kicks: [], pushes: [], aiKicks: [] };
   return {
     captured,
     deps: {
@@ -60,6 +60,7 @@ function stubDeps(fx) {
       logIngest: async (f) => { captured.logs.push(f); },
       runReminders: async (d, o) => { captured.kicks.push(o.appointmentId); },
       kickPush: async (id) => { captured.pushes.push(id); },
+      kickLeadAi: async (id) => { captured.aiKicks.push(id); },
     },
   };
 }
@@ -328,12 +329,16 @@ const CREATED = {
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'created' && e.payload.via === 'routemize_booking'), "created lead_event written with via 'routemize_booking'");
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'stage_change'), 'stage_change event from the booking effects');
     ok(!fx.db.pec_drip_enrollments.some(e => e.lead_id === lead.id), 'created lead NOT nurture-enrolled (landmine 3: no enroll-then-pause churn)');
+    // Prompt 97 Part A: the created lead kicks the AI score (the door that
+    // left most open leads unscored). Exactly once, for the new lead.
+    ok(captured.aiKicks.length === 1 && captured.aiKicks[0] === lead.id, 'created lead kicks pec-lead-ai exactly once (prompt 97)');
     ok(captured.logs[0].outcome === 'ok' && captured.logs[0].payload.eventType === 'AppointmentCreated', 'ingest log carries the RAW envelope, not the mapping');
 
     const out2 = await processApptIntake(deps, rzEnvelope());
     ok(out2.status === 200 && out2.body.updated === true, 'replay of the same envelope updates');
     ok(fx.db.pec_appointments.length === 1, 'still one appointment');
     ok(fx.db.leads.length === 2, 'replay did NOT create a second lead (verify 5)');
+    ok(captured.aiKicks.length === 1, 'replay does NOT re-kick the AI (no lead was created)');
     ok(fx.db.lead_events.filter(e => e.event_type === 'created').length === 1, 'no duplicate created event');
 
     console.log('# routemize native: AppointmentCancelled + dotted-lowercase casing');

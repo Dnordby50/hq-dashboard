@@ -66,7 +66,12 @@
 // 90-day window, so if it found nothing, the windowed dedupe cannot hit
 // either, and creating is safe. A created lead is NOT nurture-enrolled
 // (landmine 3: apptBookingLeadEffects would pause it instantly; enroll-then-
-// pause is churn) and never gets AI kicked (kept out of scope deliberately).
+// pause is churn). Prompt 97 REVERSED the "no AI kick" half of that decision:
+// the no-kick was right for drips and wrong for scoring, and with Routemize
+// as the front door it silenced leads.score for most new leads. A created
+// lead now kicks pec-lead-ai (best-effort, fire-and-forget past the request
+// leaving; see kickLeadAi), exactly like pec-lead-intake does. Nurture
+// enrollment stays OFF, untouched.
 // Lead source is attributed to the PERSON, never the appointment (decision
 // 10): a new lead takes Routemize's own leadSource (fallback 'routemize');
 // an existing lead's source is filled only if blank, never overwritten.
@@ -564,10 +569,41 @@ async function mapRoutemizeEnvelope(db, env) {
   return { recognized: true, body, rz };
 }
 
+// Prompt 97: kick the per-lead AI score for a lead this intake just created.
+// Same contract as pec-lead-intake's triggerLeadAi: its own Netlify
+// invocation, server-to-server with x-webhook-secret, awaited only until the
+// request has LEFT this lambda (a truly-detached promise can be frozen when
+// the lambda returns), and every failure path is a console.warn. A slow or
+// failed score must NEVER turn a good appointment intake into a non-200:
+// Routemize retries non-2xx, and a retried intake is worse than an unscored
+// lead (the nightly pec-lead-score-runner catches those anyway).
+const AI_TRIGGER_WAIT_MS = 2500;
+async function kickLeadAi(leadId) {
+  try {
+    const base = process.env.URL || 'https://prescottepoxy.netlify.app';
+    const req = fetch(`${base}/.netlify/functions/pec-lead-ai`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': process.env.PEC_WEBHOOK_SECRET || '',
+      },
+      body: JSON.stringify({ lead_id: leadId }),
+    }).then(
+      (res) => { if (!res.ok) console.warn(`pec-appt-intake: AI trigger returned ${res.status} for lead ${leadId}`); },
+      (err) => { console.warn('pec-appt-intake: AI trigger failed:', err && err.message); }
+    );
+    const timeout = new Promise((resolve) => setTimeout(resolve, AI_TRIGGER_WAIT_MS));
+    await Promise.race([req, timeout]);
+  } catch (err) {
+    console.warn('pec-appt-intake: AI trigger threw:', err && err.message);
+  }
+}
+
 // Decision 9 (native path only): create the lead a direct Routemize booker
 // never became. Stage 'new' + a 'created' lead_event; apptBookingLeadEffects
 // does the stage advance afterwards, exactly like an in-app booking.
-// DELIBERATELY NOT nurture-enrolled (landmine 3) and no AI kick. Best-effort:
+// DELIBERATELY NOT nurture-enrolled (landmine 3); the AI score kick happens
+// at the call site (prompt 97, injectable for tests). Best-effort:
 // a failed create lands the appointment unlinked with the contact noted, it
 // never turns a good intake into a non-200.
 async function createRoutemizeLead(db, args) {
@@ -841,6 +877,9 @@ async function processApptIntake(deps, body) {
         contact.lead_id = lead.id;
         contact.customer_id = lead.customer_id || null; // born linked (prompt 89)
         leadCreated = true;
+        // Prompt 97: score the lead this booking just created (the door that
+        // left 17 of 18 open leads unscored). Best-effort, never a non-200.
+        await (deps.kickLeadAi || kickLeadAi)(lead.id);
       } catch (e) {
         // The appointment still lands (unlinked, contact noted below); a
         // non-200 here would just make Routemize retry a working intake.

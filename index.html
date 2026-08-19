@@ -20276,7 +20276,7 @@ async function renderSettingsDrips() {
   const consentSince = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
   const [setRes, consentRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('key,value')
-      .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days', 'lost_reason_ai_backfill_enabled', 'drip_instant_touch_enabled', 'routemize_booking_url']),
+      .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days', 'lost_reason_ai_backfill_enabled', 'drip_instant_touch_enabled', 'routemize_booking_url', 'lead_score_nightly_enabled', 'lead_score_batch_cap', 'lead_score_stages', 'lead_score_model']),
     supabase.from('leads').select('id,sms_consent').is('deleted_at', null).gte('created_at', consentSince),
   ]), { label: 'settings-drips' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
@@ -20288,6 +20288,11 @@ async function renderSettingsDrips() {
   const bookingUrl = map.routemize_booking_url || '';
   // Missing row = ON (the nightly function defaults the same way).
   const lostAiOn = map.lost_reason_ai_backfill_enabled !== 'false';
+  // Lead scoring (prompt 97): same missing-row-is-on rule as the runner.
+  const scoreOn = map.lead_score_nightly_enabled !== 'false';
+  const scoreCap = map.lead_score_batch_cap || '50';
+  const scoreStages = map.lead_score_stages || 'new,contacted,estimate_scheduled,presented,estimate_sent';
+  const scoreModel = map.lead_score_model || '';
   const qStart = map.drip_quiet_start || '08:00';
   const qEnd = map.drip_quiet_end || '20:00';
   const qDays = String(map.drip_quiet_days || 'mon,tue,wed,thu,fri,sat').toLowerCase().split(',').map(s => s.trim());
@@ -20368,8 +20373,57 @@ async function renderSettingsDrips() {
         </div>
         <button type="button" class="pec-btn sm ${lostAiOn ? '' : 'primary'}" id="setLostAi">${lostAiOn ? 'Turn it OFF' : 'Turn it ON'}</button>
       </div>
+    </div>
+    <div class="pec-card">
+      <h3 style="margin-top:0">Lead scoring</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">
+        Every new lead gets its Hot/Warm/Cold AI score on arrival, whichever door it came in
+        (web form, Routemize booking, or typed by hand). Each morning the open pipeline
+        re-scores so the number reflects what has happened since, not just how the lead looked
+        the day it arrived. The AI only scores and drafts; it never contacts a customer.
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="font-weight:700">Nightly re-score: ${scoreOn ? 'ON' : 'OFF'}</div>
+        <button type="button" class="pec-btn sm ${scoreOn ? '' : 'primary'}" id="setScoreNightly">${scoreOn ? 'Turn it OFF' : 'Turn it ON'}</button>
+      </div>
+      <div class="pec-field" style="max-width:220px;margin-bottom:6px"><label>Max leads scored per night</label>
+        <input type="number" id="setScoreCap" min="1" step="1" value="${esc(scoreCap)}">
+      </div>
+      <div style="font-size:.7rem;color:var(--muted)">The cap bounds what a night can cost in AI calls. The stalest leads go first, so anything over the cap simply waits for the next night.</div>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.78rem">Advanced</summary>
+        <div class="pec-field" style="max-width:520px;margin-top:8px;margin-bottom:6px"><label>Stages that re-score nightly</label>
+          <input id="setScoreStages" value="${esc(scoreStages)}" placeholder="new,contacted,estimate_scheduled,presented,estimate_sent">
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Comma-separated stage names. Accepted and lost leads never re-score regardless of this list. Archived leads are always excluded.</div>
+        <div class="pec-field" style="max-width:320px;margin-bottom:6px"><label>Model override</label>
+          <input id="setScoreModel" value="${esc(scoreModel)}" placeholder="(default)">
+        </div>
+        <div style="font-size:.7rem;color:var(--muted)">Leave blank to use the standard model. Applies to the nightly run, the on-arrival score, and the Refresh analysis button.</div>
+      </details>
     </div>`;
   wireSettingsTabs(root);
+
+  $('setScoreNightly').addEventListener('click', async () => {
+    const btn = $('setScoreNightly'); btn.disabled = true;
+    try { await saveSetting('lead_score_nightly_enabled', scoreOn ? 'false' : 'true'); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setScoreCap').addEventListener('change', async (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (!Number.isFinite(n) || n < 1) { showToast('The nightly cap must be a whole number of 1 or more.', { ttl: 5000 }); e.target.value = scoreCap; return; }
+    try { await saveSetting('lead_score_batch_cap', String(n)); showToast('Nightly cap saved', { ttl: 2500 }); }
+    catch (err) { showToast('Could not save the cap: ' + (err.message || err), { ttl: 5000 }); }
+  });
+  $('setScoreStages').addEventListener('change', async (e) => {
+    const v = e.target.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean).join(',');
+    try { await saveSetting('lead_score_stages', v); showToast(v ? 'Stage list saved' : 'Stage list cleared (defaults apply)', { ttl: 2500 }); }
+    catch (err) { showToast('Could not save the stage list: ' + (err.message || err), { ttl: 5000 }); }
+  });
+  $('setScoreModel').addEventListener('change', async (e) => {
+    try { await saveSetting('lead_score_model', e.target.value.trim()); showToast('Model override saved', { ttl: 2500 }); }
+    catch (err) { showToast('Could not save the model override: ' + (err.message || err), { ttl: 5000 }); }
+  });
 
   $('setInstantTouch').addEventListener('click', async () => {
     const btn = $('setInstantTouch'); btn.disabled = true;
@@ -28329,7 +28383,8 @@ function wireLeadSourceEditor(hostEl, { leadId = null, customerId = null, curren
 // used). The band WORD rides the badge so meaning never depends on color
 // alone, and the pec-age-* classes are color-mix over CSS vars so the badge
 // tracks whatever theme is active. Scoring stays read-only: pec-lead-ai runs
-// on intake and on the detail page's Refresh button, never from a render.
+// on lead creation (every door, prompt 97), on the detail page's Refresh
+// button, and via the nightly pec-lead-score-runner; never from a render.
 function leadScoreBand(score) {
   if (score == null || !Number.isFinite(score)) return null;
   return score >= 70 ? { label: 'Hot', cls: 'pec-age-green' }
@@ -28339,9 +28394,20 @@ function leadScoreBand(score) {
 function leadScoreBadge(lead, opts = {}) {
   const score = lead.score == null ? null : Number(lead.score);
   const band = leadScoreBand(score);
-  if (!band) return '';
+  const sizing = opts.big ? 'font-size:.95rem;padding:4px 10px;font-weight:700' : 'font-weight:700';
+  // Prompt 97 Part C: a never-scored lead is UNKNOWN, not Cold, and not
+  // invisible either (no badge at all read as a judgment the same way).
+  // Neutral chip, no band color, explicit words.
+  if (!band) {
+    return `<span class="pec-age" style="${sizing};background:color-mix(in srgb,#64748b 12%,transparent);color:var(--rd-muted,#6b7280)" title="No AI score yet. Scoring runs when a lead arrives and refreshes nightly; open the lead and press Refresh analysis to score it now.">Not scored yet</span>`;
+  }
   const reason = lead.ai_analysis && lead.ai_analysis.score_reason ? ': ' + lead.ai_analysis.score_reason : '';
-  return `<span class="pec-age ${band.cls}" ${opts.big ? 'style="font-size:.95rem;padding:4px 10px;font-weight:700"' : 'style="font-weight:700"'} title="${esc('AI score ' + score + ' of 100' + reason)}">${band.label} ${score}</span>`;
+  // Staleness rides the tooltip (prompt 97 Part C): scored_at is stamped on
+  // every scoring run; ai_analyzed_at covers rows scored before the column
+  // existed.
+  const when = lead.scored_at || lead.ai_analyzed_at;
+  const scoredLine = when ? ` · Scored ${fmtRelativeTime(when)}` : '';
+  return `<span class="pec-age ${band.cls}" style="${sizing}" title="${esc('AI score ' + score + ' of 100' + reason + scoredLine)}">${band.label} ${score}</span>`;
 }
 
 let _leadsById = {};
@@ -30404,6 +30470,19 @@ function openNewLeadModal(prefill) {
           payload: { source: 'manual' },
         });
         if (evt.error) console.warn('[leads] created event failed:', evt.error.message);
+        // Prompt 97: every lead-creation door kicks the AI score. Same
+        // endpoint the detail page's Refresh button uses (staff JWT auth);
+        // deliberately not awaited, the browser finishes the request on its
+        // own and the score shows up on the next board load. A failure is
+        // only a warn: the nightly re-score runner catches missed leads.
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          fetch('/.netlify/functions/pec-lead-ai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session && session.access_token}` },
+            body: JSON.stringify({ lead_id: ins.data.id }),
+          }).catch((e) => console.warn('[leads] AI score kick failed (non-fatal):', e && e.message));
+        } catch (e) { console.warn('[leads] AI score kick threw (non-fatal):', e && e.message); }
         await enrollLeadInDrip(ins.data.id);   // best-effort; never blocks the add
         closeModal();
         showToast(`Added lead ${esc(name)}`, { ttl: 2500 });
@@ -30505,8 +30584,10 @@ async function renderLeads() {
     // (soonest visit first, same urgency reasoning), leads with no
     // appointment (dragged in by hand) last; every other column reads newest
     // activity first. The score sort (Part B) puts the hottest AI score on
-    // top in EVERY column, unscored leads last, with the default order as
-    // the tiebreak.
+    // top in EVERY column, with the default order as the tiebreak. Unscored
+    // leads come AFTER scored ones as their own unknown group (prompt 97
+    // Part C: unknown, not bad; they render "Not scored yet", never Cold),
+    // ordered among themselves by the default urgency order.
     const apptMap = data.estimateAppts || {};
     const defaultCmp = col.key === 'new'
       ? (a, b) => String(a.created_at).localeCompare(String(b.created_at))
@@ -30722,6 +30803,15 @@ function leadEventHtml(ev, staffNames) {
     body = `<span style="white-space:pre-wrap">${esc(p.text || '')}</span>`;
   } else if (ev.event_type === 'ai_analysis') {
     body = `AI scored <strong>${esc(p.score)}</strong>${p.next_action ? ` · ${esc(p.next_action)}` : ''}`;
+  } else if (ev.event_type === 'score_band_changed') {
+    // Nightly re-score provenance (prompt 97): a quiet re-score writes NO
+    // event; only a Hot/Warm/Cold band move (or the first-ever score) lands
+    // here, so the timeline records turning points, not every tick.
+    const bandWord = (b) => b ? b.charAt(0).toUpperCase() + b.slice(1) : null;
+    const via = p.via === 'nightly_runner' ? ' (nightly re-score)' : '';
+    body = p.from_band
+      ? `AI score moved: <strong>${esc(bandWord(p.from_band))} ${esc(p.from_score)}</strong> to <strong>${esc(bandWord(p.to_band))} ${esc(p.to_score)}</strong>${via}`
+      : `First AI score: <strong>${esc(bandWord(p.to_band))} ${esc(p.to_score)}</strong>${via}`;
   } else if (ev.event_type === 'drip_send') {
     // p is a pec_drip_sends row (see the timeline merge in renderLeadDetail).
     const chan = p.channel === 'sms' ? 'text' : 'email';

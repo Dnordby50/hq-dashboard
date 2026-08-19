@@ -105,6 +105,15 @@
 [functions."pec-lost-reason-backfill"]
   schedule = "0 15 * * *"
 
+# Nightly lead re-score (prompt 97). 15:30 UTC = 08:30 MST, offset from the
+# 15:00 lost-reason backfill so two AI jobs never stack. Re-scores the open
+# pipeline (settings-listed stages, staleness order, batch cap default 50)
+# through the same core as pec-lead-ai; gated by lead_score_nightly_enabled.
+# On-demand runs go through pec-lead-score-run (Netlify 403s direct
+# invocation of schedule-declared functions).
+[functions."pec-lead-score-runner"]
+  schedule = "30 15 * * *"
+
 # SalesAsk sync: push upcoming appointments to SalesAsk as scheduled tasks
 # (event_id = our appointment id, so the rep's recording auto-attaches),
 # reconcile recent recordings (SalesAsk webhooks have NO retries, this sweep

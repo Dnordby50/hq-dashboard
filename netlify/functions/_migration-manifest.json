@@ -3003,6 +3003,34 @@
           "name": "google_pull_include_declined"
         }
       ]
+    },
+    {
+      "file": "2026-09-09_prompt97_lead_scoring_live.sql",
+      "date": "2026-09-09",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.leads.scored_at"
+        },
+        {
+          "kind": "setting",
+          "name": "lead_score_nightly_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "lead_score_batch_cap"
+        },
+        {
+          "kind": "setting",
+          "name": "lead_score_stages"
+        },
+        {
+          "kind": "setting",
+          "name": "lead_score_model"
+        }
+      ]
     }
   ],
   "knownTables": [
