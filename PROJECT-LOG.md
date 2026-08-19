@@ -1,3 +1,53 @@
+## [2026-08-18 MST] Prompt 97 backfill executed: all 16 open leads now scored (0 hot / 11 warm / 5 cold). The on-demand endpoint cannot finish in one call, it took 7 passes against Netlify's 26 second ceiling.
+
+By: Cowork
+
+Changed: no code, no schema, no settings. 16 leads scored via the deployed pec-lead-score-run endpoint. PROJECT-LOG.md.
+
+**Task 1, deploy: PASS.** Netlify Deploys shows the published production deploy at commit e66d51d. Confirmed independently from outside the dashboard: POST to pec-lead-score-run with no secret answers `401 {"ok":false,"error":"Not authenticated"}`, which a pre-e66d51d deploy could not do (the function would 404).
+
+**Task 2, backfill: DONE, but NOT in one pass. This is the finding.**
+
+The handoff expected one curl returning `scored ~15`. What actually happens: the endpoint is a plain synchronous Netlify function, and scoring is one Claude call per lead at roughly 8 to 12 seconds each, so the platform kills it at ~26 seconds. Six consecutive calls returned **HTTP 504 Inactivity Timeout** with an HTML body (not JSON), each having scored 2 or 3 leads before the kill. The work is not lost: leads are written as they are scored, and the pass is staleness-ordered with `fresh_hours` skipping what is already done, so each call picked up where the last left off. Progress by check: 5 scored, then 11, then 12, then all 16.
+
+The seventh call returned 200. The eighth (run purely to capture a clean response body and prove idempotency) returned:
+
+```
+{"ok": true, "candidates": 16, "skipped_fresh": 16, "attempted": 0, "scored": 0, "band_changes": 0, "errors": []}
+```
+
+So: **errors [] and a clean no-op on re-run**, but `attempted`/`scored`/`band_changes` for the actual scoring work are unrecoverable, because the six passes that did the work died before they could serialize a response. Total cost was ~16 model calls (one per lead; no evidence of a double-score, since `fresh_hours: 24` skips anything already stamped).
+
+**For Claude Code, the real fix:** pec-lead-score-run needs to be a background function (the `-background` suffix, 15 minute limit) or take an explicit `limit` param so a caller can size a pass to fit 26 seconds. As written, the documented acceptance ("one curl, scored ~15") cannot be met on any dataset larger than about three leads, and a future operator following that handoff will read the 504 as a failure and re-run blindly. NOTE: this does NOT necessarily affect the nightly `pec-lead-score-runner`, which is schedule-declared and gets the longer platform limit. Tomorrow morning's check (below) is what proves it.
+
+**Task 3, distribution: PASS on both acceptance criteria.** Over the five open stages (new, contacted, estimate_scheduled, presented, estimate_sent), 16 leads:
+
+| hot (>=70) | warm (40-69) | cold (<40) | unscored | missing scored_at |
+|---|---|---|---|---|
+| **0** | **11** | **5** | **0** | **0** |
+
+**No lead scored Hot.** The top of the board is Steve Franklin at 62, then Anna Mckelvey / Jennifer Steichen / John LaMarr / Kellogg Patton at 58, down to Eric Moorcroft at 9. The reasons are specific and differentiated, not boilerplate: "Fast self-booked appointment shows real intent, but 5 days of silence with no estimate_sent"; "Strong pain point and stated urgency but decision is likely gated on HISA grant approval"; "17+ days and 6 no-answer attempts with a full voicemail box and an out-of-area phone number". The model is reading the timeline, which is the point of the prompt.
+
+**This matters for prompt 98.** That build was scoped to rank a follow-up queue by Hot leads. With a 70 cutoff and a live maximum of 62, a Hot-first queue is empty on day one. Either the band cutoffs need retuning against real PEC data (the 70/40 numbers predate any calibration), or the queue must rank by raw score order and treat the band as decoration. Do not let prompt 98 ship a screen whose top section is structurally empty. Flagged to Dylan.
+
+**Task 4, pipeline: PASS.** Sales Pipeline with Sort set to "AI score: hot first" (verified the select actually holds that value, not just that the option exists): every card on the five open stages carries a band chip with its number (Cold 15, Cold 9, Cold 28, Warm 58 and so on), and the badge tooltip reads e.g. `AI score 62 of 100: Fast self-booked appointment shows real intent... · Scored 1m ago`, so the staleness half of Part C works.
+
+**Three "Not scored yet" chips remain on the board, and they are correct.** They are the 3 leads in stage `accepted`, which the runner's stage list deliberately excludes (a won deal does not need a hotness score). The board shows 19 of 23 leads while the open pipeline is 16; the difference is exactly those three. Worth knowing before someone reports it as a miss.
+
+**Two junk leads are sitting in the open pipeline** and will land in prompt 98's queue if nobody removes them: "Cowork Smoke Test" (stage new, score 15, the model itself flagged it as placeholder data) and "Dylan Nordb" (stage presented, score 52, a test lead created under Dylan's own name). Cowork did not archive them; that is Dylan's call.
+
+**Task 5 (next-morning freshness + heartbeat): NOT YET DONE.** The nightly tick is 15:30 UTC / 08:30 MST, which has not happened yet at the time of this entry. Cowork has scheduled itself to run the check tomorrow morning and will append a follow-up entry with: which lead was picked, its score before and after, whether a `score_band_changed` event landed, and the `pec_heartbeats.last_ok_at` for pec-lead-score-runner. Nothing was hand-refreshed, so the comparison stays honest.
+
+Files touched: PROJECT-LOG.md.
+
+Handoff to Claude Code:
+1. Make pec-lead-score-run survive a real backfill (background function or a `limit` param), and correct the acceptance wording in any future handoff that says "one curl".
+2. Decide the band question above before prompt 98 is built.
+
+Handoff to Dylan:
+1. Backfill done: 0 hot / 11 warm / 5 cold across your 16 open leads, and the pipeline sorts by score now.
+2. Nothing is Hot. Your hottest lead is Steve Franklin at 62. That is a scoring-calibration question, not a bug, and it changes how the follow-up queue should be built.
+3. Archive "Cowork Smoke Test" and "Dylan Nordb" when you get a minute, or tell Cowork to.
 ## [2026-08-18 MST] Prompt 97 shipped: every lead now gets scored no matter which door it came in, the open pipeline re-scores nightly, and a never-scored lead reads "Not scored yet" instead of nothing
 
 By: Claude Code
