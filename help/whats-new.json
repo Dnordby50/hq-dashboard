@@ -1,5 +1,16 @@
 [
   {
+    "id": "ordering-usability",
+    "date": "2026-08-18",
+    "title": "Ordering now tells the truth and never dead-ends.",
+    "summary": "The Jobs to order list now shows each job's real system and square footage (they used to read blank next to a working material total). Touch-up callbacks no longer clutter the list. When the calculator cannot make lines, the row now says the real reason, for example that Custom System has no material recipe, and every such job has an Add lines by hand button so nothing is stuck. Typing a quantity or ticking ordered on a calculated job saves its lines for you automatically. And when nothing is selected, the order sheet now tells you to tick the jobs above, with a Select all button right there.",
+    "howto": [
+      "Open Ordering. Tick the jobs you want to order for, or use Select all shown; the order sheet builds from your selection.",
+      "For a job with no recipe (like Custom System), click Add lines by hand on its row and pick the products.",
+      "Edit quantities right in the order sheet. On a calculated job the first edit saves the lines automatically."
+    ]
+  },
+  {
     "id": "followup-queue",
     "date": "2026-08-18",
     "title": "A follow-up queue that tells you who to call first, and what to say.",

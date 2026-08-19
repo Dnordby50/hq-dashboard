@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally, flakeBasecoatDefaults, flakeProductSaveError, inheritCureSpeeds, crmPlanAreas } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally, flakeBasecoatDefaults, flakeProductSaveError, inheritCureSpeeds, crmPlanAreas, classifyNoLines } from './calculator.js';
 import { actualGpPct, costingComplete, joinCompsSources, buildComps, compsGpCaveat } from './comps.js';
 
 let passed = 0;
@@ -1176,6 +1176,77 @@ assertThrows(() => {
   assertEq(crmPlanAreas([mk({ id: 'a1', is_change_order: true })], slots), [], 'a job whose ONLY area is a change order maps to no areas at all');
   const legacy = crmPlanAreas([mk({ id: 'a1', flake_product_id: 'flake', basecoat_product_id: 'basecoat' })], slots)[0];
   assertEq(legacy.flake_product_id, 'flake', 'legacy no-materials fallback still reads the job_areas columns');
+}
+
+// --- classifyNoLines (prompt 99 C): honest skip reasons ----------------------
+{
+  const systemTypesById = {
+    custom: { id: 'custom', name: 'Custom System' },
+    polish: { id: 'polish', name: 'Concrete Polishing' },
+    flake: { id: 'flake', name: 'Standard Flake' },
+  };
+  const recipeSlotsBySystemType = {
+    // Custom System: one text slot, no product (the live shape).
+    custom: [{ id: 'cs1', material_type: null, slot_kind: 'text', default_product_id: null, required: false }],
+    // Concrete Polishing: product slots but every default NULL (the live
+    // shape); yields only if an area carries a pick.
+    polish: [
+      { id: 'cp1', material_type: 'Basecoat', slot_kind: 'product', default_product_id: null, required: false },
+      { id: 'cp2', material_type: 'Topcoat', slot_kind: 'product', default_product_id: null, required: false },
+    ],
+    // Standard Flake: a real recipe with defaults.
+    flake: [
+      { id: 'sf1', material_type: 'Basecoat', slot_kind: 'product', default_product_id: 'bc1', required: true },
+      { id: 'sf2', material_type: 'Flake', slot_kind: 'product', default_product_id: null, required: true },
+    ],
+  };
+  const area = (over) => ({ id: 'a1', name: 'Garage', sqft: 655, system_type_id: 'flake',
+    flake_product_id: null, basecoat_product_id: null, topcoat_product_id: null, ...over });
+  const cls = (args) => classifyNoLines({ recipeSlotsBySystemType, systemTypesById, ...args });
+
+  assertEq(cls({ areas: [] }).code, 'no_areas', 'no areas anywhere -> no_areas');
+  assertEq(cls({ areas: [] }).message, 'no areas on the job card yet', 'no_areas message');
+  const CO_MSG = 'every area is a change order; change orders never auto-generate material, add lines by hand if one needs any';
+  assertEq(cls({ areas: [], fromCrm: true, emptyReason: CO_MSG }), { code: 'all_change_orders', message: CO_MSG },
+    'all_change_orders keeps the prompt-75 C1 message verbatim');
+  assertEq(cls({ areas: [area({ system_type_id: 'custom', sqft: 870 })] }),
+    { code: 'no_recipe', message: 'Custom System has no material recipe, add lines by hand' },
+    'a text-only recipe -> no_recipe naming the system (Chris Hill case)');
+  assertEq(cls({ areas: [area({ system_type_id: 'polish' })] }).code, 'no_recipe',
+    'product slots with NULL defaults and no picks cannot yield -> no_recipe (Concrete Polishing case)');
+  assertEq(cls({ areas: [area({ system_type_id: 'polish', basecoat_product_id: 'p9' })] }).code, 'unknown',
+    'a Concrete Polishing area WITH a pick has a yielding recipe (falls through, sqft is fine)');
+  assertEq(cls({ areas: [area({ system_type_id: 'custom', sqft: 0 })] }).code, 'no_recipe',
+    'no_recipe beats zero_sqft: a Custom System job with 0 sqft is blocked by the recipe (Hixson/Rudman case)');
+  assertEq(cls({ areas: [
+      area({ system_type_id: 'polish', sqft: 2850 }),
+      area({ id: 'a2', system_type_id: 'custom', sqft: 0 }),
+    ] }).message, 'Concrete Polishing, Custom System have no material recipe, add lines by hand',
+    'several recipe-less systems are named comma-separated (Scott Gordon case)');
+  assertEq(cls({ areas: [area({ sqft: 0 })] }),
+    { code: 'zero_sqft', message: 'every area has 0 sqft, enter the real sqft on the job card' },
+    'recipe exists but every sqft is 0 -> zero_sqft');
+  assertEq(cls({ areas: [area()], fromCrm: true }).code, 'unknown', 'nothing else matched -> unknown');
+  assertEq(cls({ areas: [area()], fromCrm: true }).message,
+    'calculator produced no lines (check area sqft on the CRM job card)', 'unknown keeps the old CRM text');
+  assertEq(cls({ areas: [area()], fromCrm: false }).message,
+    'calculator produced no lines (check area sqft)', 'unknown keeps the old non-CRM text');
+}
+
+// --- classifyNoLines mirror parity (index.html carries a byte-identical copy)
+{
+  const fs = await import('node:fs');
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const grab = (src, prefix) => {
+    const i = src.indexOf(`${prefix}function classifyNoLines(`);
+    if (i < 0) return null;
+    const end = src.indexOf('\n}', i);
+    return src.slice(i + prefix.length, end + 2);
+  };
+  const canonical = grab(fs.readFileSync(new URL('./calculator.js', import.meta.url), 'utf8'), 'export ');
+  const mirror = grab(html, '');
+  assertEq(!!canonical && !!mirror, true, 'both classifyNoLines copies exist');
+  assertEq(mirror === canonical, true, 'index.html classifyNoLines mirror is byte-identical to calculator.js');
 }
 
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------

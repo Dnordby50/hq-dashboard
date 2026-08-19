@@ -42766,6 +42766,52 @@ function crmPlanAreas(crmAreas, recipeSlotsBySystemType) {
     });
 }
 window.crmPlanAreas = crmPlanAreas;
+
+// Prompt 99 C: name the REAL reason the calculator produced no lines.
+// Mirror of production/calculator.js classifyNoLines; keep byte-identical
+// (body; the export keyword is the only difference, same as crmPlanAreas).
+function classifyNoLines({ areas, fromCrm, recipeSlotsBySystemType, systemTypesById, emptyReason }) {
+  if (emptyReason) return { code: 'all_change_orders', message: emptyReason };
+  if (!areas || !areas.length) return { code: 'no_areas', message: 'no areas on the job card yet' };
+  const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+  const areaPickFor = (a, materialType) =>
+    materialType === 'Basecoat' ? a.basecoat_product_id
+    : materialType === 'Topcoat' ? a.topcoat_product_id
+    : SWATCH.has(materialType) ? a.flake_product_id
+    : null;
+  const bySys = new Map();
+  for (const a of areas) {
+    if (!bySys.has(a.system_type_id)) bySys.set(a.system_type_id, []);
+    bySys.get(a.system_type_id).push(a);
+  }
+  const noRecipeNames = [];
+  let allNoRecipe = true;
+  for (const [sysId, sysAreas] of bySys) {
+    const slots = (recipeSlotsBySystemType || {})[sysId] || [];
+    const canYield = slots.some(slot =>
+      (slot.slot_kind || 'product') === 'product'
+      && (slot.default_product_id != null || sysAreas.some(a => areaPickFor(a, slot.material_type) != null)));
+    if (canYield) allNoRecipe = false;
+    else noRecipeNames.push(((systemTypesById || {})[sysId] || {}).name || 'This system');
+  }
+  if (allNoRecipe) {
+    const uniq = [...new Set(noRecipeNames)];
+    return {
+      code: 'no_recipe',
+      message: `${uniq.join(', ')} ${uniq.length === 1 ? 'has' : 'have'} no material recipe, add lines by hand`,
+    };
+  }
+  if (areas.every(a => !(Number(a.sqft) > 0))) {
+    return { code: 'zero_sqft', message: 'every area has 0 sqft, enter the real sqft on the job card' };
+  }
+  return {
+    code: 'unknown',
+    message: fromCrm
+      ? 'calculator produced no lines (check area sqft on the CRM job card)'
+      : 'calculator produced no lines (check area sqft)',
+  };
+}
+window.classifyNoLines = classifyNoLines;
 // Prompt 75 C2: blank cure speeds inherit the job's dominant cure speed at
 // PLAN-INPUT time, so same-product lines merge on the pull's
 // `${product_id}|${cure_speed}` SKU key instead of splitting into a phantom
@@ -43208,12 +43254,19 @@ function _mergeAcrossAreas(areaPlans) {
 
     // Selection can go stale across reloads (job completed or removed
     // elsewhere); prune before rendering so counts and the sheet agree.
+    // Prompt 99 B: callbacks prune too, so a leftover selection can never
+    // smuggle one into the order sheet after the list filter below.
     for (const id of [...state.orderSelected]) {
       const j = state.jobs.find(x => x.id === id);
-      if (!j || j.status === 'completed') state.orderSelected.delete(id);
+      if (!j || j.status === 'completed' || j.is_callback) state.orderSelected.delete(id);
     }
 
-    const openJobs = state.jobs.filter(j => j.status !== 'completed');
+    // Prompt 99 B: touch-up callbacks are out of Jobs-to-order entirely.
+    // resolveCrmForProdJob refuses to bridge them by design, so their rows
+    // could only ever read "no areas": correct but useless, and 11 of them
+    // buried the orderable list. They keep living everywhere else (Job
+    // Schedule, Touch-ups panel, Job Costing callback rollup, putaway).
+    const openJobs = state.jobs.filter(j => j.status !== 'completed' && !j.is_callback);
     const schedKey = (j) => (daysByJob[j.id] || [])[0] || j.install_date || '9999';
     const listJobs = openJobs.slice().sort((a, b) => schedKey(a).localeCompare(schedKey(b)) || (a.customer_name || '').localeCompare(b.customer_name || ''));
     const shownJobs = listJobs.filter(j => jobInScope(j, daysByJob[j.id] || [], start, end));
@@ -43228,16 +43281,29 @@ function _mergeAcrossAreas(areaPlans) {
     const filter = state.jobFilter.status;
     const tableJobs = filter ? state.jobs.filter((j) => j.status === filter) : state.jobs;
     const sysById = indexById(state.systemTypes);
-    const sysSummary = (job) => {
-      if (!job.areas || !job.areas.length) return '—';
+    const sysSummaryArr = (areas) => {
+      if (!areas || !areas.length) return '—';
       const counts = new Map();
-      for (const a of job.areas) {
+      for (const a of areas) {
         const name = (sysById[a.system_type_id] || {}).name || 'System';
         counts.set(name, (counts.get(name) || 0) + 1);
       }
       return [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(' + ');
     };
-    const sumSqft = (job) => (job.areas || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
+    const sysSummary = (job) => sysSummaryArr(job.areas);
+    const sumSqftArr = (areas) => (areas || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
+    const sumSqft = (job) => sumSqftArr(job.areas);
+    // Prompt 99 A: the Jobs-to-order columns read the SAME area source the
+    // material chip beside them reads (whichever calcAreasInputFor resolved,
+    // via the memoized calculator result), falling back to pec_prod_areas.
+    // Before this, 24 of 56 rows showed "—"/0 next to a working chip because
+    // sysSummary read the schedule-modal stub while the chip read the CRM
+    // job card: that mismatch is what Dylan read as "no materials". The All
+    // Jobs table below deliberately keeps the plain job.areas read.
+    const resolvedAreasFor = (job) => {
+      const res = computeLinesFor(job);
+      return (res && res.areas && res.areas.length) ? res.areas : (job.areas || []);
+    };
 
     // ---- Jobs-to-order list rows ----
     const crewById = indexById(state.crews || []);
@@ -43253,10 +43319,15 @@ function _mergeAcrossAreas(areaPlans) {
       }
       return j.install_date ? fmtDate(j.install_date) : 'not scheduled';
     };
-    // Colors gate, surfaced instead of silent: a bridged job explicitly NOT
+    // Colors gate, surfaced instead of silent: a job explicitly NOT
     // confirmed and with no saved lines gets a disabled checkbox (saved lines
-    // win over the gate, same rule as resolveJobLines).
-    const isGated = (j) => !!(j.dripjobs_deal_id && state.crmColorsConfirmedByProdJob[j.id] === false && !(j.lines || []).length);
+    // win over the gate, same rule as resolveJobLines). Prompt 99 F dropped
+    // the dripjobs_deal_id condition: manual and estimate-sourced jobs
+    // resolve a CRM card too (resolveCrmForProdJob), and an unconfirmed one
+    // must gate the same way. Only an EXPLICIT false gates; a MISSING entry
+    // (CRM fetch degraded, or truly unbridged) never does, so the page still
+    // fails open.
+    const isGated = (j) => !!(state.crmColorsConfirmedByProdJob[j.id] === false && !(j.lines || []).length);
 
     const jobRowsHtml = shownJobs.map(j => {
       const resolved = resolveJobLines(j, computeLinesFor);
@@ -43272,7 +43343,11 @@ function _mergeAcrossAreas(areaPlans) {
       } else if (resolved.kind === 'calculated') {
         matChip = '<span class="pec-badge">calculated, not saved</span>';
       } else {
-        matChip = `<span style="color:var(--danger);font-size:.68rem">${esc(resolved.reason)}</span>`;
+        // Prompt 99 D: a skipped row is never a dead end; the escape hatch
+        // rides the row itself (most valuable on no_recipe jobs, where the
+        // classifier's own message says "add lines by hand").
+        matChip = `<span style="color:var(--danger);font-size:.68rem">${esc(resolved.reason)}</span>
+          <button class="pec-btn ghost sm" data-add-line-job="${esc(j.id)}" style="margin-left:6px;font-size:.66rem;padding:1px 8px">Add lines by hand</button>`;
       }
       const colorsChip = !colorsKnown ? '' : (colorsOk
         ? '<span class="pec-badge delivered">colors confirmed</span>'
@@ -43288,8 +43363,8 @@ function _mergeAcrossAreas(areaPlans) {
           <td style="white-space:nowrap">${esc(schedLabel(j))}</td>
           <td data-open-job="${esc(j.id)}" style="cursor:pointer">${esc(j.customer_name)} <span style="color:var(--muted);font-size:.7rem">#${esc(j.proposal_number)}</span><div style="color:var(--muted);font-size:.68rem">${esc(j.address || '')}</div></td>
           <td>${esc(crewNameFor(j))}</td>
-          <td>${esc(sysSummary(j))}</td>
-          <td>${sumSqft(j).toLocaleString()}</td>
+          <td>${esc(sysSummaryArr(resolvedAreasFor(j)))}</td>
+          <td>${sumSqftArr(resolvedAreasFor(j)).toLocaleString()}</td>
           <td>${colorsChip}${flakeChip}</td>
           <td>${matChip}</td>
         </tr>`;
@@ -43302,8 +43377,21 @@ function _mergeAcrossAreas(areaPlans) {
     const totalCost = rows.reduce((s, row) => s + rowCost(row), 0);
     const groupedBySupplier = rows.reduce((acc, row) => { (acc[row.supplier] ||= []).push(row); return acc; }, {});
     const breakdownHtml = (row) => row.jobs.map(jb => {
+      // The SKU key is the aggregation key (product|cure), shared by every
+      // jb under this row; prompt 99 E uses it to find the freshly inserted
+      // saved row after a first-touch save.
+      const sku = `${row.product_id || `name:${row.product_name}`}|${row.cure_speed || ''}`;
+      // Sentinel guard (prompt 75 C3, non-negotiable): a flake_not_chosen
+      // row is display-only and never renders an editable control.
       if (jb.flake_not_chosen) return `<div style="margin:2px 0">${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span> · <em style="color:#b45309" title="This row cannot be ordered until a flake color is picked">pick a flake color on the job card to order</em></div>`;
-      if (!jb.saved) return `<div style="margin:2px 0">${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span> · <strong>${esc(jb.qty)}</strong> <em style="color:var(--muted)">(calculated; save lines to edit)</em></div>`;
+      // Prompt 99 E: calculated rows are editable too; the FIRST touch saves
+      // that job's calculated lines, then applies the edit to the fresh row.
+      if (!jb.saved) return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0">
+        <span>${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span></span>
+        <input type="number" min="0" step="1" value="${esc(jb.order_qty)}" data-oq-job="${esc(jb.job_id)}" data-sku="${esc(sku)}" class="prod-num" style="width:60px" title="Order quantity; your first edit saves this job's calculated lines automatically">
+        <label style="font-size:.65rem;color:var(--muted);display:inline-flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" data-ord-job="${esc(jb.job_id)}" data-sku="${esc(sku)}" ${jb.ordered ? 'checked' : ''}>ordered</label>
+        <em style="color:var(--muted);font-size:.65rem">calculated; first edit saves</em>
+      </div>`;
       return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0">
         <span>${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span></span>
         <input type="number" min="0" step="1" value="${esc(jb.order_qty)}" data-oq-line="${esc(jb.line_id)}" class="prod-num" style="width:60px" title="Order quantity for this job">
@@ -43340,8 +43428,12 @@ function _mergeAcrossAreas(areaPlans) {
           </div>`;
       }).join('');
     const calcSelected = selectedJobs.filter(j => resolveJobLines(j, computeLinesFor).kind === 'calculated');
+    // Prompt 99 D: the + Add line button renders for EVERY selected job. The
+    // old `(j.lines || []).length ?` gate made a Custom System job (zero
+    // saved AND zero calculated lines) a permanent dead end, the direct
+    // cause of "I still have to do it manually".
     const addChipsHtml = selectedJobs.map(j =>
-      `<span style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:14px;padding:2px 10px;font-size:.72rem">${esc(j.customer_name)} <span style="color:var(--muted)">#${esc(j.proposal_number)}</span>${(j.lines || []).length ? `<button class="pec-btn ghost sm" data-add-line-job="${esc(j.id)}">+ Add line</button>` : '<em style="color:var(--muted)">save lines to add</em>'}</span>`
+      `<span style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:14px;padding:2px 10px;font-size:.72rem">${esc(j.customer_name)} <span style="color:var(--muted)">#${esc(j.proposal_number)}</span><button class="pec-btn ghost sm" data-add-line-job="${esc(j.id)}">+ Add line</button></span>`
     ).join(' ');
 
     const cardsHtml = cards.map(c => `
@@ -43428,16 +43520,27 @@ function _mergeAcrossAreas(areaPlans) {
         </div>
       </div>
 
-      ${state.orderSelected.size ? `
       <div class="pec-card" id="prodOrderSheet">
         <div class="pec-toolbar" style="margin-bottom:8px">
           <h3 style="margin:0">Order sheet</h3>
+          ${state.orderSelected.size ? `
           <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${matSummary.inWindow} job${matSummary.inWindow===1?'':'s'} · ${rows.length} product${rows.length===1?'':'s'}${totalCost > 0 ? ` · est <strong style="color:var(--rd-ink, var(--text))">${money(totalCost)}</strong>` : ''}</span>
-          <button class="pec-btn primary sm" id="prodSheetPrint">Print order</button>
+          <button class="pec-btn primary sm" id="prodSheetPrint">Print order</button>` : ''}
         </div>
+        ${!state.orderSelected.size ? `
+        ${''/* Prompt 99 G: the selection step was invisible (Dylan did not
+             know the sheet needed one). The card now always renders, and the
+             empty state is an instruction plus the Select-all action right
+             where the eye lands. Selection stays manual by explicit
+             decision: no auto-select, no persistence across reloads. */}
+        <div class="pec-empty" style="padding:22px 10px;text-align:center">
+          <div style="font-size:.92rem;margin-bottom:10px"><strong>Tick the jobs above to build an order.</strong></div>
+          <div style="color:var(--muted);font-size:.75rem;margin-bottom:12px">The order sheet aggregates exactly the jobs you check, grouped by supplier.</div>
+          <button class="pec-btn sm" id="prodSheetSelectAll">Select all shown</button>
+        </div>` : `
         ${calcSelected.length ? `
         <div style="margin-bottom:10px;padding:8px 12px;border:1px solid rgba(245,158,11,.4);border-radius:8px;font-size:.75rem">
-          ${calcSelected.length} selected job${calcSelected.length===1?' has':'s have'} calculated (unsaved) lines; quantities there can only be edited after saving.
+          ${calcSelected.length} selected job${calcSelected.length===1?' has':'s have'} calculated (unsaved) lines. Editing a qty or ticking ordered saves that job's lines automatically; this button saves them all at once.
           <button class="pec-btn sm" id="prodSheetSaveCalc" style="margin-left:8px">Save lines for ${calcSelected.length} job${calcSelected.length===1?'':'s'}</button>
         </div>` : ''}
         ${matSummary.skipped.length ? `<div style="margin-bottom:10px;color:var(--danger);font-size:.72rem">Skipped: ${matSummary.skipped.map(x => `${esc(x.customer)} (#${esc(x.proposal)}): ${esc(x.reason)}`).join(' · ')}</div>` : ''}
@@ -43445,8 +43548,8 @@ function _mergeAcrossAreas(areaPlans) {
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <span style="font-size:.72rem;color:var(--muted)">Add material to a selected job:</span>
           ${addChipsHtml}
-        </div>
-      </div>` : ''}
+        </div>`}
+      </div>
 
       <div class="pec-card">
         <h3>By Customer (putaway)</h3>
@@ -43534,6 +43637,10 @@ function _mergeAcrossAreas(areaPlans) {
         render();
       });
       selHost.addEventListener('click', (e) => {
+        // Prompt 99 D: "Add lines by hand" on a skipped row, before the
+        // open-job check so the button never also opens the detail.
+        const add = e.target.closest('button[data-add-line-job]');
+        if (add) return openProdAddLineModal(add.dataset.addLineJob);
         const open = e.target.closest('[data-open-job]');
         if (open) openJobDetail(open.dataset.openJob);
       });
@@ -43545,6 +43652,9 @@ function _mergeAcrossAreas(areaPlans) {
       sheetHost.addEventListener('change', (e) => {
         if (e.target.matches('input[data-oq-line]')) return handleOrderQtyEdit(e.target);
         if (e.target.matches('input[data-line-id][data-prop]')) return handleOrderLineToggle(e.target);
+        // Prompt 99 E: first touch on a calculated row saves, then applies.
+        if (e.target.matches('input[data-oq-job]')) return handleCalcFirstTouch(e.target, 'qty');
+        if (e.target.matches('input[data-ord-job]')) return handleCalcFirstTouch(e.target, 'ordered');
       });
       sheetHost.addEventListener('click', (e) => {
         const reset = e.target.closest('button[data-oq-reset]');
@@ -43553,6 +43663,13 @@ function _mergeAcrossAreas(areaPlans) {
         if (rm) return handleManualLineRemove(rm.dataset.removeLine);
         const add = e.target.closest('button[data-add-line-job]');
         if (add) return openProdAddLineModal(add.dataset.addLineJob);
+      });
+      // Prompt 99 G: the empty-state Select all inside the order sheet card,
+      // same action as the list header's button.
+      const sheetSelectAll = $('prodSheetSelectAll');
+      if (sheetSelectAll) sheetSelectAll.addEventListener('click', () => {
+        shownJobs.filter(j => !isGated(j)).forEach(j => state.orderSelected.add(j.id));
+        render();
       });
       const saveCalcBtn = $('prodSheetSaveCalc');
       if (saveCalcBtn) saveCalcBtn.addEventListener('click', async () => {
@@ -43697,7 +43814,10 @@ function _mergeAcrossAreas(areaPlans) {
         if (src.empty) res = { empty: true, emptyReason: src.emptyReason || null };
         else {
           const post = applyFlakeNotChosen(computeMaterialPlan({ areas: src.areas, ...ctx }).lines, src.areas, src.fromCrm);
-          res = { lines: post.lines, fromCrm: src.fromCrm, flakeNotChosen: post.flakeNotChosen };
+          // areas rides along (prompt 99 A) so the list columns can read the
+          // SAME resolved source as the chip, and (99 C) so classifyNoLines
+          // can name the real cause when lines come back empty.
+          res = { lines: post.lines, areas: src.areas, fromCrm: src.fromCrm, flakeNotChosen: post.flakeNotChosen };
         }
       } catch (err) { res = { error: err && err.message ? err.message : String(err) }; }
       cache.set(job.id, res);
@@ -43740,16 +43860,27 @@ function _mergeAcrossAreas(areaPlans) {
     // so a fully-specified job orders regardless. Only an EXPLICIT false holds
     // a job back: a missing entry (CRM fetch degraded, or a non-bridged job)
     // never trips this, so the pull fails open.
-    if (job.dripjobs_deal_id && state.crmColorsConfirmedByProdJob[job.id] === false) {
+    // Prompt 99 F: the deal-id condition is gone; ANY source's job card can
+    // say colors are not confirmed. Strict === false keeps the fail-open
+    // behavior: a missing entry (degraded CRM fetch, unbridged job) never
+    // holds a job back.
+    if (state.crmColorsConfirmedByProdJob[job.id] === false) {
       return { kind: 'skipped', reason: 'colors not confirmed yet on the CRM job card' };
     }
     const res = computeLinesFor(job);
-    if (res.empty) return { kind: 'skipped', reason: res.emptyReason || 'no areas' };
     if (res.error) return { kind: 'skipped', reason: res.error };
-    if (!res.lines.length) {
-      return { kind: 'skipped', reason: res.fromCrm
-        ? 'calculator produced no lines (check area sqft on the CRM job card)'
-        : 'calculator produced no lines (check area sqft)' };
+    if (res.empty || !res.lines.length) {
+      // Prompt 99 C: name the real cause (no areas / all change orders / no
+      // recipe / zero sqft) instead of blaming sqft for everything. The
+      // classifier is pure and mirrored from production/calculator.js.
+      const cls = classifyNoLines({
+        areas: res.areas || [],
+        fromCrm: !!res.fromCrm,
+        recipeSlotsBySystemType: recipeSlotsBySystemType(),
+        systemTypesById: indexById(state.systemTypes),
+        emptyReason: res.emptyReason || undefined,
+      });
+      return { kind: 'skipped', reason: cls.message, code: cls.code };
     }
     return { kind: 'calculated', lines: res.lines };
   }
@@ -44057,6 +44188,38 @@ function _mergeAcrossAreas(areaPlans) {
     render();
   }
 
+  // Prompt 99 E: the first order action on a CALCULATED row persists that
+  // job's calculated lines (saveCalculatedLines: sentinel-filtered, delete-
+  // first idempotent), then finds the freshly inserted row by the SKU key
+  // (product|cure, the aggregation key) and applies the edit through the
+  // saved-line write. Double-fire is guarded by the existing
+  // state._savingLines set; on any failure the control reverts and toasts,
+  // exactly like the saved-row handlers.
+  async function handleCalcFirstTouch(input, kind) {
+    const jobId = input.dataset.oqJob || input.dataset.ordJob;
+    const sku = input.dataset.sku;
+    const val = kind === 'qty' ? (input.value === '' ? 0 : Number(input.value)) : input.checked;
+    if (kind === 'qty' && (!Number.isFinite(val) || val < 0)) { render(); return; }
+    if (state._savingLines.has(jobId)) { render(); return; } // a save is already in flight
+    input.disabled = true;
+    try {
+      await saveCalculatedLines(jobId); // re-renders on success; swallows its own errors
+      const job = state.jobs.find(j => j.id === jobId);
+      const line = ((job && job.lines) || []).find(l => `${l.product_id || `name:${l.product_name}`}|${l.cure_speed || ''}` === sku);
+      if (!line) throw new Error('the lines did not save; try again');
+      const patch = kind === 'qty' ? { order_qty: val, order_qty_manual: true } : { ordered: val };
+      const { error } = await supabase.from('pec_prod_material_lines').update(patch).eq('id', line.id);
+      if (error) throw error;
+      Object.assign(line, patch);
+      window.pecCostingStale = true;
+      render();
+    } catch (err) {
+      console.error('[prod] calc first touch:', err);
+      window.showToast && window.showToast('Could not save: ' + ((err && err.message) || err), { ttl: 5000 });
+      render(); // rebuilds the controls from the unchanged state
+    }
+  }
+
   async function handleOrderQtyReset(lineId) {
     const l = findLineById(lineId);
     if (!l) return;
@@ -44090,15 +44253,19 @@ function _mergeAcrossAreas(areaPlans) {
     render();
   }
 
-  // Add a catalog line to a job from the Order sheet. Modeled on the CRM
-  // module's openAddMaterialModal payload, but hand-rolled into
-  // #prodModalRoot like every other Module 3 modal (two-modal-roots gotcha:
-  // never call the CRM openModal helpers from bootProd). Inserted with
-  // manual_added=true (recalc never touches it) and the order_index >= 9000
-  // sentinel the CRM Job Costing view already treats as a hand-added line.
-  // Only offered on jobs with saved lines (calculated jobs go through Save
-  // lines first, same invariant as saveCalculatedLines).
-  function openProdAddLineModal(jobId) {
+  // Add a catalog line to a job from the Order sheet, a skipped Jobs-to-order
+  // row, or the job detail. Modeled on the CRM module's openAddMaterialModal
+  // payload, but hand-rolled into #prodModalRoot like every other Module 3
+  // modal (two-modal-roots gotcha: never call the CRM openModal helpers from
+  // bootProd). Inserted with manual_added=true (recalc never touches it) and
+  // the order_index >= 9000 sentinel the CRM Job Costing view already treats
+  // as a hand-added line. Prompt 99 D dropped the saved-lines-only gate:
+  // ANY job can take a hand-added line, including one with zero saved and
+  // zero calculated lines (Custom System, Concrete Polishing); the job then
+  // flows through resolveJobLines as kind 'saved' because job.lines becomes
+  // non-empty. opts.reopenDetail reopens the job-detail modal on close (the
+  // two modals share prodModalRoot, so this one replaced it).
+  function openProdAddLineModal(jobId, opts = {}) {
     const job = state.jobs.find(j => j.id === jobId); if (!job) return;
     const products = state.products.filter(p => p.active !== false).slice()
       .sort((a, b) => String(a.material_type || '').localeCompare(String(b.material_type || '')) || String(a.name || '').localeCompare(String(b.name || '')));
@@ -44126,7 +44293,10 @@ function _mergeAcrossAreas(areaPlans) {
     const syncUnit = () => { const opt = sel.options[sel.selectedIndex]; unitEl.value = opt ? (opt.dataset.unit || '') : ''; };
     syncUnit();
     sel.addEventListener('change', syncUnit);
-    const close = () => { $('prodModalRoot').innerHTML = ''; };
+    const close = () => {
+      $('prodModalRoot').innerHTML = '';
+      if (opts.reopenDetail) openJobDetail(jobId); // no-op if the job vanished
+    };
     $('prodAddLineCancel').addEventListener('click', close);
     window.prodModalWireX(close);
     $('prodAddLineBg').addEventListener('click', (e) => { if (e.target.id === 'prodAddLineBg') close(); });
@@ -44155,9 +44325,12 @@ function _mergeAcrossAreas(areaPlans) {
         });
         if (ins.error) throw ins.error;
         window.pecCostingStale = true;
+        // Reload BEFORE close(): with reopenDetail the close reopens the
+        // job-detail modal from state.jobs, which must already carry the
+        // new line or the detail would render one line behind.
+        await loadJobs();
         close();
         window.showToast && window.showToast(`Added ${product.name}.`, { ttl: 2500 });
-        await loadJobs();
         render();
       } catch (err) {
         saveBtn.disabled = false; saveBtn.textContent = 'Add line';
@@ -44896,6 +45069,7 @@ function _mergeAcrossAreas(areaPlans) {
 
           <div class="pec-modal-actions">
             <button class="pec-btn danger ghost"   id="prodDetailRecalc">Recalculate from catalog</button>
+            <button class="pec-btn ghost"          id="prodDetailAddLine" title="Add a material line by hand. Hand-added lines survive Recalculate.">+ Add line</button>
             <span style="flex:1"></span>
             <button class="pec-btn"                id="prodDetailComplete">Mark complete</button>
             <button class="pec-btn primary"        id="prodDetailSaveLines">Save line edits</button>
@@ -44910,6 +45084,10 @@ function _mergeAcrossAreas(areaPlans) {
     window.prodModalWireX(closeJobDetail);
     $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closeJobDetail(); });
     $('prodDetailRecalc').addEventListener('click', recalcActiveJob);
+    // Prompt 99 D: hand-add from the job detail too, same modal as the
+    // Ordering page. The add-line modal replaces this one in prodModalRoot
+    // (two-modal-roots gotcha), so it reopens the detail when done.
+    $('prodDetailAddLine').addEventListener('click', () => openProdAddLineModal(j.id, { reopenDetail: true }));
     $('prodDetailSaveLines').addEventListener('click', saveActiveJobLineEdits);
     $('prodDetailComplete').addEventListener('click', completeActiveJob);
   }
@@ -44917,7 +45095,7 @@ function _mergeAcrossAreas(areaPlans) {
   function renderDetailLines() {
     const j = state.activeJob; const host = $('prodDetailLines'); if (!host) return;
     const lines = (j.lines || []).slice().sort((a, b) => a.order_index - b.order_index);
-    if (!lines.length) { host.innerHTML = `<div class="pec-empty">No lines. Click Recalculate to generate from the catalog.</div>`; return; }
+    if (!lines.length) { host.innerHTML = `<div class="pec-empty">No lines. Click Recalculate to generate from the catalog, or + Add line to enter material by hand (the only way for a system with no recipe, like Custom System).</div>`; return; }
     // Build the per-row supplier dropdown options from a fixed list. Catalog
     // identity (product, color, material) is read-only so it can't drift away
     // from the catalog snapshot. Supplier is the one catalog field that stays
@@ -45038,13 +45216,20 @@ function _mergeAcrossAreas(areaPlans) {
     // the modal and wipes the message elements. With sqft 0 the merge drops
     // every sqft-driven line, so without this note the recalc looks like it
     // silently deleted everything.
-    const totalSqft = areasInput.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
     const flakeNote = post.flakeNotChosen.length ? ` Note: no flake line was generated for ${post.flakeNotChosen.map(n => `"${n}"`).join(', ')}; pick a flake color and recalculate.` : '';
-    $('prodDetailOk').textContent = (src.empty && src.emptyReason
-      ? `Recalculated to zero lines: ${src.emptyReason}.`
-      : totalSqft > 0
-      ? (src.fromCrm ? 'Recalculated from the CRM job card picks.' : 'Recalculated from catalog.')
-      : 'Recalculated. Warning: total job sqft is 0, so all sqft-based quantities computed to zero lines. Enter the real sqft on the areas and recalculate again.') + flakeNote;
+    // Prompt 99 C: when the recalc produced nothing, say the REAL reason via
+    // the shared classifier (no areas / all change orders / no recipe / zero
+    // sqft), the same wording the Ordering page shows for the same job.
+    const producedNothing = !post.lines.filter(l => !l.flake_not_chosen).length;
+    $('prodDetailOk').textContent = (producedNothing
+      ? `Recalculated to zero lines: ${classifyNoLines({
+          areas: areasInput,
+          fromCrm: !!src.fromCrm,
+          recipeSlotsBySystemType: recipeSlotsBySystemType(),
+          systemTypesById: indexById(state.systemTypes),
+          emptyReason: src.empty ? (src.emptyReason || undefined) : undefined,
+        }).message}.`
+      : (src.fromCrm ? 'Recalculated from the CRM job card picks.' : 'Recalculated from catalog.')) + flakeNote;
   }
 
   async function completeActiveJob() {

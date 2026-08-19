@@ -188,6 +188,71 @@ export function crmPlanAreas(crmAreas, recipeSlotsBySystemType) {
     });
 }
 
+// Prompt 99 C: name the REAL reason the calculator produced no lines,
+// instead of the old catch-all "check area sqft" (which blamed sqft on jobs
+// whose actual problem was a recipe with nothing in it). Pure classifier
+// over the RESOLVED areas (crmPlanAreas output or the pec_prod_areas
+// mapping, both of which carry per-area basecoat/topcoat/flake picks);
+// index.html carries a byte-identical mirror (the crmPlanAreas convention).
+//
+// Codes, in priority order:
+//   all_change_orders  every CRM area is a change order (pass the existing
+//                      prompt-75 C1 message through as `emptyReason`; kept
+//                      verbatim)
+//   no_areas           no areas on either source
+//   no_recipe          EVERY area's system has zero product slots that can
+//                      yield a product. A slot yields nothing when its
+//                      slot_kind is not 'product', or when it has no
+//                      default_product_id AND no area carries a pick for its
+//                      material type. (That second clause is what catches
+//                      Concrete Polishing: 4 product slots, all defaults
+//                      NULL.) Checked BEFORE zero_sqft on purpose: a Custom
+//                      System job with 0 sqft is blocked by the recipe, and
+//                      filling in the sqft would change nothing.
+//   zero_sqft          a recipe exists but every area's sqft is 0 or null
+//   unknown            fall back to the old text
+export function classifyNoLines({ areas, fromCrm, recipeSlotsBySystemType, systemTypesById, emptyReason }) {
+  if (emptyReason) return { code: 'all_change_orders', message: emptyReason };
+  if (!areas || !areas.length) return { code: 'no_areas', message: 'no areas on the job card yet' };
+  const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+  const areaPickFor = (a, materialType) =>
+    materialType === 'Basecoat' ? a.basecoat_product_id
+    : materialType === 'Topcoat' ? a.topcoat_product_id
+    : SWATCH.has(materialType) ? a.flake_product_id
+    : null;
+  const bySys = new Map();
+  for (const a of areas) {
+    if (!bySys.has(a.system_type_id)) bySys.set(a.system_type_id, []);
+    bySys.get(a.system_type_id).push(a);
+  }
+  const noRecipeNames = [];
+  let allNoRecipe = true;
+  for (const [sysId, sysAreas] of bySys) {
+    const slots = (recipeSlotsBySystemType || {})[sysId] || [];
+    const canYield = slots.some(slot =>
+      (slot.slot_kind || 'product') === 'product'
+      && (slot.default_product_id != null || sysAreas.some(a => areaPickFor(a, slot.material_type) != null)));
+    if (canYield) allNoRecipe = false;
+    else noRecipeNames.push(((systemTypesById || {})[sysId] || {}).name || 'This system');
+  }
+  if (allNoRecipe) {
+    const uniq = [...new Set(noRecipeNames)];
+    return {
+      code: 'no_recipe',
+      message: `${uniq.join(', ')} ${uniq.length === 1 ? 'has' : 'have'} no material recipe, add lines by hand`,
+    };
+  }
+  if (areas.every(a => !(Number(a.sqft) > 0))) {
+    return { code: 'zero_sqft', message: 'every area has 0 sqft, enter the real sqft on the job card' };
+  }
+  return {
+    code: 'unknown',
+    message: fromCrm
+      ? 'calculator produced no lines (check area sqft on the CRM job card)'
+      : 'calculator produced no lines (check area sqft)',
+  };
+}
+
 /**
  * @param {Object} input
  * @param {Array<Area>} input.areas
