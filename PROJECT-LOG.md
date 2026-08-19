@@ -1,3 +1,43 @@
+## [2026-08-18 MST] Prompt 95 replay executed: Karen Adams' appointment corrected in TopCoat and on Google. The replay is NOT idempotent, though: a second apply re-writes the row and adds a no-op reschedule note plus a second bell.
+
+By: Cowork
+
+Changed: no code, no schema, no settings. One appointment row moved by the replay endpoint (01f84b13-99f7-4618-8da8-1ef10f4ba6ec), plus the rows the replay itself writes (2 lead_events notes, 2 pec_notifications, 4 ingest-log rows). PROJECT-LOG.md.
+
+**Task 1, deploy: PASS.** Netlify shows `Published main@1dbaf93`, deployed 2026-08-18 6:04 AM, build 38s. Independently confirmed from outside the dashboard: the live endpoint answers `401 {"success":false,"error":"Invalid webhook secret"}`, which only a deployed pec-appt-replay.cjs can produce.
+
+**Task 2, dry run: PASS, exactly as pre-verified.** `dry_run: true, examined: 4, would_change: 1, applied: 0`. The single changed row is ingest 6068dc7b (2026-08-13 18:48:42), routemize_appt_id d783f1d5-efb8-db1b-4122-3a230e95691f, appointment 01f84b13-99f7-4618-8da8-1ef10f4ba6ec, `before.start_at 2026-08-14T22:00:00+00:00 -> after.start_at 2026-08-14T16:15:00.000Z` (end 23:00 -> 17:15). The other three rows report `changed: false` with before and after identical (Jay McCoy 0e1809bc, Rob Rudman 33676b2c, and Karen's earlier 18:42 echo). The endpoint also volunteered the accepted-estimate warning the prompt asked for: EST-102156 is linked, and its sold-on-site audit LINE renders from this appointment time (the stamped sold_on_site value does not change).
+
+**Task 3, apply: PASS.** `dry_run: false, examined: 4, would_change: 1, applied: 1`. Ingest log row written: `replay: applied appointment 01f84b13-99f7-4618-8da8-1ef10f4ba6ec: start 2026-08-14T22:00:00+00:00 -> 2026-08-14T16:15:00.000Z`, plus two `replay: no change needed` rows for Jay's and Rob's appointments.
+
+**Task 4, database: PASS.** `select id, start_at, end_at, status from pec_appointments where id='01f84b13...'` returns `2026-08-14 16:15:00+00 | 2026-08-14 17:15:00+00 | scheduled`. Nothing was updated by hand.
+
+**Task 5, Google Calendar: PASS, verified by Cowork directly (not by Dylan).** Read the connected TopCoat calendar (c4b6b7e4...@group.calendar.google.com) for 2026-08-14 through the Google Calendar connector: event `abm7b9sevg52bh8sj6ll16vmbc`, "On-site estimate for Karen Adams", now starts 09:15 and ends 10:15 America/Phoenix, `updated 2026-08-19T03:07:29Z`, which is the replay's own push.
+
+**Task 6, alarm and trail: PASS.** The Ops Queue card "Routemize events not applied (last 7 days)" reads **0, Nothing waiting**, self-cleared by the replay's applied row exactly as designed; nothing was dismissed by hand (Jay's 07-29 and Rob's 08-10 failures are outside the 7-day window, Karen's two 08-13 failures cleared). The lead_events query returned 1 row at the time of the check: `Rescheduled via Routemize (replayed): Friday, August 14, 3:00 PM to Friday, August 14, 9:15 AM`. Bell row written: type `appointment_rescheduled`, body `Routemize reschedule replayed: On-site estimate for Karen Adams moved to Friday, August 14, 9:15 AM (was Friday, August 14, 3:00 PM)`, target_view appointments, target_id the appointment.
+
+**Task 7, idempotency: FAIL. This is the finding of this session.**
+
+Re-running the apply returned `examined: 4, would_change: 2, applied: 1` where the acceptance criterion was `would_change: 0, applied: 0`. The end state is still correct (`16:15:00+00 / 17:15:00+00`, verified again after the second run), but the second run performed real writes and left junk:
+
+- ingest log: `replay: applied appointment 01f84b13...: start 2026-08-14T16:15:00+00:00 -> 2026-08-14T16:15:00.000Z` (a write whose before and after are the same instant)
+- lead_events c4c8e8e9-c0bf-4eb2-8769-c44c6571a69c: `Rescheduled via Routemize (replayed): Friday, August 14, 9:15 AM to Friday, August 14, 9:15 AM`
+- pec_notifications 6772104e-8520-4e93-8047-918b8ba94cb8: `... moved to Friday, August 14, 9:15 AM (was Friday, August 14, 9:15 AM)`
+
+**Likely root cause, for whoever fixes it.** The per-row diff compares each stored payload against the CURRENT live row rather than against the state the replay itself is walking toward. Karen has TWO update payloads: 18:42 echoes the unchanged 22:00 time, 18:48 carries the real 16:15 move. On the first run the live row was 22:00, so 18:42 matched (no change) and 18:48 applied. On the second run the live row is 16:15, so the OLDER 18:42 payload now differs and re-applies 22:00, and then 18:48 re-applies 16:15. That is why `would_change` is 2 on a run that should find nothing, and it means each run momentarily moves the appointment back to 3:00 PM and kicks a Google push before moving it forward again. The existing "no-change marker rows are written once, then skipped" guard covers rows that matched on a previous pass; it does not cover a row that BECOMES different because an earlier payload in the same batch moved the row. A fix has to either replay against a simulated state per appointment (apply only the LAST readable payload per appointment) or skip any payload whose time equals the appointment's pre-replay stored value.
+
+Consequence today: the endpoint must not be run again until this is fixed. Nothing is broken in prod, but every extra run adds a false reschedule to a customer's timeline and a false bell.
+
+**Second, smaller finding.** The Google event description still carries the two stale lines `Routemize sent an updated event with no readable start time; appointment left as-is.`, and its location still reads `8895 N Oak, Prescott, AZ, 86305` rather than the corrected `8895 N OAK FOREST DR, PRESCOTT, AZ 86305-8735` that Routemize sent in the 18:42 update. That is by design (locked decision 4: the replay touches times only), but it means the address correction from 8/13 was never applied and still is not. The live path fixed by prompt 95 will apply address on FUTURE updates; historical non-time corrections stay stale unless someone edits them.
+
+Files touched: PROJECT-LOG.md.
+
+Next steps for Claude Code: (1) fix the replay's idempotency per the root cause above and add a test that runs the replay twice against the same fixture and asserts zero writes on the second pass; (2) delete the two junk rows listed above (lead_event c4c8e8e9-c0bf-4eb2-8769-c44c6571a69c and notification 6772104e-8520-4e93-8047-918b8ba94cb8), which Cowork deliberately left in place rather than hand-editing prod.
+
+Handoff to Dylan:
+1. Karen Adams' 8/14 visit now reads 9:15 AM in TopCoat and on your Google calendar. The replay changed exactly one appointment and the Ops Queue Routemize check is clear.
+2. Keep the Routemize to DripJobs push ON until you have watched a live reschedule move on its own.
+3. Security: the production PEC_WEBHOOK_SECRET was pasted into a chat transcript during this session while getting the curl to run. It guards Routemize intake, lead intake, the AI endpoints and the DripJobs webhooks, so rotating it means updating the Netlify value AND the x-webhook-secret header on every producer; a missed one fails silently as a 401 on future bookings. Cowork will map every consumer before any rotation is attempted.
 ## [2026-08-18 MST] Prompt 96 shipped: any of a rep's Google calendars can now sync into TopCoat, per-calendar toggles in Settings, two-way where Google allows it, and an imported event can never text a customer
 
 By: Claude Code
