@@ -27902,7 +27902,7 @@ async function apptCancelLeadEffects(appt) {
 
 // Create/edit modal. `existing` is a pec_appointments row or null.
 // prefill: { members, start, end, appt_type, lead_id, customer_id, title,
-//            location_address/_city/_state/_zip, onSaved }.
+//            email, location_address/_city/_state/_zip, onSaved }.
 // The Schedule Estimate flow (lead detail/card) passes lead fields + onSaved;
 // the calendar passes members (+ start/end from a slot tap).
 async function openAppointmentForm(existing, prefill = {}) {
@@ -27945,17 +27945,21 @@ async function openAppointmentForm(existing, prefill = {}) {
   // customer at save time. Preload the linked customer for the picker chip; a
   // legacy lead-only row resolves its customer through the lead, so old rows
   // pick up the customer link (and the derived title) on their next save.
-  let curCustomer = null;   // { id, name }
+  let curCustomer = null;   // { id, name, email }
   let custChanged = false;  // any pick/unlink; save re-resolves the lead only then
+  let leadEmail = null;     // fallback prefill when the lead has no customer yet
   if (customerId) {
-    const r = await supabase.from('customers').select('id,name').eq('id', customerId).maybeSingle();
-    if (!r.error && r.data) curCustomer = { id: r.data.id, name: r.data.name };
+    const r = await supabase.from('customers').select('id,name,email').eq('id', customerId).maybeSingle();
+    if (!r.error && r.data) curCustomer = { id: r.data.id, name: r.data.name, email: r.data.email };
   }
   if (!curCustomer && leadId) {
-    const r = await supabase.from('leads').select('customer_id').eq('id', leadId).maybeSingle();
-    if (!r.error && r.data && r.data.customer_id) {
-      const cr = await supabase.from('customers').select('id,name').eq('id', r.data.customer_id).maybeSingle();
-      if (!cr.error && cr.data) curCustomer = { id: cr.data.id, name: cr.data.name };
+    const r = await supabase.from('leads').select('customer_id,email').eq('id', leadId).maybeSingle();
+    if (!r.error && r.data) {
+      leadEmail = r.data.email || null;
+      if (r.data.customer_id) {
+        const cr = await supabase.from('customers').select('id,name,email').eq('id', r.data.customer_id).maybeSingle();
+        if (!cr.error && cr.data) curCustomer = { id: cr.data.id, name: cr.data.name, email: cr.data.email };
+      }
     }
   }
 
@@ -27969,6 +27973,9 @@ async function openAppointmentForm(existing, prefill = {}) {
           `<option value="${esc(m.id)}"${curMember === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`).join('')}</select></div>
     </div>
     <div class="pec-field"><label>Customer</label><div id="afCustWrap"></div></div>
+    <div class="pec-field"><label>Customer email</label>
+      <input id="afEmail" type="email" value="${esc((curCustomer && curCustomer.email) || prefill.email || leadEmail || '')}" placeholder="name@example.com" autocomplete="off">
+      <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Saved to the customer profile. Required, with the address below, to book an on-site estimate.</div></div>
     <div class="pec-field"><label>Title</label><input id="afTitle" value="${esc(a.title || prefill.title || '')}" placeholder="What this block is (BNI, golf, ...)">
       <div id="afTitleHint" style="font-size:.68rem;color:var(--muted);margin-top:3px;display:none">Comes from the customer and appointment type.</div></div>
     <div id="afPhoneRow" style="margin:-4px 0 10px;font-size:.82rem"></div>
@@ -28076,6 +28083,7 @@ async function openAppointmentForm(existing, prefill = {}) {
             <div class="pec-field"><label>Name</label><input id="afNewCustName"></div>
             <div class="pec-field"><label>Phone</label><input id="afNewCustPhone" inputmode="tel"></div>
           </div>
+          <div class="pec-field"><label>Email</label><input id="afNewCustEmail" type="email" autocomplete="off"></div>
           <button type="button" class="pec-btn sm" id="afNewCustSave">Create customer</button>
           <span id="afNewCustErr" style="color:#dc2626;font-size:.75rem;margin-left:8px"></span>
         </div>`;
@@ -28092,7 +28100,7 @@ async function openAppointmentForm(existing, prefill = {}) {
         if (digits.length >= 4) ors.push(`phone_norm.ilike.%${digits}%`);
         let rows = [];
         try {
-          const r = await supabase.from('customers').select('id,name,phone,billing_city')
+          const r = await supabase.from('customers').select('id,name,phone,email,billing_address_line1,billing_city,billing_state,billing_zip')
             .is('archived_at', null).or(ors.join(',')).order('name').limit(12);
           rows = (!r.error && r.data) || [];
         } catch (_) { /* results stay empty; the New customer path remains */ }
@@ -28104,8 +28112,21 @@ async function openAppointmentForm(existing, prefill = {}) {
         newBox.style.display = '';
         const nameEl = custWrap.querySelector('#afNewCustName');
         if (nameEl && !nameEl.value && !digits) nameEl.value = term;
-        results.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () =>
-          pick({ id: b.dataset.pick, name: b.dataset.name })));
+        results.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
+          const c = rows.find(r => r.id === b.dataset.pick) || { id: b.dataset.pick, name: b.dataset.name };
+          pick({ id: c.id, name: c.name, email: c.email || null });
+          // Completing the profile cuts both ways: a picked customer's known
+          // email / billing address fill the form's empty fields, but never
+          // overwrite something already typed (that is the JOB site).
+          const emailEl = modal.querySelector('#afEmail');
+          if (emailEl && !emailEl.value.trim() && c.email) emailEl.value = c.email;
+          if (c.billing_address_line1 && !val('afAddress') && !val('afCity') && !val('afZip')) {
+            modal.querySelector('#afAddress').value = c.billing_address_line1 || '';
+            modal.querySelector('#afCity').value = c.billing_city || '';
+            modal.querySelector('#afState').value = c.billing_state || '';
+            modal.querySelector('#afZip').value = c.billing_zip || '';
+          }
+        }));
       };
       let tmr = null;
       q.addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(search, 220); });
@@ -28113,16 +28134,20 @@ async function openAppointmentForm(existing, prefill = {}) {
         const errN = custWrap.querySelector('#afNewCustErr');
         const nm = (custWrap.querySelector('#afNewCustName').value || '').trim();
         const ph = (custWrap.querySelector('#afNewCustPhone').value || '').replace(/\D/g, '');
+        const em = (custWrap.querySelector('#afNewCustEmail').value || '').trim();
         if (!nm) { errN.textContent = 'Name is required.'; return; }
         errN.textContent = '';
         try {
           const ins = await withFreshWrite(() => supabase.from('customers').insert({
             token: randomToken(), name: nm,
             phone: ph ? ph.slice(-10) : null,
+            email: em || null,
             lead_source: 'manual', company: 'prescott-epoxy',
-          }).select('id,name').single(), { label: 'appt-new-customer' });
+          }).select('id,name,email').single(), { label: 'appt-new-customer' });
           if (ins.error) throw ins.error;
-          pick({ id: ins.data.id, name: ins.data.name });
+          pick({ id: ins.data.id, name: ins.data.name, email: ins.data.email || null });
+          const emailEl = modal.querySelector('#afEmail');
+          if (emailEl && !emailEl.value.trim() && em) emailEl.value = em;
         } catch (err) { errN.textContent = (err && err.message) || 'Could not create.'; }
       });
     };
@@ -28208,6 +28233,25 @@ async function openAppointmentForm(existing, prefill = {}) {
         endAt = new Date(dateStr + 'T' + en + ':00');
         if (!(endAt > startAt)) { errEl.textContent = 'End time must be after the start time.'; return; }
       }
+      // Quote gate (2026-08-19): BOOKING an on-site estimate requires a linked
+      // customer with an email and the job address, so the profile is complete
+      // before the visit. New bookings only; existing rows must stay editable
+      // even when legacy data is missing (a drag-reschedule cannot demand a
+      // data-entry session).
+      const emailVal = val('afEmail');
+      if (emailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+        errEl.textContent = 'That email address does not look valid.'; return;
+      }
+      if (isNew && val('afType') === 'on_site_estimate') {
+        // A lead link satisfies the gate too: pre-accept people usually have
+        // no customer row yet (prompt 89 creates it at accept), and forcing
+        // one here would orphan the lead link and skip the stage advance.
+        if (!curCustomer && !leadId) { errEl.textContent = 'Link or create the customer to schedule the quote.'; return; }
+        if (!emailVal) { errEl.textContent = 'Customer email is required to schedule the quote.'; return; }
+        if (!val('afAddress') || !val('afCity') || !val('afZip')) {
+          errEl.textContent = 'Street address, city, and zip are required to schedule the quote.'; return;
+        }
+      }
       // Lead resolution (prompt 89): the picker deals in customers, but the
       // pipeline effects and the cancel walk-back anchor on lead_id, so keep
       // stamping it. Untouched picker keeps the original link; a picked or
@@ -28246,6 +28290,49 @@ async function openAppointmentForm(existing, prefill = {}) {
       const btn = modal.querySelector('#afSave');
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
+        // Complete the customer profile from this form (2026-08-19), BEFORE
+        // the appointment write so a booked quote never precedes its profile.
+        // Email overwrites when it differs (typing it here is an explicit
+        // act); the billing address fills only when blank, because the form's
+        // address is the JOB site and must not clobber a deliberately
+        // different billing address.
+        if (curCustomer && curCustomer.id) {
+          const cr = await supabase.from('customers')
+            .select('email,billing_address_line1,billing_city,billing_state,billing_zip')
+            .eq('id', curCustomer.id).maybeSingle();
+          if (!cr.error && cr.data) {
+            const patch = {};
+            if (emailVal && emailVal !== (cr.data.email || '')) patch.email = emailVal;
+            if (!cr.data.billing_address_line1 && val('afAddress')) {
+              patch.billing_address_line1 = val('afAddress');
+              if (val('afCity')) patch.billing_city = val('afCity');
+              if (val('afState')) patch.billing_state = val('afState');
+              if (val('afZip')) patch.billing_zip = val('afZip');
+            }
+            if (Object.keys(patch).length) {
+              const ur = await withFreshWriteRetry(() => supabase.from('customers').update(patch).eq('id', curCustomer.id), { label: 'appt-customer-profile' });
+              if (ur.error) throw ur.error;
+            }
+          }
+        }
+        // Lead profile: with no customer row yet the LEAD is the record of
+        // truth, so a typed email overwrites it; with a customer linked this
+        // is only a fill-if-blank mirror (the estimator's lead-flow prefill
+        // reads the lead, so both must agree). Best-effort either way.
+        if (saveLeadId) { try {
+          const lr = await supabase.from('leads').select('email,address,city,state,zip').eq('id', saveLeadId).maybeSingle();
+          if (!lr.error && lr.data) {
+            const lp = {};
+            if (emailVal && (curCustomer ? !lr.data.email : emailVal !== (lr.data.email || ''))) lp.email = emailVal;
+            if (!lr.data.address && val('afAddress')) {
+              lp.address = val('afAddress');
+              if (!lr.data.city && val('afCity')) lp.city = val('afCity');
+              if (!lr.data.state && val('afState')) lp.state = val('afState');
+              if (!lr.data.zip && val('afZip')) lp.zip = val('afZip');
+            }
+            if (Object.keys(lp).length) await withFreshWriteRetry(() => supabase.from('leads').update(lp).eq('id', saveLeadId), { label: 'appt-lead-profile' });
+          }
+        } catch (_) { /* profile mirror only; the booking still proceeds */ } }
         let saved;
         // One-shot retry without customer_notes if that column is not
         // migrated yet (PostgREST rejects unknown columns), so the save is
@@ -30223,6 +30310,7 @@ function openScheduleEstimateFromLead(lead, onDone) {
     lead_id: lead.id,
     customer_id: lead.customer_id || null,
     title: lead.full_name || null,
+    email: lead.email || null,
     location_address: lead.address || null,
     location_city: lead.city || null,
     location_state: lead.state || null,

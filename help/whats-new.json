@@ -1,5 +1,16 @@
 [
   {
+    "id": "appointment-customer-profile",
+    "date": "2026-08-19",
+    "title": "Booking a quote now completes the customer profile.",
+    "summary": "The New appointment form has a Customer email field, and the inline New customer box can take an email too. Booking an on-site estimate now requires the customer's email plus the street address, city, and zip, so a quote never goes on the calendar with a half-empty profile. What you enter saves straight to the customer record (and the lead), and picking an existing customer fills in their known email and address for you.",
+    "howto": [
+      "Open Appointments and click New Appointment, or use Schedule Estimate on a lead.",
+      "Link or create the customer, then fill in the email and the job address. For an on-site estimate these are required before Book it works.",
+      "The email and address you enter are saved to the customer's profile automatically, so you never re-type them at estimate time."
+    ]
+  },
+  {
     "id": "ordering-usability",
     "date": "2026-08-18",
     "title": "Ordering now tells the truth and never dead-ends.",

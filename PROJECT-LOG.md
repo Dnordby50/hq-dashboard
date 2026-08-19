@@ -1,3 +1,25 @@
+## [2026-08-19 MST] Appointment form now captures and requires the customer's email and address when booking a quote, and completes the profile in one save
+
+By: Claude Code
+
+Changed: index.html (openAppointmentForm, openScheduleEstimateFromLead), help/whats-new.json, features.json. No schema, no settings, no server code.
+
+**Dylan's ask.** When creating a new appointment, be able to add the customer's email and address and complete the full customer profile at once, and make those required to schedule the quote.
+
+**What the form gained.** A Customer email field under the customer picker, prefilled from the linked customer (or the lead when no customer row exists yet; the Schedule Estimate flow now passes lead.email through prefill). The inline New customer box grew an Email input. Picking an existing customer now also pulls their known email and billing address into the form's EMPTY fields (never over something already typed, because a typed address is the job site).
+
+**The quote gate.** Booking a NEW on-site estimate now requires: a linked customer or lead, a valid email, and street + city + zip. WHY new-only: existing rows must stay editable even with legacy data missing, or a simple time change on an old appointment turns into a forced data-entry session. WHY "or lead": pre-accept people usually have no customer row (prompt 89 creates it at accept), and forcing an inline customer would orphan the lead link on the saved row (the custChanged re-resolution finds no lead for a brand-new customer), which would silently skip the estimate_scheduled stage advance.
+
+**The write-back, which is the point.** Save writes the profile BEFORE the appointment insert, so a booked quote never precedes its profile. Rules: customers.email overwrites when it differs from what is on record (typing it in this form is an explicit act); the billing address fills only when blank, because the form's address is the JOB site and must not clobber a deliberately different billing address on a commercial account. The lead gets the same treatment fill-if-blank, except email overwrites when the lead has no customer row, since the lead is then the record of truth; this keeps the estimator's lead-flow prefill (which reads the lead, not the customer) in agreement.
+
+**Verified:** all seven inline script blocks re-extracted and node --check clean after the edits.
+
+Files touched: index.html, help/whats-new.json, features.json, PROJECT-LOG.md.
+
+Next steps: none. Prompts 101 (TopCoat online booking, the Routemize replacement) and 102 (booking form builder) are queued in the repo root; 101 is the next build and its public form should reuse this same required email+address contract so both intakes stay aligned. Note for whoever runs them: the _to_delete copies numbered 99/100 are the pre-renumbering duplicates of 101/102, not separate prompts.
+
+---
+
 ## [2026-08-19 MST] Calendar sync audit: 7 of 25 Google events in the next 7 days are missing from TopCoat. Root cause is not the checkboxes, the pull function has not completed a single run since the moment the extra calendars were enabled
 
 By: Cowork
