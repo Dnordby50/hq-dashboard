@@ -1,3 +1,30 @@
+## [2026-08-19 MST] Ordering audit for Robert Brass: the calculator was right, the page around it was not. Prompt 99 scoped.
+
+By: Cowork
+
+Changed: new claude-code-prompt-99-ordering-usability.md. No code changed this session.
+
+**What Dylan reported.** "For Robert Brass, the budgeted materials are not showing up on the ordering side of things. It is not really usable for me right now and I still have to do it manually."
+
+**What is actually true.** Robert Brass orders fine. pec_prod_jobs 8942ab57-5edf-4847-9d08-29a6b727ca26 (MANUAL-20260810-145214-U48H) carries crm_job_id ba85c379-f036-4588-8064-e5c3ae28c6d3, so resolveCrmForProdJob bridges it on the explicit link (prompt 91 doing its job). His CRM card has one 655 sqft Standard Flake area with all three job_area_materials picks intact (Simiron 1100 SL Deck Gray, Nightfall Flake, Simiron Polyaspartic 2gal, each with a live recipe_slot_id). Ticking his checkbox on the LIVE Ordering page produced "Simiron, 3 lines, $947", identical to the Budget card he screenshotted. The same three lines were reproduced offline by running production/calculator.js (crmPlanAreas, inheritCureSpeeds, computeMaterialPlan) against his real rows. The deployed bundle is current: prescottepoxy.netlify.app/index.html is 2,848,962 bytes, byte-identical in size to main at 1515f4a, and contains the prompt 96 code. Not a stale deploy.
+
+**Why he thought it was broken.** Two reasons, both confirmed with him. First, his Jobs-to-order row shows SYSTEM "-" and SQFT "0", because sysSummary and sumSqft (index.html ~42473-42484) read job.areas (pec_prod_areas, an empty stub for every manual and bridged job) while the MATERIAL chip beside them reads the CRM job card through calcAreasInputFor. 24 of 56 open rows show that contradiction. Second, the order sheet is selection-driven and starts empty; he did not know he had to tick the checkbox. His chip said "CALCULATED, NOT SAVED", which is the working state, not an error.
+
+**The real usability problem, which is bigger than Robert Brass.** Live census of all 56 open jobs, 2026-08-19: 29 saved, 14 calculated, 12 "calculator produced no lines", 12 "no areas", 1 colors-gated. Of the 12 no-lines jobs, 9 are Custom System, whose recipe is a single slot_kind='text' slot with no product, and 2 are Concrete Polishing (4 slots, all optional, all default_product_id NULL). Polydeck System has 0 slots and is active. So the calculator can never emit a line for them no matter how clean the data is, and the message blames the wrong thing: Chris Hill (870 sqft) and Michael Scigliano (1,057 sqft) are both told "check area sqft on the CRM job card". There is no escape hatch either, because "+ Add line" only renders when (j.lines||[]).length is truthy (index.html:42588) and "Save lines to job" only renders for kind === 'calculated' (index.html:42628). A Custom System job is a permanent dead end. That is the actual reason he still orders by hand. Separately, 11 of the 12 "no areas" rows are touch-up callbacks (9000002 through 9000012), which resolveCrmForProdJob refuses to bridge by design; correct behavior, useless rows.
+
+**Scoped with 12 multiple-choice questions.** Locked decisions: list columns read the same resolved source as the material chip; touch-up callbacks leave the Jobs-to-order list; skip reasons name the real cause with an inline "add lines by hand" button; hand-added lines always available from both the order sheet and the production job detail; editing a qty or ticking ordered on a calculated row persists that job's lines first; the colors-confirmed gate applies to every bridged job, not just DripJobs-sourced ones (Brad Dalling EST-102163 is unconfirmed and currently still selectable); selection stays manual but gets a real empty state. He declined auto-select and declined persisting selection across reloads. Concrete Polishing and Polydeck recipes stay unfilled for now, hand-add covers them.
+
+Why: he builds the material order for every booked job and the page was showing him rows that looked empty next to rows that could never be filled, so he fell back to doing it by hand.
+
+Files touched: claude-code-prompt-99-ordering-usability.md, PROJECT-LOG.md.
+
+Next steps: Claude Code runs prompt 99. Two catalog gaps are deliberately left open for Dylan, a follow-up decision rather than a bug: Concrete Polishing has four product slots with no default products, and Polydeck System has no recipe slots at all. Filling those would move 2 to 3 more jobs from hand-add to derived.
+
+## Handoff to Dylan
+Nothing blocking. Two things to know today: on the Ordering page you must tick a job's checkbox before the order sheet shows anything, and Robert Brass works right now if you do that. Brad Dalling's colors are still unconfirmed on his CRM job card.
+
+---
+
 ## [2026-08-18 MST] Prompt 95 replay executed: Karen Adams' appointment corrected in TopCoat and on Google. The replay is NOT idempotent, though: a second apply re-writes the row and adds a no-op reschedule note plus a second bell.
 
 By: Cowork
