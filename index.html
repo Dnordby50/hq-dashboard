@@ -2728,6 +2728,12 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                refreshTitle's page-header form ("Sales Pipeline"),
                unambiguous against the Production Jobs pipeline. -->
           <button data-pec-view="leads" data-pec-title="Sales Pipeline">Sales Pipeline</button>
+          <!-- Follow-up queue (prompt 98): sent estimates overdue for a HUMAN
+               touch, ranked, with coaching-grade suggested openers. One
+               shared queue for all staff (locked decision 6), so no
+               pec-role-admin class; the Re-rank button inside is the only
+               admin-gated piece. -->
+          <button data-pec-view="followups">Follow-ups</button>
           <!-- Sales appointments calendar (prompt 37). Deliberately separate
                from the crew Job Schedule below: this is estimates and
                walkthroughs for the sales roster, not install days. All-staff
@@ -7568,6 +7574,8 @@ function renderAuthUI() {
   refreshBell();
   // Ops Queue nav badge (prompt 55): one cheap count, best-effort.
   refreshOpsNavBadge();
+  // Follow-ups nav badge (prompt 98): one cheap head count, best-effort.
+  refreshFollowupsNavBadge();
 }
 
 // The standalone Estimator (Beta) rail button and its wireEstimatorNav()
@@ -8549,6 +8557,7 @@ function switchView(v) {
       nextday: renderNextDay,
       pipeline: renderPipeline,
       leads: renderLeads,
+      followups: renderFollowUps,
       drips: renderDrips,
       'drip-approvals': renderDripApprovals,
       estimates: renderEstimates,
@@ -9404,6 +9413,8 @@ async function renderCustomerDetail(id) {
       ` : ''}
     </div>
 
+    ${pecTouchNotesCardHtml('pecCustTouchCard')}
+
     ${customerSmsCardHtml()}
 
     ${customerCallsCardHtml()}
@@ -9466,6 +9477,10 @@ async function renderCustomerDetail(id) {
     });
   })();
   $('pecCustEdit').addEventListener('click', () => openCustomerForm(c));
+  // Touches & notes (prompt 98): the customer-file record of every logged
+  // touch, with its own Log a touch entry point. Self-mounting, best-effort.
+  mountTouchNotesCard($('pecCustTouchCard'), { customerId: c.id, name: c.name || '' })
+    .catch(err => console.warn('[customers] touch notes card:', err && err.message));
   // Soft-delete (archive) the customer. Reversible (sets archived_at, the same
   // pattern jobs use), never touches the linked jobs. Warns hard if the customer
   // still has active jobs, listing them. Writes a bell notification via a scoped
@@ -19833,6 +19848,7 @@ const SETTINGS_PAGES = [
   { key: 'email',        label: 'Email',        group: 'config', keywords: ['sender', 'from address', 'templates', 'test send'] },
   { key: 'appointments', label: 'Appointments', group: 'config', keywords: ['booking', 'reminders', 'google calendar', 'routemize', 'salesask'] },
   { key: 'drips',        label: 'Drips',        group: 'config', keywords: ['quiet hours', 'approval', 'instant reply', 'automation'] },
+  { key: 'followups',    label: 'Follow-ups',   group: 'config', keywords: ['queue', 'overdue', 'touch', 'snooze', 'digest', 'slack', 'rank', 'cold'] },
   { key: 'estimates',    label: 'Estimates',    group: 'config', keywords: ['line pricing', 'optional lines', 'gp floor', 'comps', 'proposal'] },
   { key: 'invoicing',    label: 'Invoicing',    group: 'config', keywords: ['deposit', 'payment schedule', 'installment'] },
   { key: 'presentation', label: 'Presentation', group: 'config', keywords: ['present mode', 'sections', 'gallery', 'reviews'] },
@@ -20479,6 +20495,88 @@ async function renderSettingsDrips() {
       btn.disabled = false; btn.textContent = 'Save window';
       errEl.textContent = 'Could not save: ' + (err.message || err);
     }
+  });
+}
+
+// Settings > Follow-ups (prompt 98, standing rule 12). Front-of-card: the
+// master switch and the overdue-days threshold (the two knobs tuned in
+// normal operation). Behind Advanced: cold cutoff, snooze cap, AI rank
+// toggle + batch limit, and the Slack digest's toggle, time, and size. Every
+// reader (production/followup-rules.cjs + the pecFollowupRules mirror)
+// defaults identically when a row is missing.
+async function renderSettingsFollowups() {
+  const root = $('pecViewRoot');
+  const KEYS = ['followup_enabled', 'followup_overdue_days_estimate_sent', 'followup_cold_days', 'followup_snooze_max_days', 'followup_ai_rank_enabled', 'followup_ai_rank_limit', 'followup_slack_digest_enabled', 'followup_digest_top_n', 'followup_digest_time'];
+  const setRes = await withFreshSession(() => supabase.from('settings').select('key,value').in('key', KEYS), { label: 'settings-followups' });
+  const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const cfg = pecFollowupRules.parseFollowupSettings(map);
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-followups-save' });
+    if (w && w.error) throw w.error;
+  };
+  root.innerHTML = `
+    ${settingsTabBar('followups')}
+    <div class="pec-card" style="border:2px solid ${cfg.enabled ? 'var(--rd-success,#10b981)' : 'var(--rd-danger,#ef4444)'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:800">Follow-up queue is ${cfg.enabled ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">The Follow-ups view, the nightly AI ranking, and the morning Slack digest. Off hides the queue and stops the nightly run; nothing else changes (drips keep their own switches).</div>
+        </div>
+        <button type="button" class="pec-btn ${cfg.enabled ? 'danger' : 'primary'} sm" id="fuSetMaster">${cfg.enabled ? 'Turn it OFF' : 'Turn it ON'}</button>
+      </div>
+    </div>
+    <div class="pec-card">
+      <h3 style="margin-top:0">When is an estimate overdue?</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">A sent estimate joins the queue after this many days without a HUMAN touch (calls, texts, emails, logged touches; automatic drips never count).</div>
+      <div class="pec-field" style="max-width:200px"><label>Days without a touch</label>
+        <input type="number" id="fuSetOverdue" min="1" step="1" value="${esc(String(cfg.overdueDays))}">
+      </div>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.78rem">Advanced</summary>
+        <div class="pec-row-2" style="margin-top:8px">
+          <div class="pec-field"><label>Cold after (days)</label><input type="number" id="fuSetCold" min="2" step="1" value="${esc(String(cfg.coldDays))}"></div>
+          <div class="pec-field"><label>Longest snooze (days)</label><input type="number" id="fuSetSnoozeMax" min="1" step="1" value="${esc(String(cfg.snoozeMaxDays))}"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin:8px 0">
+          <div style="font-size:.85rem"><strong>AI ranking: ${cfg.aiEnabled ? 'ON' : 'OFF'}</strong><div style="color:var(--muted);font-size:.72rem">Off = the deterministic backup order (days quiet, then engagement, then value) with standard wording. The queue itself never depends on the AI.</div></div>
+          <button type="button" class="pec-btn sm ${cfg.aiEnabled ? '' : 'primary'}" id="fuSetAi">${cfg.aiEnabled ? 'Turn it OFF' : 'Turn it ON'}</button>
+        </div>
+        <div class="pec-field" style="max-width:220px"><label>Max estimates ranked per run</label><input type="number" id="fuSetAiLimit" min="1" step="1" value="${esc(String(cfg.aiLimit))}"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin:8px 0">
+          <div style="font-size:.85rem"><strong>Morning Slack digest: ${cfg.digestEnabled ? 'ON' : 'OFF'}</strong><div style="color:var(--muted);font-size:.72rem">Posts the top of the queue to the office channel once a day. Skips entirely when nothing is due.</div></div>
+          <button type="button" class="pec-btn sm ${cfg.digestEnabled ? '' : 'primary'}" id="fuSetDigest">${cfg.digestEnabled ? 'Turn it OFF' : 'Turn it ON'}</button>
+        </div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Digest time (Arizona)</label><input type="time" id="fuSetDigestTime" value="${esc(cfg.digestTime)}"></div>
+          <div class="pec-field"><label>Rows in the digest</label><input type="number" id="fuSetDigestN" min="1" step="1" value="${esc(String(cfg.digestTopN))}"></div>
+        </div>
+      </details>
+    </div>`;
+  wireSettingsTabs(root);
+  const toggle = (id, key, cur) => $(id).addEventListener('click', async () => {
+    const btn = $(id); btn.disabled = true;
+    try { await saveSetting(key, cur ? 'false' : 'true'); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  toggle('fuSetMaster', 'followup_enabled', cfg.enabled);
+  toggle('fuSetAi', 'followup_ai_rank_enabled', cfg.aiEnabled);
+  toggle('fuSetDigest', 'followup_slack_digest_enabled', cfg.digestEnabled);
+  const numField = (id, key, min, label) => $(id).addEventListener('change', async (e) => {
+    const n = parseInt(e.target.value, 10);
+    if (!Number.isFinite(n) || n < min) { showToast(`${label} must be a whole number of ${min} or more.`, { ttl: 5000 }); renderSettings(); return; }
+    try { await saveSetting(key, String(n)); showToast('Saved', { ttl: 2000 }); }
+    catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); }
+  });
+  numField('fuSetOverdue', 'followup_overdue_days_estimate_sent', 1, 'The overdue threshold');
+  numField('fuSetCold', 'followup_cold_days', 2, 'The cold cutoff');
+  numField('fuSetSnoozeMax', 'followup_snooze_max_days', 1, 'The snooze cap');
+  numField('fuSetAiLimit', 'followup_ai_rank_limit', 1, 'The rank limit');
+  numField('fuSetDigestN', 'followup_digest_top_n', 1, 'The digest size');
+  $('fuSetDigestTime').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    if (!/^\d{1,2}:\d{2}$/.test(v)) { showToast('Pick a valid time.', { ttl: 4000 }); return; }
+    try { await saveSetting('followup_digest_time', v); showToast('Digest time saved', { ttl: 2000 }); }
+    catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); }
   });
 }
 
@@ -23691,6 +23789,7 @@ async function renderSettings() {
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
   if (state.settingsTab === 'drips') return renderSettingsDrips();
+  if (state.settingsTab === 'followups') return renderSettingsFollowups();
   if (state.settingsTab === 'estimates') return renderSettingsEstimates();
   if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
   if (state.settingsTab === 'presentation') return renderSettingsPresentation();
@@ -29866,7 +29965,30 @@ async function loadLeadsData() {
   const sources = [];
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
-  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft, sentEstByLead, estViews, salesAsk };
+  // Prompt 98 decision 13: the latest logged touch note per lead, so the
+  // pipeline card carries what was last said. ONE query over the board's
+  // lead + customer ids (never per-card); best-effort (pre-migration or
+  // error = no note lines, never a board error).
+  const latestNoteByLead = {};
+  if (leads.length) {
+    try {
+      const custIds = [...new Set(leads.map(l => l.customer_id).filter(Boolean))];
+      const orFilter = [`lead_id.in.(${leads.map(l => l.id).join(',')})`]
+        .concat(custIds.length ? [`customer_id.in.(${custIds.join(',')})`] : []).join(',');
+      const nr = await supabase.from('pec_customer_notes')
+        .select('lead_id,customer_id,body,channel,counts_as_touch,created_at')
+        .or(orFilter).order('created_at', { ascending: false }).limit(300);
+      if (!nr.error) {
+        const custToLead = {};
+        for (const l of leads) if (l.customer_id && !custToLead[l.customer_id]) custToLead[l.customer_id] = l.id;
+        for (const note of nr.data || []) {
+          const lid = note.lead_id || custToLead[note.customer_id];
+          if (lid && !latestNoteByLead[lid]) latestNoteByLead[lid] = note; // newest-first order
+        }
+      }
+    } catch (err) { console.warn('[leads] touch notes skipped:', err.message || err); }
+  }
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft, sentEstByLead, estViews, salesAsk, latestNoteByLead };
 }
 
 // The board card's contact chip. count semantics: null = logs unavailable
@@ -29989,6 +30111,14 @@ function leadCardHtml(lead) {
       ${state.leadsData && state.leadsData.leadsWithDraft && state.leadsData.leadsWithDraft.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#64748b 14%,transparent);color:#475569" title="A draft estimate is in progress for this lead (it rides this card; drafts with no lead get their own card in the Drafts column)">Draft</span>' : ''}
     </div>
     ${lead.campaign ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${esc(lead.campaign)}</div>` : ''}
+    ${(() => {
+      // Prompt 98 decision 13: the latest logged touch note rides the card,
+      // so "left a voicemail Tuesday" is visible without opening anything.
+      const note = state.leadsData && state.leadsData.latestNoteByLead && state.leadsData.latestNoteByLead[lead.id];
+      if (!note) return '';
+      const snippet = String(note.body || '').slice(0, 90);
+      return `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px" title="${esc(`Logged touch (${note.channel}): ${note.body || ''}`)}">✎ ${esc(fmtRelativeTime(note.created_at))}: ${esc(snippet)}${String(note.body || '').length > 90 ? '…' : ''}</div>`;
+    })()}
     ${lead.phone ? `<div style="font-size:.76rem;margin-top:5px">${pecPhoneActionsHtml(lead.phone, { name: lead.full_name || '', isLead: true, customerId: lead.customer_id || null })}</div>` : ''}
     ${value > 0 ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(value)}</div>` : ''}
     <div style="display:flex;justify-content:space-between;gap:6px;margin-top:8px;font-size:.7rem;color:var(--rd-muted,#6b7280)">
@@ -30496,6 +30626,516 @@ function openNewLeadModal(prefill) {
   }});
 }
 
+// ===== Follow-up queue (prompt 98) ==========================================
+// MIRROR of production/followup-rules.cjs (its twin; keep the two in
+// lockstep, any rule change lands in both in the same commit). Membership is
+// deterministic and computed AT RENDER TIME from live data (the Ops Queue
+// posture), so accepting, snoozing, or logging a touch removes a row
+// immediately; the nightly pec-followup-rank only orders what these rules
+// already selected and words the openers.
+const pecFollowupRules = (() => {
+  function normPhone(s) {
+    const d = String(s == null ? '' : s).replace(/\D+/g, '');
+    return d.length >= 10 ? d.slice(-10) : null;
+  }
+  function parseFollowupSettings(map) {
+    const m = map || {};
+    const num = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : d; };
+    return {
+      enabled: m.followup_enabled !== 'false',
+      overdueDays: num(m.followup_overdue_days_estimate_sent, 3),
+      coldDays: num(m.followup_cold_days, 21),
+      snoozeMaxDays: num(m.followup_snooze_max_days, 60),
+      aiEnabled: m.followup_ai_rank_enabled !== 'false',
+      aiLimit: num(m.followup_ai_rank_limit, 60),
+      digestEnabled: m.followup_slack_digest_enabled !== 'false',
+      digestTopN: num(m.followup_digest_top_n, 10),
+      digestTime: /^\d{1,2}:\d{2}$/.test(String(m.followup_digest_time || '')) ? m.followup_digest_time : '07:30',
+    };
+  }
+  function subjectKeys(est, lead) {
+    return {
+      customerId: est.customer_id || (lead && lead.customer_id) || null,
+      phoneNorm: (lead && (lead.phone_norm || normPhone(lead.phone))) || normPhone(est.customer_phone),
+      email: String((lead && lead.email) || est.customer_email || '').trim().toLowerCase() || null,
+    };
+  }
+  function humanTouchesFor(keys, estId, leadId, logs) {
+    const stats = { calls: 0, texts: 0, emails: 0, logged: 0, humanTotal: 0, humanLastAt: null };
+    const bump = (kind, ts) => {
+      stats[kind]++; stats.humanTotal++;
+      if (ts && (!stats.humanLastAt || ts > stats.humanLastAt)) stats.humanLastAt = ts;
+    };
+    const matches = (r, phoneField, emailField) => {
+      if (keys.customerId && r.customer_id === keys.customerId) return true;
+      if (phoneField && keys.phoneNorm && normPhone(r[phoneField]) === keys.phoneNorm) return true;
+      if (emailField && keys.email && String(r[emailField] || '').trim().toLowerCase() === keys.email) return true;
+      return false;
+    };
+    for (const r of (logs.calls || [])) {
+      if (matches(r, 'to_number', null)) bump('calls', r.occurred_at || r.created_at);
+    }
+    for (const r of (logs.texts || [])) {
+      if (r.kind === 'drip' || r.kind === 'blast') continue;
+      if (matches(r, 'to_number', null)) bump('texts', r.created_at);
+    }
+    for (const r of (logs.emails || [])) {
+      if (r.template_key === 'drip' || r.template_key === 'blast') continue;
+      if (matches(r, null, 'to_email')) bump('emails', r.sent_at);
+    }
+    for (const r of (logs.notes || [])) {
+      if (r.counts_as_touch === false) continue;
+      const hit = (keys.customerId && r.customer_id === keys.customerId)
+        || (estId && r.estimate_id === estId)
+        || (leadId && r.lead_id === leadId);
+      if (hit) bump('logged', r.created_at);
+    }
+    return stats;
+  }
+  function membershipState(est, lead, humanLastAt, settings, now) {
+    const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+    if (est.status !== 'sent' || est.deleted_at) return { state: 'out', reason: est.deleted_at ? 'deleted' : `status ${est.status}` };
+    if (lead && lead.archived_at) return { state: 'out', reason: 'lead archived' };
+    if (lead && lead.stage === 'lost') return { state: 'out', reason: 'lead lost' };
+    if (est.followup_snoozed_until && new Date(est.followup_snoozed_until).getTime() > nowMs) {
+      return { state: 'out', reason: 'snoozed', snoozedUntil: est.followup_snoozed_until };
+    }
+    const clockBase = humanLastAt || est.sent_at || est.created_at;
+    const daysQuiet = Math.floor((nowMs - new Date(clockBase).getTime()) / 86400000);
+    const neverTouched = !humanLastAt;
+    if (daysQuiet >= settings.coldDays) return { state: 'cold', daysQuiet, clockBase, neverTouched };
+    if (daysQuiet >= settings.overdueDays) return { state: 'due', daysQuiet, clockBase, neverTouched };
+    return { state: 'not_due', daysQuiet, clockBase, neverTouched };
+  }
+  function fallbackPriority(sig, now) {
+    const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+    const daysAgo = (iso) => iso ? (nowMs - new Date(iso).getTime()) / 86400000 : Infinity;
+    let p = Math.min(50, (sig.daysQuiet || 0) * 4);
+    const viewAge = daysAgo(sig.lastViewedAt);
+    if (viewAge <= 2) p += 25; else if (viewAge <= 7) p += 15;
+    if (daysAgo(sig.lastInboundAt) <= 7) p += 15;
+    if (sig.hasChangeRequest) p += 10;
+    const price = Number(sig.price) || 0;
+    if (price >= 10000) p += 15; else if (price >= 5000) p += 10; else if (price >= 2000) p += 5;
+    return Math.max(1, Math.min(100, Math.round(p)));
+  }
+  function fallbackOpener(sig) {
+    const first = String(sig.firstName || '').trim();
+    const hi = first ? `Hi ${first}, ` : 'Hi, ';
+    const amount = Number(sig.price) > 0 ? ` for ${'$' + Math.round(Number(sig.price)).toLocaleString('en-US')}` : '';
+    return {
+      opener: `${hi}this is Prescott Epoxy. We are setting the install schedule for the next couple of weeks and I want to know whether to hold a spot for your floor${amount}. Are you ready to pick a date, or is something still in the way I can help with?`,
+      text: `${hi}we are locking in install dates for the next two weeks and I can hold one for your floor. Want me to save you a spot, or is there a question I can answer first?`,
+      channel: 'call',
+    };
+  }
+  return { normPhone, parseFollowupSettings, subjectKeys, humanTouchesFor, membershipState, fallbackPriority, fallbackOpener };
+})();
+
+// One load for the queue: settings + sent estimates + their leads + the
+// outbound/notes touch sources + engagement signals + last night's ranks.
+// pec_customer_notes may predate the migration on a stale deploy; it (and
+// the ranks table) degrade to empty rather than erroring the view.
+async function loadFollowupsData() {
+  const [setRes, estRes, viewsRes, ranksRes, notesRes, inCallsRes, inTextsRes, touchLogs, staffNames] = await withFreshSession(() => Promise.all([
+    supabase.from('settings').select('key,value').in('key', ['followup_enabled', 'followup_overdue_days_estimate_sent', 'followup_cold_days', 'followup_snooze_max_days', 'followup_ai_rank_enabled', 'followup_ai_rank_limit', 'followup_slack_digest_enabled', 'followup_digest_top_n', 'followup_digest_time']),
+    supabase.from('estimates').select('id,estimate_number,customer_id,lead_id,brand,status,deleted_at,price,sent_at,created_at,customer_name,customer_email,customer_phone,change_request_note,followup_snoozed_until,followup_snooze_reason').eq('status', 'sent').is('deleted_at', null),
+    supabase.from('pec_estimate_views').select('estimate_id,viewed_at').order('viewed_at', { ascending: false }).limit(2000),
+    supabase.from('pec_followup_ranks').select('*').eq('subject_type', 'estimate'),
+    supabase.from('pec_customer_notes').select('*').order('created_at', { ascending: false }).limit(1000),
+    supabase.from('pec_call_log').select('customer_id,from_number,occurred_at,created_at').eq('direction', 'in').limit(3000),
+    supabase.from('pec_sms_log').select('customer_id,from_number,created_at').eq('direction', 'in').limit(3000),
+    loadOutboundTouchLogs().catch(err => { console.warn('[followups] touch logs:', err.message || err); return null; }),
+    qoStaffNames(),
+  ]), { label: 'followups' });
+  if (estRes.error) throw estRes.error;
+  const settings = pecFollowupRules.parseFollowupSettings(Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value])));
+  const estimates = estRes.data || [];
+  const leadIds = [...new Set(estimates.map(e => e.lead_id).filter(Boolean))];
+  let leadsById = {};
+  if (leadIds.length) {
+    const lr = await withFreshSession(() => supabase.from('leads')
+      .select('id,customer_id,first_name,full_name,phone,phone_norm,email,stage,archived_at,score,scored_at,ai_analysis')
+      .in('id', leadIds), { label: 'followups-leads' });
+    if (!lr.error) leadsById = Object.fromEntries((lr.data || []).map(l => [l.id, l]));
+  }
+  const notes = notesRes.error ? [] : (notesRes.data || []);
+  const logs = { ...(touchLogs || { calls: [], texts: [], emails: [] }), notes };
+  const viewsByEst = {};
+  for (const v of (viewsRes.error ? [] : viewsRes.data || [])) {
+    const b = (viewsByEst[v.estimate_id] ||= { count: 0, lastAt: null });
+    b.count++;
+    if (!b.lastAt || v.viewed_at > b.lastAt) b.lastAt = v.viewed_at;
+  }
+  const inCalls = inCallsRes.error ? [] : (inCallsRes.data || []);
+  const inTexts = inTextsRes.error ? [] : (inTextsRes.data || []);
+  const now = new Date();
+  const due = [], cold = [];
+  for (const est of estimates) {
+    const lead = est.lead_id ? leadsById[est.lead_id] || null : null;
+    const keys = pecFollowupRules.subjectKeys(est, lead);
+    const touch = pecFollowupRules.humanTouchesFor(keys, est.id, est.lead_id, logs);
+    const m = pecFollowupRules.membershipState(est, lead, touch.humanLastAt, settings, now);
+    if (m.state === 'out' || m.state === 'not_due') continue;
+    const sentMs = new Date(est.sent_at || est.created_at).getTime();
+    let inCallCount = 0, inTextCount = 0, lastInboundAt = null;
+    const inMatch = (r) => (keys.customerId && r.customer_id === keys.customerId)
+      || (keys.phoneNorm && pecFollowupRules.normPhone(r.from_number) === keys.phoneNorm);
+    for (const r of inCalls) {
+      const ts = r.occurred_at || r.created_at;
+      if (ts && new Date(ts).getTime() >= sentMs && inMatch(r)) { inCallCount++; if (!lastInboundAt || ts > lastInboundAt) lastInboundAt = ts; }
+    }
+    for (const r of inTexts) {
+      if (r.created_at && new Date(r.created_at).getTime() >= sentMs && inMatch(r)) { inTextCount++; if (!lastInboundAt || r.created_at > lastInboundAt) lastInboundAt = r.created_at; }
+    }
+    const v = viewsByEst[est.id] || { count: 0, lastAt: null };
+    const signals = {
+      daysQuiet: m.daysQuiet, neverTouched: m.neverTouched,
+      price: est.price != null ? Number(est.price) : null,
+      viewCount: v.count, lastViewedAt: v.lastAt,
+      inboundCalls: inCallCount, inboundTexts: inTextCount, lastInboundAt,
+      hasChangeRequest: !!est.change_request_note,
+      firstName: (lead && lead.first_name) || String(est.customer_name || '').split(' ')[0] || null,
+    };
+    const row = { est, lead, keys, touch, state: m.state, signals, fallback: pecFollowupRules.fallbackPriority(signals, now) };
+    (m.state === 'due' ? due : cold).push(row);
+  }
+  const ranks = ranksRes.error ? [] : (ranksRes.data || []);
+  const rankBy = Object.fromEntries(ranks.map(r => [r.subject_id, r]));
+  due.sort((a, b) => ((rankBy[a.est.id] || {}).rank || 999) - ((rankBy[b.est.id] || {}).rank || 999) || b.fallback - a.fallback);
+  cold.sort((a, b) => b.signals.daysQuiet - a.signals.daysQuiet);
+  const lastRankedAt = ranks.reduce((mx, r) => (!mx || r.ranked_at > mx ? r.ranked_at : mx), null);
+  return { settings, due, cold, rankBy, lastRankedAt, staffNames, notesDegraded: !!notesRes.error };
+}
+
+// Nav badge: ONE head-count query at boot (the Ops Queue pattern). The rank
+// table holds exactly the DUE rows from the last nightly run, so its count
+// is the honest cheap approximation; opening the view or logging a touch
+// refreshes it with the live computed number.
+async function refreshFollowupsNavBadge(exactCount) {
+  let count = exactCount;
+  if (count == null) {
+    try {
+      const r = await supabase.from('pec_followup_ranks').select('id', { count: 'exact', head: true }).eq('subject_type', 'estimate');
+      if (r.error) return; // pre-migration: no badge
+      count = r.count || 0;
+    } catch (_) { return; }
+  }
+  document.querySelectorAll('button[data-pec-view="followups"]').forEach(btn => {
+    let b = btn.querySelector('.pec-fu-navbadge');
+    if (!count) { if (b) b.remove(); return; }
+    if (!b) {
+      b = document.createElement('span');
+      b.className = 'pec-fu-navbadge';
+      b.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;margin-left:6px;border-radius:999px;background:var(--rd-accent,#D8531C);color:#fff;font-size:.62rem;font-weight:700;vertical-align:middle';
+      btn.appendChild(b);
+    }
+    b.textContent = count > 99 ? '99+' : String(count);
+  });
+}
+
+// Log a touch (prompt 98 decision 13): ONE pec_customer_notes write linked
+// to the customer, the estimate, and the lead; it then renders on the
+// customer page, the estimate detail, and the lead's pipeline card, and it
+// resets the follow-up clock when "counts as outreach" is on. Entry points:
+// the queue row, the customer page, and the estimate page.
+function openLogTouchModal(opts = {}) {
+  if (!opts.customerId) {
+    showToast('This record has no linked customer yet, so a touch cannot be logged on the customer file. Link a customer first.', { ttl: 6000 });
+    return;
+  }
+  const CHANNELS = [['call', 'Call'], ['text', 'Text'], ['email', 'Email'], ['in_person', 'In person'], ['walk_in', 'Walked in'], ['other', 'Other']];
+  const OUTCOMES = [['reached', 'Reached them'], ['voicemail', 'Left a voicemail'], ['no_answer', 'No answer'], ['n_a', 'Not applicable']];
+  openModal(`
+    <h3 style="margin-top:0">Log a touch${opts.name ? ` · ${esc(opts.name)}` : ''}</h3>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>How</label>
+        <select id="ltChannel">${CHANNELS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+      </div>
+      <div class="pec-field"><label>Outcome</label>
+        <select id="ltOutcome"><option value="">—</option>${OUTCOMES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="pec-field"><label>What happened</label>
+      <textarea id="ltBody" rows="3" style="width:100%" placeholder="Left a voicemail about the install window… / They walked into the shop and paid…"></textarea>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:.84rem;cursor:pointer">
+      <input type="checkbox" id="ltCounts" checked style="width:auto">
+      This counts as outreach (resets the follow-up clock)
+    </label>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Untick for things that happened TO us (they walked in, they emailed) so the record exists without pretending we reached out.</div>
+    <div id="ltErr" style="color:var(--danger,#dc2626);font-size:.78rem;margin-top:6px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="ltSave">Log it</button>
+    </div>
+  `, { onMount: (el) => {
+    el.querySelector('#ltSave').addEventListener('click', async () => {
+      const body = el.querySelector('#ltBody').value.trim();
+      const errEl = el.querySelector('#ltErr');
+      if (!body) { errEl.textContent = 'Write a line about what happened.'; return; }
+      const btn = el.querySelector('#ltSave'); btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const ins = await withFreshWrite(() => supabase.from('pec_customer_notes').insert({
+          customer_id: opts.customerId,
+          lead_id: opts.leadId || null,
+          estimate_id: opts.estimateId || null,
+          body,
+          channel: el.querySelector('#ltChannel').value,
+          outcome: el.querySelector('#ltOutcome').value || null,
+          counts_as_touch: el.querySelector('#ltCounts').checked,
+          created_by: (state.session && state.session.user && state.session.user.id) || null,
+        }), { label: 'log-touch' });
+        if (ins.error) throw ins.error;
+        closeModal();
+        showToast('Touch logged', { ttl: 2500 });
+        if (typeof opts.onSaved === 'function') opts.onSaved();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Log it';
+        errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
+}
+
+// Snooze a queue row until a date (exit 3 of prompt 98 decision 11): "call
+// me in October" gets a real answer instead of a fake touch or a lost mark.
+function openFollowupSnoozeModal(est, settings, onSaved) {
+  const maxDate = new Date(Date.now() + settings.snoozeMaxDays * 86400000).toISOString().slice(0, 10);
+  const defDate = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  openModal(`
+    <h3 style="margin-top:0">Snooze ${esc(est.customer_name || 'this estimate')}</h3>
+    <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">Hides it from the follow-up queue until the date you pick (max ${settings.snoozeMaxDays} days), then it comes back on its own. Use it when the customer named a real date.</div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Until</label><input type="date" id="fsDate" value="${defDate}" min="${new Date(Date.now() + 86400000).toISOString().slice(0, 10)}" max="${maxDate}"></div>
+      <div class="pec-field"><label>Why (optional)</label><input id="fsReason" maxlength="200" placeholder="They said call back after Labor Day"></div>
+    </div>
+    <div id="fsErr" style="color:var(--danger,#dc2626);font-size:.78rem"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="fsSave">Snooze</button>
+    </div>
+  `, { onMount: (el) => {
+    el.querySelector('#fsSave').addEventListener('click', async () => {
+      const d = el.querySelector('#fsDate').value;
+      const errEl = el.querySelector('#fsErr');
+      if (!d) { errEl.textContent = 'Pick a date.'; return; }
+      if (d > maxDate) { errEl.textContent = `The longest snooze is ${settings.snoozeMaxDays} days.`; return; }
+      const btn = el.querySelector('#fsSave'); btn.disabled = true;
+      try {
+        const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({
+          followup_snoozed_until: new Date(d + 'T12:00:00Z').toISOString(),
+          followup_snooze_reason: el.querySelector('#fsReason').value.trim() || null,
+        }).eq('id', est.id), { label: 'followup-snooze' });
+        if (upd.error) throw upd.error;
+        closeModal();
+        showToast(`Snoozed until ${d}`, { ttl: 2500 });
+        if (typeof onSaved === 'function') onSaved();
+      } catch (err) {
+        btn.disabled = false;
+        errEl.textContent = 'Could not snooze: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
+}
+
+function followupRowHtml(row, rank, staffNames) {
+  const est = row.est, s = row.signals, r = rank || null;
+  const opener = (r && r.suggested_opener) || pecFollowupRules.fallbackOpener(s).opener;
+  const textDraft = (r && r.suggested_text) || pecFollowupRules.fallbackOpener(s).text;
+  const why = (r && r.why_now) || `${s.daysQuiet} day${s.daysQuiet === 1 ? '' : 's'} since a human touch${s.viewCount ? `; viewed ${s.viewCount}x` : ''}.`;
+  const score = r ? r.score : row.fallback;
+  const band = leadScoreBand(score);
+  const chips = [
+    s.viewCount ? `<span class="pec-age" title="Times the customer opened their proposal link${s.lastViewedAt ? `; last ${new Date(s.lastViewedAt).toLocaleString()}` : ''}">Viewed ${s.viewCount}x${s.lastViewedAt ? ` · ${esc(fmtRelativeTime(s.lastViewedAt))}` : ''}</span>` : '',
+    (s.inboundCalls || s.inboundTexts) ? `<span class="pec-age pec-age-green" title="Inbound contact since the estimate was sent">Reached in ${s.inboundCalls + s.inboundTexts}x${s.lastInboundAt ? ` · ${esc(fmtRelativeTime(s.lastInboundAt))}` : ''}</span>` : '',
+    s.hasChangeRequest ? '<span class="pec-age pec-age-yellow" title="The customer asked for a change on their proposal page">Change requested</span>' : '',
+    row.lead ? leadScoreBadge(row.lead) : '',
+    r && r.source === 'fallback' ? '<span class="pec-age" title="The AI run has not covered this row yet; this is the deterministic backup ranking and wording">Backup ranking</span>' : '',
+  ].filter(Boolean).join(' ');
+  const quietLine = s.neverTouched
+    ? `<strong style="color:var(--rd-danger,#ef4444)">No human touch since it was sent ${s.daysQuiet} day${s.daysQuiet === 1 ? '' : 's'} ago</strong>`
+    : `<strong>${s.daysQuiet} day${s.daysQuiet === 1 ? '' : 's'} since a human touch</strong>`;
+  return `<div class="pec-card" data-fu-est="${esc(est.id)}" style="padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start">
+      <div style="min-width:220px">
+        <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+          ${band ? `<span class="pec-age ${band.cls}" style="font-weight:700" title="Follow-up priority ${score} of 100">${score}</span>` : ''}
+          <strong style="font-size:1rem">${esc(est.customer_name || (row.lead && row.lead.full_name) || '(no name)')}</strong>
+          <span style="color:var(--muted);font-size:.78rem">${esc(estNumberLabel(est))}${est.price != null ? ` · ${invUSD0(Number(est.price))}` : ''}</span>
+        </div>
+        <div style="font-size:.85rem;margin-top:4px">${quietLine} · sent ${esc(fmtRelativeTime(est.sent_at || est.created_at))}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${chips}</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:6px">${esc(why)}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        ${est.customer_phone ? pecPhoneActionsHtml(est.customer_phone, { name: est.customer_name || '', customerId: est.customer_id || null }) : ''}
+        <button type="button" class="pec-btn ghost sm" data-fu-log>Log a touch</button>
+        <button type="button" class="pec-btn ghost sm" data-fu-snooze>Snooze</button>
+        <button type="button" class="pec-btn ghost sm" data-fu-open>Open estimate</button>
+        <button type="button" class="pec-btn ghost sm" data-fu-lost style="color:#dc2626">Mark lost</button>
+      </div>
+    </div>
+    <div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px">
+      <div style="background:var(--rd-soft,#f5f6f8);border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;padding:8px 10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Say on the call</span>
+          <button type="button" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.66rem" data-fu-copy="opener">Copy</button>
+        </div>
+        <div style="font-size:.84rem;margin-top:4px" data-fu-opener>${esc(opener)}</div>
+      </div>
+      <div style="background:var(--rd-soft,#f5f6f8);border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;padding:8px 10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Or text</span>
+          <button type="button" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.66rem" data-fu-copy="text">Copy</button>
+        </div>
+        <div style="font-size:.84rem;margin-top:4px" data-fu-text>${esc(textDraft)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function renderFollowUps() {
+  pecSyncHistory();
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading follow-ups…</div>';
+  let data;
+  try {
+    data = await loadFollowupsData();
+  } catch (err) {
+    const preMigration = /pec_followup_ranks|pec_customer_notes|followup_snoozed_until/.test(String(err && err.message));
+    root.innerHTML = `<div class="pec-empty">${preMigration
+      ? 'The follow-up queue needs the 2026-09-10_prompt98_followup_queue.sql migration. Apply it and reload.'
+      : esc(err && err.message ? err.message : String(err))}</div>`;
+    return;
+  }
+  state.followupsData = data;
+  refreshFollowupsNavBadge(data.due.length);
+  if (!data.settings.enabled) {
+    root.innerHTML = '<div class="pec-empty">The follow-up queue is switched off (Settings > Follow-ups).</div>';
+    return;
+  }
+  const isAdmin = state.adminUser && state.adminUser.role === 'admin';
+  const rerankBtn = isAdmin ? `<button type="button" class="pec-btn sm" id="fuRerank" title="Re-run the AI ranking on the current queue now (nightly it runs on its own at 6:15 AM)">Re-rank now</button>` : '';
+  root.innerHTML = `
+    <div style="padding:4px 2px 0">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="pec-stat" style="min-width:130px"><div class="pec-stat-label">Need contact</div><div class="pec-stat-val">${data.due.length}</div></div>
+          <div class="pec-stat" style="min-width:130px"><div class="pec-stat-label">Cold (${data.settings.coldDays}+ days)</div><div class="pec-stat-val">${data.cold.length}</div></div>
+          <div class="pec-stat" style="min-width:170px"><div class="pec-stat-label">Last AI ranking</div><div class="pec-stat-val" style="font-size:.95rem">${data.lastRankedAt ? esc(fmtRelativeTime(data.lastRankedAt)) : 'Not yet'}</div></div>
+        </div>
+        ${rerankBtn}
+      </div>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:12px">Sent estimates that have gone ${data.settings.overdueDays}+ days without a HUMAN touch (calls, texts, emails, or logged touches; automatic drips never count). Accepting, marking lost, snoozing, or logging a touch removes a row immediately.</div>
+      ${data.notesDegraded ? '<div style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:.8rem;margin-bottom:10px">Logged touches could not be loaded, so the clock may overstate quiet time for hand-logged contacts.</div>' : ''}
+      <div id="fuList">
+        ${data.due.length
+          ? data.due.map(row => followupRowHtml(row, data.rankBy[row.est.id], data.staffNames)).join('')
+          : '<div class="pec-empty">Nothing needs a follow-up right now. Every sent estimate has been touched inside the window.</div>'}
+      </div>
+      ${data.cold.length ? `
+        <details style="margin-top:14px">
+          <summary style="cursor:pointer;font-weight:600">Cold (${data.cold.length}): quiet past ${data.settings.coldDays} days</summary>
+          <div style="margin-top:10px">${data.cold.map(row => followupRowHtml(row, data.rankBy[row.est.id], data.staffNames)).join('')}</div>
+        </details>` : ''}
+    </div>`;
+  const rerank = $('fuRerank');
+  if (rerank) rerank.addEventListener('click', async () => {
+    rerank.disabled = true; rerank.textContent = 'Ranking…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/.netlify/functions/pec-followup-rank-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session && session.access_token}` },
+      });
+      let body = {}; try { body = await res.json(); } catch (_) {}
+      if (!res.ok || body.ok === false) throw new Error(body.error || `Re-rank failed (${res.status})`);
+      showToast(`Ranked ${body.written || 0} estimate${body.written === 1 ? '' : 's'}${body.fallback ? ` (${body.fallback} on backup ranking)` : ''}`, { ttl: 3500 });
+      renderFollowUps();
+    } catch (err) {
+      rerank.disabled = false; rerank.textContent = 'Re-rank now';
+      showToast('Re-rank failed: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+    }
+  });
+  root.querySelectorAll('[data-fu-est]').forEach(card => {
+    const estId = card.dataset.fuEst;
+    const row = [...data.due, ...data.cold].find(r => r.est.id === estId);
+    if (!row) return;
+    const refresh = () => renderFollowUps();
+    card.querySelector('[data-fu-log]').addEventListener('click', () => openLogTouchModal({
+      customerId: row.keys.customerId, leadId: row.est.lead_id, estimateId: row.est.id,
+      name: row.est.customer_name, onSaved: refresh,
+    }));
+    card.querySelector('[data-fu-snooze]').addEventListener('click', () => openFollowupSnoozeModal(row.est, data.settings, refresh));
+    card.querySelector('[data-fu-open]').addEventListener('click', () => { state.openEstimateId = row.est.id; switchView('estimates'); });
+    card.querySelector('[data-fu-lost]').addEventListener('click', async () => {
+      if (!confirm(`Mark ${row.est.customer_name || 'this estimate'} lost? It leaves the follow-up queue and the estimate is marked lost.`)) return;
+      try {
+        const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ status: 'lost' }).eq('id', row.est.id), { label: 'followup-mark-lost' });
+        if (upd.error) throw upd.error;
+        showToast('Marked lost', { ttl: 2500 });
+        refresh();
+      } catch (err) { showToast('Could not mark lost: ' + (err && err.message ? err.message : err), { ttl: 5000 }); }
+    });
+    card.querySelectorAll('[data-fu-copy]').forEach(btn => btn.addEventListener('click', async () => {
+      const sel = btn.dataset.fuCopy === 'opener' ? '[data-fu-opener]' : '[data-fu-text]';
+      try {
+        await navigator.clipboard.writeText(card.querySelector(sel).textContent);
+        btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      } catch (_) { showToast('Copy failed; select the text by hand.', { ttl: 3000 }); }
+    }));
+  });
+}
+
+// Shared "Touches & notes" card (prompt 98 decision 13's render surfaces):
+// the same pec_customer_notes rows on the customer page and the estimate
+// page, with the Log a touch entry point on both. Self-mounting like the
+// SMS card; pre-migration it degrades to a one-line note.
+function pecTouchNotesCardHtml(domId) {
+  return `<div class="pec-card" id="${esc(domId)}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <h3 style="margin:0">Touches &amp; notes</h3>
+      <button type="button" class="pec-btn sm" data-tn-log>Log a touch</button>
+    </div>
+    <div data-tn-list style="margin-top:10px"><div class="pec-empty" style="padding:8px 0">Loading…</div></div>
+  </div>`;
+}
+async function mountTouchNotesCard(card, opts) {
+  if (!card) return;
+  const listEl = card.querySelector('[data-tn-list]');
+  const CH_LABEL = { call: 'Call', text: 'Text', email: 'Email', in_person: 'In person', walk_in: 'Walked in', other: 'Other' };
+  const OUT_LABEL = { reached: 'reached', voicemail: 'voicemail', no_answer: 'no answer', n_a: '' };
+  let staffNames = {};
+  try { staffNames = await qoStaffNames(); } catch (_) {}
+  const reload = async () => {
+    try {
+      let q = supabase.from('pec_customer_notes').select('*').order('created_at', { ascending: false }).limit(30);
+      q = opts.estimateId && !opts.customerId ? q.eq('estimate_id', opts.estimateId)
+        : opts.estimateId ? q.or(`customer_id.eq.${opts.customerId},estimate_id.eq.${opts.estimateId}`)
+        : q.eq('customer_id', opts.customerId);
+      const { data, error } = await q;
+      if (error) throw error;
+      listEl.innerHTML = (data || []).length
+        ? data.map(n => `<div style="padding:7px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.82rem">
+            <div style="color:var(--muted);font-size:.68rem;margin-bottom:2px">
+              <span title="${esc(new Date(n.created_at).toLocaleString())}">${esc(fmtRelativeTime(n.created_at))}</span>
+              · ${esc(CH_LABEL[n.channel] || n.channel)}${n.outcome && OUT_LABEL[n.outcome] ? ` · ${esc(OUT_LABEL[n.outcome])}` : ''}
+              ${n.created_by && staffNames[n.created_by] ? ` · ${esc(staffNames[n.created_by])}` : ''}
+              ${n.counts_as_touch === false ? ' · <span title="Recorded for the file; did not reset the follow-up clock">not outreach</span>' : ''}
+            </div>
+            <div style="white-space:pre-wrap">${esc(n.body || '')}</div>
+          </div>`).join('')
+        : '<div style="color:var(--muted);font-size:.82rem">No touches or notes logged yet.</div>';
+    } catch (e) {
+      const preMigration = /pec_customer_notes/.test(String(e && e.message));
+      listEl.innerHTML = `<div style="color:var(--muted);font-size:.8rem">${preMigration ? 'Run the 2026-09-10_prompt98_followup_queue.sql migration to enable touch logging.' : esc(e && e.message || 'Could not load notes.')}</div>`;
+    }
+  };
+  card.querySelector('[data-tn-log]').addEventListener('click', () => openLogTouchModal({ ...opts, onSaved: reload }));
+  await reload();
+}
+
 async function renderLeads() {
   pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   // Detail pane: a card click sets openLeadId; Back clears it. Same
@@ -30823,6 +31463,12 @@ function leadEventHtml(ev, staffNames) {
     body = p.body
       ? `<details><summary style="cursor:pointer">${esc(label)}${p.subject ? ` · ${esc(p.subject)}` : ''}</summary><div style="white-space:pre-wrap;font-size:.78rem;color:var(--muted);margin-top:6px">${esc(p.body)}</div></details>`
       : `${esc(label)}${p.error_message ? ` · <span style="color:var(--rd-danger,#ef4444)">${esc(p.error_message)}</span>` : ''}`;
+  } else if (ev.event_type === 'customer_note') {
+    // Prompt 98: a logged touch (pec_customer_notes pseudo-event from the
+    // timeline merge). p is the note row itself.
+    const chLabel = { call: 'call', text: 'text', email: 'email', in_person: 'in-person visit', walk_in: 'walk-in', other: 'touch' }[p.channel] || 'touch';
+    const outLabel = { reached: ' (reached them)', voicemail: ' (voicemail)', no_answer: ' (no answer)' }[p.outcome] || '';
+    body = `Logged ${esc(chLabel)}${outLabel}${p.counts_as_touch === false ? ' <span style="color:var(--muted);font-size:.72rem">(not outreach)</span>' : ''}${p.body ? `<div style="font-size:.78rem;color:var(--muted);margin-top:2px;white-space:pre-wrap">${esc(p.body)}</div>` : ''}`;
   } else if (ev.event_type === 'duplicate_intake') {
     body = `Reached out AGAIN (${esc(p.source || 'unknown')}); folded into this lead`;
   } else if (ev.event_type === 'created') {
@@ -30852,9 +31498,12 @@ async function renderLeadDetail(leadId) {
       // both error and degrade to "no drip block".
       supabase.from('pec_drip_enrollments').select('*, pec_drip_campaigns(name,mode,max_touches)').eq('lead_id', leadId).order('enrolled_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('pec_drip_sends').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(50),
+      // Prompt 98: logged touches (pec_customer_notes) join the timeline.
+      // Pre-migration this errors and degrades to none.
+      supabase.from('pec_customer_notes').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(50),
     ]), { label: 'renderLeadDetail' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, null, {}, {}]; }
-  const [leadRes, evRes, staffNames0, leadEstsRes, touchLogs, dripEnrRes, dripSendsRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}, null, {}, {}, {}]; }
+  const [leadRes, evRes, staffNames0, leadEstsRes, touchLogs, dripEnrRes, dripSendsRes, custNotesRes] = res;
   const leadEstimates = (leadEstsRes && !leadEstsRes.error && leadEstsRes.data) || [];
   const staffNames = staffNames0 || {};
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="leadBack">← Back to leads</button></div>';
@@ -30880,8 +31529,13 @@ async function renderLeadDetail(leadId) {
   }
   // Drip sends join the activity timeline as pseudo-events, sorted with the
   // real lead_events by timestamp (leadEventHtml has the drip_send case).
+  // Prompt 98: logged touches (pec_customer_notes) join the same way, so one
+  // write renders here, on the customer page, and on the pipeline card.
+  const custNotes = (custNotesRes && !custNotesRes.error && custNotesRes.data) ? custNotesRes.data : [];
   const timeline = events.concat(dripSends.map(s => ({
     event_type: 'drip_send', created_at: s.sent_at || s.created_at, payload: s, actor_user_id: null,
+  }))).concat(custNotes.map(n => ({
+    event_type: 'customer_note', created_at: n.created_at, payload: n, actor_user_id: n.created_by || null,
   }))).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
   const ai = lead.ai_analysis || null;
   const owner = lead.owner_user_id ? (staffNames[lead.owner_user_id] || 'Unknown') : 'Unassigned';
@@ -32117,11 +32771,23 @@ async function renderEstimateDetail(estimateId) {
           </div>`).join('') : '<div class="pec-empty">No activity yet.</div>'}
         </div>
         ${estimateCommsCardHtml()}
+        ${pecTouchNotesCardHtml('pecEstTouchCard')}
       </div>
     </div>
   `;
 
   $('estBack').addEventListener('click', back);
+
+  // Touches & notes (prompt 98): the same customer-note rows the follow-up
+  // queue and customer page read, scoped to this customer + this estimate,
+  // with Log a touch right here. A customer-less estimate can still log
+  // through the modal's guard message. Best-effort.
+  mountTouchNotesCard($('pecEstTouchCard'), {
+    customerId: est.customer_id || null,
+    leadId: est.lead_id || null,
+    estimateId: est.id,
+    name: est.customer_name || leadName || custLinkName || '',
+  }).catch(err => console.warn('[estimates] touch notes card:', err && err.message));
 
   // Job info block (prompt 61 Part C): loads and manages itself inside its
   // container; nothing it does re-renders this page.

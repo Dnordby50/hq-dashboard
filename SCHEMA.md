@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-18 (Claude Code, prompt 98) after applying `2026-09-10_prompt98_followup_queue.sql` live via MCP: two new tables `pec_customer_notes` (the customer note / logged-touch store; staff read+insert, admin-only edit/delete, cascade off customers, no FK on lead_id) and `pec_followup_ranks` (nightly AI ordering of the follow-up queue, one row per DUE sent estimate, unique on subject_type+subject_id, staff read / service-role write; see each table's section), plus `estimates.followup_snoozed_until` (timestamptz) and `estimates.followup_snooze_reason` (text) for the queue's snooze exit. Nine settings keys (Settings > Follow-ups): `followup_enabled` ('true') and `followup_overdue_days_estimate_sent` ('3') front-of-card; `followup_cold_days` ('21'), `followup_snooze_max_days` ('60'), `followup_ai_rank_enabled` ('true'), `followup_ai_rank_limit` ('60'), `followup_slack_digest_enabled` ('true'), `followup_digest_top_n` ('10'), `followup_digest_time` ('07:30' Phoenix) behind Advanced. Settings 153 rows to 162. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 97) after applying `2026-09-09_prompt97_lead_scoring_live.sql` live via MCP: one new column `leads.scored_at` (timestamptz, nullable; stamped by EVERY scoring run through the shared core `_pec-lead-score.cjs`, i.e. the pec-lead-ai endpoint, the intake kicks, and the nightly pec-lead-score-runner; the staleness column the runner orders by and the badge tooltip reads. `ai_analyzed_at` keeps its existing meaning and is stamped alongside it; rows scored before this migration have `scored_at` null until their next scoring run). Four settings keys (Settings > Drips > Lead scoring): `lead_score_nightly_enabled` ('true'; missing row = on) and `lead_score_batch_cap` ('50') front-of-card; `lead_score_stages` ('new,contacted,estimate_scheduled,presented,estimate_sent'; lost/accepted stripped server-side) and `lead_score_model` ('' = code default) behind Advanced. Settings 149 rows to 153. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 96) after applying `2026-09-08_prompt96_google_multi_calendar.sql` live via MCP: new `pec_sales_member_google_calendars` table (one row per member x Google calendar; per-calendar `sync_token` because Google sync tokens are per-calendar, `access_role` as of the last calendarList refresh, `sync_enabled` toggle, `last_synced_at`/`last_error` diagnostics; UNIQUE (member_id, calendar_id); RLS on, ZERO policies = default-deny service-role only, same posture as the token vault) plus the definer view `pec_member_google_calendars_v` (all columns EXCEPT sync_token, SELECT granted to authenticated: the Settings toggle list and the appointment modal's provenance read through it; writes go through pec-google-calendars.cjs). `pec_appointments.google_recurring_event_id` (text; Google's recurringEventId when the row is an expanded instance, the push patches the instance only) and `pec_appointments.google_readonly_reason` (text; non-null = TopCoat must not write the event back: calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit, computed at pull time, the UI renders read-only straight off it). Six settings keys: `google_pull_window_days_past` ('30'), `google_pull_window_days_future` ('180') front-of-card; `google_pull_max_pages_per_calendar` ('6'), `google_imported_default_appt_type` ('other'), `google_pull_include_all_day` ('true'), `google_pull_include_declined` ('false') behind Advanced on Settings > Appointments. Seeded one row per connected member for the existing TopCoat calendar (sync_enabled true; the multi-calendar pull loop skips it, it is the push target). Settings 143 rows to 149. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 95) after applying `2026-09-07_prompt95_routemize_update_repair.sql` live via MCP: three settings keys only, no table or column changed. `routemize_status_map` ('{"1":"scheduled","2":"scheduled","3":"canceled"}'; Routemize reports appointment status as a NUMBER and pec-appt-intake maps it through this key, so a new Routemize status code is a Settings edit, not a deploy; surfaced behind Advanced on Settings > Appointments > Routemize booking intake; the server falls back to exactly this default when the row is missing or broken, and an unmapped code is treated as an update, never a cancellation), `ops_check_appt_intake` ('true') and `ops_appt_intake_days` ('7'), the toggle + lookback window for the new Ops Queue derived check appt_intake_not_applied (webhook events that answered 200 without changing the appointment). Settings 140 rows to 143. Only the settings section changed.
@@ -376,6 +377,8 @@ RLS: enabled · rows: 9
 | warranty_snapshot | jsonb | yes |  |
 | sold_on_site | boolean | yes |  |
 | sold_on_site_override | boolean | yes |  |
+| followup_snoozed_until | timestamptz | yes |  |
+| followup_snooze_reason | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id; job_id → jobs.id; lead_id → leads.id; pec_prod_job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id
@@ -820,6 +823,29 @@ RLS: enabled · rows: 0
 PK: id
 Note: manual blast header (Phase 3). channel CHECK in ('sms','email','both'); status CHECK in ('draft','confirmed','sending','done','canceled'). Recipients are materialized as pec_drip_sends rows with blast_id set (shared ledger). RLS staff-only via is_admin_staff(), no anon.
 
+### pec_customer_notes
+RLS: enabled · rows: 0 (created 2026-08-18, prompt 98)
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| customer_id | uuid | no |  |
+| lead_id | uuid | yes |  |
+| estimate_id | uuid | yes |  |
+| body | text | no |  |
+| channel | text | no |  |
+| outcome | text | yes |  |
+| counts_as_touch | boolean | no | true |
+| created_by | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+
+PK: id
+FK: customer_id → customers.id (on delete cascade); estimate_id → estimates.id. lead_id deliberately has NO FK (the pec_appointments convention: survives lead soft-delete).
+CHECK channel in ('call','text','email','in_person','walk_in','other'); outcome null or in ('reached','voicemail','no_answer','n_a').
+Indexes: pec_customer_notes_customer_idx (customer_id, created_at desc), pec_customer_notes_estimate_idx (estimate_id, created_at desc).
+RLS: staff SELECT + INSERT (is_admin_staff); UPDATE/DELETE admin only (is_admin_role; audit-ish trail). Anon: nothing.
+THE customer note store (customers has no notes column): one "Log a touch" write renders on the customer page, the estimate detail, the lead's pipeline card, and the lead timeline. counts_as_touch=false records context (walk-in, inbound email) without resetting the follow-up clock. The touch moment is created_at.
+
 ### pec_drip_campaigns
 RLS: enabled · rows: 3
 
@@ -976,6 +1002,31 @@ RLS: enabled · rows: 2
 | updated_at | timestamptz | no | now() |
 
 PK: id
+
+### pec_followup_ranks
+RLS: enabled · rows: 0 (created 2026-08-18, prompt 98)
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| subject_type | text | no |  |
+| subject_id | uuid | no |  |
+| rank | integer | yes |  |
+| score | integer | yes |  |
+| why_now | text | yes |  |
+| suggested_opener | text | yes |  |
+| suggested_text | text | yes |  |
+| suggested_channel | text | yes |  |
+| source | text | no | 'ai' |
+| model | text | yes |  |
+| inputs | jsonb | yes |  |
+| ranked_at | timestamptz | no | now() |
+
+PK: id
+CHECK subject_type in ('estimate','lead'); suggested_channel null or in ('call','text','email'); source in ('ai','fallback').
+Unique: pec_followup_ranks_subject_idx (subject_type, subject_id); each nightly run upserts.
+RLS: staff SELECT only; writes are service-role (pec-followup-rank.cjs). Anon: nothing.
+The nightly AI ordering of the follow-up queue: one row per DUE subject only (the Cold tail renders client-side from fallback rules, and the due-only table makes the nav badge an honest head count). `inputs` snapshots the deterministic signals the model was given so a bad ranking is debuggable. suggested_opener is the one-line phone opener, suggested_text the SMS draft (prompt 98 Part D5 requires both). subject_type 'lead' is reserved for a future subject type (decision 9: build the resolver extensible, ship estimates only).
 
 ### pec_heartbeats
 RLS: enabled (staff SELECT via `pec_heartbeats_staff_read`; writes service-role only, no insert/update policy on purpose) · rows: 0 at creation

@@ -66,6 +66,22 @@
 [functions."pec-appt-reminder-runner"]
   schedule = "*/15 * * * *"
 
+# Follow-up queue nightly rank (prompt 98). 13:15 UTC = 06:15 MST: ranks and
+# suggested openers are ready before the sales day starts, ahead of the 07:00
+# drift check and the 07:30 default Slack digest. Membership is deterministic
+# (production/followup-rules.cjs); this only orders and words. Gated by
+# followup_enabled / followup_ai_rank_enabled; model failure writes fallback
+# rows so the queue is never empty. Manual re-ranks go through
+# pec-followup-rank-run (Netlify 403s schedule-declared functions).
+[functions."pec-followup-rank"]
+  schedule = "15 13 * * *"
+
+# Follow-up Slack digest ticker (prompt 98 Part F). Every 15 minutes; sends
+# at most once a day at the followup_digest_time setting (Phoenix), deduped
+# via a pec_webhook_ingest_log marker row, silent when the queue is empty.
+[functions."pec-followup-digest"]
+  schedule = "*/15 * * * *"
+
 # Migration drift check (prompt 48). Daily at 14:00 UTC = 07:00 MST, after
 # the 06:00 auto-progress sweep. Probes every 2026-07+ migration's @artifacts
 # against the live schema and raises de-duped admin bells on missing/partial

@@ -241,6 +241,12 @@ async function runScorePass(opts = {}) {
     candidates: candidates.length,
     skipped_fresh: candidates.length - stale.length,
     attempted: batch.length,
+    // Cowork's backfill finding (2026-08-18): a synchronous invocation dies
+    // at ~26s, so callers must be able to see there is more to do and loop
+    // deliberately instead of reading a 504 as failure. Work is never lost
+    // either way: each lead is written as it is scored and the staleness
+    // order + freshness skip make every pass resume where the last stopped.
+    remaining: Math.max(0, stale.length - batch.length),
     scored: 0,
     band_changes: 0,
     errors: [],

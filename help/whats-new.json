@@ -1,5 +1,16 @@
 [
   {
+    "id": "followup-queue",
+    "date": "2026-08-18",
+    "title": "A follow-up queue that tells you who to call first, and what to say.",
+    "summary": "The new Follow-ups page (under Sales Activity) lists every sent estimate that has gone 3 or more days without a real human touch, ranked by who is most worth calling today. Each row shows how long they have been quiet, whether they have been opening their proposal, and a suggested opener written from your own sales playbook and what actually happened on the visit, with a copy button. Automatic drip messages never count as a touch, so the list reflects real human follow-up. You can also log a touch (a call, a text, or they walked into the shop) from the queue, the customer page, or the estimate page, and that note shows up everywhere.",
+    "howto": [
+      "Open Sales Activity, then Follow-ups. The hottest follow-up is on top; use the suggested opener or the ready-to-send text.",
+      "After you reach out, click Log a touch so the clock resets and the row leaves the queue.",
+      "If a customer names a date, use Snooze. Tune thresholds and the morning Slack digest in Settings, then Follow-ups."
+    ]
+  },
+  {
     "id": "lead-scoring-live",
     "date": "2026-08-18",
     "title": "Every lead now gets a score, and it refreshes nightly.",

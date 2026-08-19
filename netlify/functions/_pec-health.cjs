@@ -34,6 +34,8 @@ const SCHEDULED_CADENCE_HOURS = {
   'pec-google-calendar-pull': 0.25,
   'pec-lost-reason-backfill': 24,
   'pec-lead-score-runner': 24,
+  'pec-followup-rank': 24,
+  'pec-followup-digest': 0.25,
   'pec-salesask-sync': 0.25,
 };
 

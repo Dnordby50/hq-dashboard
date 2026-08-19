@@ -2,9 +2,17 @@
 // pec-lead-score-runner, needed because Netlify refuses direct invocation of
 // schedule-declared functions with an empty 403 (the pec-system-heartbeat-run
 // pattern). Two callers: staff JWT, or Cowork's backfill curl with
-// x-webhook-secret. Same core, same rules, with two overrides for the Part D
-// backfill:
-//   { "cap": 100 }         lift the batch cap for this run only
+// x-webhook-secret.
+//
+// SIZED TO THE PLATFORM (Cowork's 2026-08-18 backfill finding): a
+// synchronous Netlify invocation is killed at ~26 seconds and one score is
+// one 8-12s model call, so this twin caps each pass at 3 leads BY DEFAULT
+// and reports `remaining`. To drain a backlog, call it in a loop until
+// remaining is 0; every pass resumes where the last stopped (leads are
+// written as scored; staleness order + the freshness skip are the cursor).
+// Do NOT read a 504 as failure, and never say "one curl" in a handoff.
+// Overrides:
+//   { "cap": 5 }           leads per pass (keep it 26s-safe)
 //   { "fresh_hours": 24 }  freshness skip window (default 24 here per the
 //                          prompt: never clobber a lead somebody refreshed by
 //                          hand in the last day; the nightly tick uses 20)
@@ -24,7 +32,7 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || '{}'); } catch (_) {}
   try {
     const result = await runScorePass({
-      cap: body.cap,
+      cap: Number.isFinite(Number(body.cap)) && Number(body.cap) > 0 ? Number(body.cap) : 3,
       freshHours: Number.isFinite(Number(body.fresh_hours)) ? Number(body.fresh_hours) : 24,
       source: 'manual_run',
     });

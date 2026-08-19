@@ -3031,6 +3031,78 @@
           "name": "lead_score_model"
         }
       ]
+    },
+    {
+      "file": "2026-09-10_prompt98_followup_queue.sql",
+      "date": "2026-09-10",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_customer_notes"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_followup_ranks"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.followup_snoozed_until"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.followup_snooze_reason"
+        },
+        {
+          "kind": "index",
+          "name": "pec_customer_notes_customer_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_customer_notes_estimate_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_followup_ranks_subject_idx"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_overdue_days_estimate_sent"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_cold_days"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_snooze_max_days"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_ai_rank_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_ai_rank_limit"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_slack_digest_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_digest_top_n"
+        },
+        {
+          "kind": "setting",
+          "name": "followup_digest_time"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3059,6 +3131,7 @@
     "pec_change_order_batches",
     "pec_change_order_signatures",
     "pec_commission_payouts",
+    "pec_customer_notes",
     "pec_drip_campaigns",
     "pec_drip_enrollments",
     "pec_drip_sends",
@@ -3067,6 +3140,7 @@
     "pec_email_senders",
     "pec_email_templates",
     "pec_estimate_views",
+    "pec_followup_ranks",
     "pec_heartbeats",
     "pec_invoice_installments",
     "pec_lead_sources",
