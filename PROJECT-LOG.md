@@ -1,3 +1,55 @@
+## [2026-08-19 MST] Calendar sync audit: 7 of 25 Google events in the next 7 days are missing from TopCoat. Root cause is not the checkboxes, the pull function has not completed a single run since the moment the extra calendars were enabled
+
+By: Cowork
+
+Changed: no code, no schema, no settings. Read-only audit (Google Calendar API + Supabase). PROJECT-LOG.md.
+
+**Why this was raised.** Dylan: appointments sit on Google Calendar under calendars he ticked for sync, but they do not all appear on the TopCoat schedule. He moved several from the Personal calendar to the primary My Calendar this morning to work around it.
+
+**The diff, 2026-08-19 through 2026-08-26, sync_enabled calendars only.** 25 events on Google, 18 in pec_appointments, 7 missing:
+
+| Calendar | Missing event | When |
+|---|---|---|
+| dnordby50@gmail.com | Zoom call | 8/19 11:00 AM |
+| dnordby50@gmail.com | Dicks | 8/19 12:00 PM |
+| Personal | SNP | 8/20 7:30 AM |
+| Personal | Phil gentile | 8/20 11:00 AM |
+| Personal | White spar apt | 8/20 4:00 PM |
+| Meetings | Prescott epoxy meeting | 8/21 7:00 AM |
+| Meetings | All team meeting | 8/24 7:00 AM |
+
+The three TopCoat-calendar on-site estimates (Steve Franklin 8/19, Anna Mckelvey 8/24, John LaMarr 8/26) are all present and correct. Sales, Planning and Admin, and Family have no events in the window.
+
+**Root cause, with the evidence.** `pec_heartbeats` shows `pec-google-calendar-pull` last completed OK at **2026-08-18 08:15:29 MST** and never since (pec-system-heartbeat has been flagging "pec-google-calendar-pull stale 24h" since 07:45 today). The other ten calendar rows in `pec_sales_member_google_calendars` were created at **2026-08-18 08:17:14-17 MST**, roughly 105 seconds after that last good run. The function stopped finishing the instant the multi-calendar list went from one calendar to seven.
+
+Every row in `pec_sales_member_google_calendars` has `sync_token IS NULL`, `last_synced_at IS NULL`, and `last_error IS NULL`. Those three columns are written by `patchCalRow` on both the success and the failure exit of `pullOneCalendar` (pec-google-calendar-pull.cjs). All three being null for every calendar means neither exit is ever reached: the invocation dies mid-pagination rather than erroring, which rules out a Google 4xx/5xx, a bad token, and a per-calendar exception (all three set last_error).
+
+The mechanism is a feedback loop. `pullOneCalendar` only takes the cheap incremental path when a sync token is stored; with none, it runs a FULL bounded sync (`google_pull_window_days_past` 30, `google_pull_window_days_future` 180). On Dylan's primary calendar that window expands to ~709 recurring instances, and `processEvent` does a sequential Supabase SELECT plus a PATCH or POST per event. That exceeds the Netlify execution limit, so the run is killed before it reaches the token write, so the next tick 15 minutes later starts the same full pass from scratch. It is a permanent stall, not a transient one.
+
+Two consequences follow, and together they account for all 7 missing events:
+1. The loop never gets past the first calendar. Personal, Meetings, Sales, Planning and Admin, Family, and the FTP calendar have imported **zero** events ever (`select google_calendar_id, count(*) from pec_appointments group by 1` returns only dnordby50@gmail.com with 709, plus the TopCoat push rows). That is 5 of the 7.
+2. Even the first calendar only imports as far as the timeout reaches. Rows were created in sporadic partial bursts through 8/18 (594 at 08:00, then 12, 41, 1, 16, 27, 4, 3, 10) and exactly **one** row since 8/18 21:00. "Zoom call" and "Dicks" sit past the cutoff point in Google's return order and never land. That is the other 2.
+
+Moving events from Personal to My Calendar does not fix this, it only moves them from "never reached" to "maybe reached", which is why the workaround appeared to half-work.
+
+**Two smaller findings while in there.**
+- `dylan@finishingtouchpaintingaz.com` is sync_enabled with `access_role = 'freeBusyReader'`. Google's events.list returns 403 on a free/busy-only grant, so that calendar can never yield events. It will burn a tick and write a last_error once the loop reaches it. It should be unticked.
+- `pec_appointments` has a manual row "SNP Meeting" 8/20 7:30-9:30, `source = 'topcoat'`, no google_event_id, assigned to **Aron Bronson** (departed 2026-08-12). It overlaps the Google "SNP" 7:30-10:00 on Personal. Once Personal syncs there will be two SNP blocks on 8/20 unless one is removed, and the existing one is on a departed rep.
+
+**What I did NOT do.** No code changed, no settings changed, no rows edited. The fix is a Claude Code job (netlify/functions/pec-google-calendar-pull.cjs), not a Cowork one.
+
+Files touched: PROJECT-LOG.md.
+
+## Handoff to Claude Code
+The pull needs to survive a first full sync. Directions worth weighing, cheapest first: (a) persist the sync token and `last_synced_at` incrementally, so a killed run does not lose everything it just did, ideally per page rather than only at the end; (b) budget the run against a wall clock and stop cleanly with the token saved, letting the remaining pages land on the next tick, the way the existing page cap intends to; (c) batch the per-event SELECT into one keyed lookup per page instead of one round trip per event, and upsert on the unique `google_event_id` index instead of read-then-write; (d) rotate which calendar the loop starts on, so calendar 1 cannot starve calendars 2 through 7 indefinitely. Confirm the timeout reading against the Netlify function log for pec-google-calendar-pull before building, that is the one piece of this diagnosis inferred rather than observed directly.
+
+## Handoff to Dylan
+1. Until this is fixed, TopCoat's schedule is not a reliable picture of your day. Seven events in the next week are absent, including all three of Friday's Personal-calendar items and both team meetings.
+2. Untick `dylan@finishingtouchpaintingaz.com` in the calendar settings. TopCoat only has free/busy access to it and can never read its events.
+3. The 8/20 "SNP Meeting" on TopCoat belongs to Aron Bronson and duplicates the Google one. Decide whether to reassign or delete it before Personal starts syncing.
+
+---
+
 ## [2026-08-18 MST] Zero-subject rank bug: the ENGINE is proven correct against the real data; the deployed runtime's queries are the suspect, and the endpoint now ships its own diagnosis
 
 By: Claude Code
