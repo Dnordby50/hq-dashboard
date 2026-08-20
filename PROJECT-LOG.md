@@ -1,3 +1,17 @@
+## [2026-08-19 MST] Housekeeping: shipped prompt specs archived, the _to_delete quarantine emptied, a stray .DS_Store unbroke git fsck
+
+By: Claude Code
+
+Changed: 58 shipped prompt files (claude-code-prompt-36 through -99) moved from the repo root into docs/archive/prompts/ per the File Layout convention (reference only, superseded by shipped code and log entries); only the live specs 101 (shipped today, booking) and 102 (queued, form builder) remain in the root. No code, no schema, no settings.
+
+Also done, outside git: emptied _to_delete/ (29MB of quarantined stale git locks, lock-rescue tmp objects, pre-renumbering duplicates of prompts 101/102, and two Cowork log notes). Every item was verified disposable first: the two Cowork notes exist verbatim in PROJECT-LOG.md, the old prompt copies differ from 101/102 only in their numbering, and git fsck passes clean without the rescued objects. WHY fsck matters here: a Finder .DS_Store had landed in .git/refs/, which made every fsck report an invalid ref and could have masked real corruption; it is removed and fsck now exits 0, which is also the proof the rescued tmp objects were redundant.
+
+Files touched: 58 renames into docs/archive/prompts/, PROJECT-LOG.md.
+
+Next steps: none. The go-live handoff (service-area zips, Routes key, test booking) is with Cowork and untouched by any of this.
+
+---
+
 ## [2026-08-19 MST] Prompt 101: TopCoat online booking shipped (the Routemize replacement). Dark until Cowork seeds the service-area zips and Dylan flips Booking enabled.
 
 By: Claude Code
