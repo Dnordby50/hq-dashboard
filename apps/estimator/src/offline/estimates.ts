@@ -71,6 +71,11 @@ export type LineItemInput = {
   qty: number;
   unitPrice: number;
   unitCost: number;
+  // 2026-08-20: expected crew hours + square footage on a one-off/add-on
+  // line (per-area custom lines keep theirs on estimate_areas). Optional so
+  // system/area line pushes stay untouched; omitted writes null.
+  estHours?: number | null;
+  sqft?: number | null;
   total: number;
   isOptional: boolean;
   selectedByCustomer: boolean;
@@ -441,6 +446,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       qty: li.qty,
       unit_price: li.unitPrice,
       unit_cost: li.unitCost,
+      est_hours: li.estHours ?? null,
+      sqft: li.sqft ?? null,
       total: li.total,
       is_optional: li.isOptional,
       selected_by_customer: li.selectedByCustomer,

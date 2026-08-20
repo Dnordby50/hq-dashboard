@@ -643,6 +643,10 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-present-dot.on{background:#D8531C}
 .pec-present-jump{background:#22262b;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:9px 10px;font-family:inherit;font-size:.86rem;max-width:220px}
 .pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:92vh;overflow-y:auto}
+.pec-modal-wide{max-width:760px}
+/* Compose-style modals: the action row rides the bottom of the scrollport so
+   Send is reachable without scrolling past the editor. */
+.pec-modal-sticky-actions{position:sticky;bottom:-24px;background:var(--s1);margin:0 -24px -24px;padding:12px 24px 16px;border-top:1px solid var(--border)}
 /* Estimator iframe modal: near-fullscreen shell, zero padding so the PWA owns
    the whole surface. The iframe fills it; the app inside provides its own
    chrome (topbar, Close button that postMessages the dashboard). */
@@ -7955,6 +7959,10 @@ async function openEstimateStartPicker(opts = {}) {
   openModal(`
     <h3>New estimate</h3>
     ${secHead('Contact information', true)}
+    <div class="pec-field" style="position:relative"><label>Find an existing customer or lead</label>
+      <input id="espSearch" placeholder="Search name, phone, or email…" autocomplete="off">
+      <div id="espSearchResults" style="position:absolute;left:0;right:0;top:100%;z-index:60;background:var(--s1,#fff);border:1px solid var(--rd-line,var(--border));border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:250px;overflow-y:auto;display:none;margin-top:2px"></div>
+    </div>
     <div class="pec-field"><label>Contact</label>
       <select id="espContact">
         <option value="">New Contact</option>
@@ -8048,6 +8056,47 @@ async function openEstimateStartPicker(opts = {}) {
     };
     q('#espContact').addEventListener('change', applyContact);
     applyContact();
+
+    // Search bar over the SAME lists the dropdown holds (2026-08-20, Dylan):
+    // 90+ customers made the raw dropdown a scroll hunt. Typing filters
+    // customers and leads by name / phone digits / email; picking a result
+    // just sets the dropdown, so everything downstream (summary, address
+    // prefill, duplicate-estimate check) is the one existing path.
+    const searchBox = q('#espSearch');
+    const resultsEl = q('#espSearchResults');
+    const hideResults = () => { resultsEl.style.display = 'none'; };
+    const renderResults = () => {
+      const term = (searchBox.value || '').trim().toLowerCase();
+      if (term.length < 2) { hideResults(); return; }
+      const digits = term.replace(/\D/g, '');
+      const hit = (name, phone, email) =>
+        String(name || '').toLowerCase().includes(term)
+        || (digits.length >= 3 && String(phone || '').replace(/\D/g, '').includes(digits))
+        || String(email || '').toLowerCase().includes(term);
+      const custHits = customers.filter(c => hit(custLabel(c), c.phone, c.email)).slice(0, 8)
+        .map(c => ({ key: 'cust:' + c.id, name: custLabel(c), sub: [c.phone ? qoFmtPhone(c.phone) : '', c.email, c.billing_city].filter(Boolean).join(' · '), badge: 'Customer' }));
+      const leadHits = leads.filter(l => hit(l.full_name, l.phone, l.email)).slice(0, 8)
+        .map(l => ({ key: 'lead:' + l.id, name: l.full_name || '(no name)', sub: [l.phone ? qoFmtPhone(l.phone) : '', l.email].filter(Boolean).join(' · '), badge: titleCaseValue(l.stage) + ' lead' }));
+      const rows = [...custHits, ...leadHits].slice(0, 10);
+      resultsEl.innerHTML = rows.length ? rows.map(r => `
+        <div data-esp-pick="${esc(r.key)}" style="padding:8px 11px;cursor:pointer;border-top:1px solid var(--rd-line,var(--border));font-size:.84rem">
+          <strong>${esc(r.name)}</strong> <span class="pec-badge" style="font-size:.62rem;margin-left:4px">${esc(r.badge)}</span>
+          ${r.sub ? `<div style="color:var(--muted);font-size:.72rem;margin-top:1px">${esc(r.sub)}</div>` : ''}
+        </div>`).join('')
+        : '<div style="padding:9px 11px;color:var(--muted);font-size:.8rem">No match. Fill in New Contact below.</div>';
+      resultsEl.firstElementChild && (resultsEl.firstElementChild.style.borderTop = 'none');
+      resultsEl.style.display = '';
+      resultsEl.querySelectorAll('[data-esp-pick]').forEach(el => el.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        q('#espContact').value = el.dataset.espPick;
+        applyContact();
+        searchBox.value = '';
+        hideResults();
+      }));
+    };
+    let espSearchTmr = null;
+    searchBox.addEventListener('input', () => { clearTimeout(espSearchTmr); espSearchTmr = setTimeout(renderResults, 150); });
+    searchBox.addEventListener('blur', () => setTimeout(hideResults, 150));
 
     // Address autocomplete (Places), same guarded attach as the appointment
     // form: absent key / offline it is just a text field.
@@ -8653,7 +8702,9 @@ function showCrmRenderError(err, view) {
 // ============================================================
 // Modal helpers
 // ============================================================
-function openModal(html, { onMount, dismissible = false, title = '', closeButton = true } = {}) {
+// wide: true widens the box to 760px (compose-style modals whose content
+// does not fit 520px without burying the action buttons below the fold).
+function openModal(html, { onMount, dismissible = false, title = '', closeButton = true, wide = false } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'pec-modal-bg';
   // Prompt 71 Part E1: a sticky ✕ header on every modal BY DEFAULT (pass
@@ -8664,7 +8715,7 @@ function openModal(html, { onMount, dismissible = false, title = '', closeButton
   const head = closeButton
     ? `<div class="pec-modal-xhead pec-modal-stickyhead"><span style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title ? esc(title) : ''}</span><button type="button" class="pec-modal-xclose" data-pec-modal-x aria-label="Close" title="Close">✕</button></div>`
     : '';
-  wrap.innerHTML = `<div class="pec-modal">${head}${html}</div>`;
+  wrap.innerHTML = `<div class="pec-modal${wide ? ' pec-modal-wide' : ''}">${head}${html}</div>`;
   const xBtn = wrap.querySelector('[data-pec-modal-x]');
   if (xBtn) xBtn.addEventListener('click', () => pecCloseModalWrap(wrap));
   // Backdrop click closes ONLY for info dialogs (no inputs). Data-entry modals
@@ -20592,7 +20643,7 @@ async function renderSettingsEstimates() {
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample', 'accept_celebration_enabled',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
-      'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
+      'estimate_line_generate_enabled', 'estimate_line_polish_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
       'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
       'companycam_name_match_min_score', 'companycam_max_customer_photos',
       'estimate_warranty_enabled', 'estimate_color_chart_enabled',
@@ -20638,6 +20689,8 @@ async function renderSettingsEstimates() {
   // Line editor sheet (prompt 76). Defaults MUST match the estimator's
   // catalog.ts and the migration seeds: true / 700.
   const lsGenOn = (map.estimate_line_generate_enabled || 'true') !== 'false';
+  // Polish (2026-08-20): its own flag, description-cleanup only; default on.
+  const lsPolishOn = (map.estimate_line_polish_enabled || 'true') !== 'false';
   const lsBreak = Number(map.estimator_line_sheet_breakpoint_px) >= 320 ? Number(map.estimator_line_sheet_breakpoint_px) : 700;
   // Autosave (prompt 87 Task D). Default MUST match the migration seed and
   // catalog.ts (true). Deliberately behind Advanced: rule 12's kill switch,
@@ -20778,8 +20831,11 @@ async function renderSettingsEstimates() {
     </div>
     <div class="pec-card">
       <div style="font-weight:700">Line editor</div>
-      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The estimator's per-line editor (prompt 76): tapping a line opens a full-height bottom sheet on phones and a centered window on wide screens; the breakpoint decides where that switch happens. Generate with AI is the one AI button in the editor (writes templated scope, cleans up typed text); turning it off hides the button everywhere while typed descriptions keep working.</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The estimator's per-line editor (prompt 76): tapping a line opens a full-height bottom sheet on phones and a centered window on wide screens; the breakpoint decides where that switch happens. Two separate AI buttons: Polish with AI cleans up a description you typed (grammar and structure only, exclusions and dollars kept verbatim, undoable); Generate with AI writes templated scope and stays off since templates fill at pick time.</div>
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">
+          <input type="checkbox" id="lsSetPolishOn" ${lsPolishOn ? 'checked' : ''}> Polish with AI button on
+        </label>
         <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">
           <input type="checkbox" id="lsSetGenOn" ${lsGenOn ? 'checked' : ''}> Generate with AI button on
         </label>
@@ -21002,6 +21058,7 @@ async function renderSettingsEstimates() {
     if (!Number.isFinite(bp) || bp < 320 || bp > 2000) { showToast('The breakpoint must be between 320 and 2000 pixels.', { ttl: 4000 }); btn.disabled = false; return; }
     try {
       await saveSetting('estimate_line_generate_enabled', $('lsSetGenOn').checked ? 'true' : 'false');
+      await saveSetting('estimate_line_polish_enabled', $('lsSetPolishOn').checked ? 'true' : 'false');
       await saveSetting('estimator_line_sheet_breakpoint_px', bp);
     } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     showToast('Line editor settings saved.');
@@ -33313,17 +33370,20 @@ async function renderEstimateDetail(estimateId) {
     try { await navigator.clipboard.writeText(url); showToast('Estimate link copied', { ttl: 2500 }); }
     catch (_) { window.prompt('Copy this link:', url); }
   });
-  // Split Send (prompt 38): primary = Email + Text, caret = one channel.
-  // "Both" shows both gates before anything sends: text confirm first
-  // (declining quietly downgrades to email only), then the compose; the text
-  // fires only after the email succeeds and skips the second sent-flip.
+  // Split Send (prompt 38, reworked 2026-08-20 per Dylan): the primary
+  // button IS "Email + Text", no confirm in between. The old confirm meant a
+  // plain click (dismissing the dialog) quietly downgraded to email-only,
+  // which is the opposite of what the button says. The caret still offers
+  // one-channel sends for the deliberate cases; missing contact info
+  // degrades with a toast instead of a question; the compose modal remains
+  // the human step before anything actually sends, and the text fires only
+  // after the email succeeds (skipFlip keeps sent-state single-stamp).
   pecWireSplitSend('pecEstSend', {
     email: () => openEstimateSendModal(est),
     text: () => sendEstimateText(est),
     both: async () => {
-      let alsoText = false;
-      if (!est.customer_phone) showToast('No phone on file, the text will be skipped.', { ttl: 4500 });
-      else alsoText = confirm(`Also text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)} after the email? They will get the review-and-sign link with a "Reply STOP to opt out" line.`);
+      const alsoText = !!est.customer_phone;
+      if (!alsoText) showToast('No phone on file, sending by email only.', { ttl: 4500 });
       if (!est.customer_email && alsoText) {
         showToast('No email on file, sending the text only.', { ttl: 4500 });
         const ok = await sendEstimateText(est, { skipConfirm: true });
@@ -33332,6 +33392,7 @@ async function renderEstimateDetail(estimateId) {
       }
       openEstimateSendModal(est, {
         afterSend: alsoText ? () => sendEstimateText(est, { skipConfirm: true, skipGate: true, skipFlip: true }) : null,
+        alsoTextTo: alsoText ? est.customer_phone : null,
       });
     },
   });
@@ -34305,12 +34366,13 @@ async function openEstimateSendModal(est, opts = {}) {
       <div style="color:var(--muted);font-size:.7rem;margin-top:6px;word-break:break-all">Links to ${esc(link)}</div>
     </div>
     <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">Sending makes the customer link live (it 404s until then). The customer can accept and sign, request changes, or decline on that page.</div>
+    ${opts.alsoTextTo ? `<div style="font-size:.76rem;margin-bottom:8px;padding:7px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px">Also texting ${esc(typeof qoFmtPhone === 'function' ? qoFmtPhone(opts.alsoTextTo) : opts.alsoTextTo)} the review-and-sign link right after this email sends (with a Reply STOP line). Use the send button's arrow for email only.</div>` : ''}
     <div class="prod-msg-err" id="estCmpErr" style="min-height:16px"></div>
-    <div class="pec-modal-actions">
+    <div class="pec-modal-actions pec-modal-sticky-actions">
       <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
       <button type="button" class="pec-btn primary" id="estCmpSend" disabled>Loading editor…</button>
     </div>
-  `, { onMount: async modal => {
+  `, { wide: true, onMount: async modal => {
     let quill = null;
     try {
       await ensureQuill();

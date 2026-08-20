@@ -98,16 +98,19 @@ exports.handler = async (event) => {
     return jc(400, { success: false, error: `text is too long (${text.length} chars, max ${MAX_TEXT_CHARS})` });
   }
 
-  // Prompt 94 B4: same server-side gate as pec-estimate-scope, because a
-  // stale cached PWA bundle can still show the button after the prod flip.
-  // Nothing persists here, so a plain refusal is enough.
+  // Server-side gate, because a stale cached PWA bundle can still show the
+  // button after a prod flip. 2026-08-20: this endpoint is POLISH (cleans
+  // text the rep typed), so it now answers to estimate_line_polish_enabled,
+  // NOT the generate flag prompt 94 turned off; pec-estimate-scope (real
+  // generation) keeps the generate gate. Nothing persists here, so a plain
+  // refusal is enough. Missing row reads enabled, matching the UI default.
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/settings?key=eq.estimate_line_generate_enabled&select=value&limit=1`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/settings?key=eq.estimate_line_polish_enabled&select=value&limit=1`, {
       headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
     });
     const rows = res.ok ? await res.json() : [];
     if (String((rows[0] || {}).value || 'true') === 'false') {
-      return jc(200, { success: false, error: 'Generate is turned off in Settings; system templates fill line scopes now.' });
+      return jc(200, { success: false, error: 'Polish is turned off in Settings.' });
     }
   } catch (_) { /* fail open, matching the UI default */ }
 

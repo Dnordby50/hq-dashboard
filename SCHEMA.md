@@ -277,6 +277,8 @@ RLS: enabled · rows: 10
 | qty | numeric | no | 1 |
 | unit_price | numeric | no | 0 |
 | unit_cost | numeric | no | 0 |
+| est_hours | numeric | yes |  |
+| sqft | numeric | yes |  |
 | total | numeric | no | 0 |
 | is_optional | boolean | no | false |
 | selected_by_customer | boolean | no | false |
@@ -285,6 +287,7 @@ RLS: enabled · rows: 10
 
 PK: id
 FK: addon_id → pec_prod_addons.id; estimate_area_id → estimate_areas.id; estimate_id → estimates.id
+Note (2026-08-20): est_hours + sqft are the one-off/add-on line's expected crew hours and square footage (unit_cost is its material budget), the same facts a per-area custom line keeps on estimate_areas (custom_labor_hours / sqft). Recorded for costing honesty, never customer-facing, never priced from. Same migration seeded settings key estimate_line_polish_enabled ('true'): the estimator's Polish with AI button (description cleanup only), separate from estimate_line_generate_enabled which stays 'false'.
 
 ### estimates
 RLS: enabled · rows: 9

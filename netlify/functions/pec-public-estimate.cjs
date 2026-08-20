@@ -420,7 +420,20 @@ function customerDisplay(est) {
     // The bold "Prepared for" line: the company when commercial, else the person.
     name: company || contact || t(est.customer_name) || null,
     address: splitAddress || t(est.customer_address) || null,
+    // 2026-08-20 (Dylan): the customer's contact info renders on the
+    // document too, so the printed/emailed estimate identifies who it is for
+    // the way an invoice header does.
+    phone: fmtPhonePub(est.customer_phone),
+    email: t(est.customer_email) || null,
   };
+}
+
+// Simple US 10-digit render for the public documents (both pages keep their
+// own copy; there is no shared browser util server-side).
+function fmtPhonePub(v) {
+  const d = String(v == null ? '' : v).replace(/\D/g, '');
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  return String(v == null ? '' : v).trim() || null;
 }
 
 function estimatePage(est, brand, opts) {
@@ -729,7 +742,7 @@ function estimatePage(est, brand, opts) {
       </div>
       <div class="pad">
         <div class="grid2">
-          <div><span class="lbl">Prepared for</span><div style="font-weight:700">${esc(who.name || '')}</div>${who.company && who.contact ? `<div style="color:#4b5563;margin-top:2px">Attn: ${esc(who.contact)}</div>` : ''}${who.address ? `<div style="color:#4b5563;margin-top:2px">${esc(who.address)}</div>` : ''}</div>
+          <div><span class="lbl">Prepared for</span><div style="font-weight:700">${esc(who.name || '')}</div>${who.company && who.contact ? `<div style="color:#4b5563;margin-top:2px">Attn: ${esc(who.contact)}</div>` : ''}${who.address ? `<div style="color:#4b5563;margin-top:2px">${esc(who.address)}</div>` : ''}${[who.phone, who.email].filter(Boolean).length ? `<div style="color:#4b5563;margin-top:2px">${esc([who.phone, who.email].filter(Boolean).join(' · '))}</div>` : ''}</div>
           <div><span class="lbl">Estimate</span><div style="color:#4b5563">${esc(invNoTxt)}${est.sent_at ? ' &middot; sent ' + esc(fmtStamp(est.sent_at)) : ''}</div></div>
         </div>
         ${/* Prompt 74 A4: the whole-document scope render is GONE. The scope

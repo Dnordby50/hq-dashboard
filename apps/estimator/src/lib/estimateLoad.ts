@@ -18,6 +18,10 @@ export type LoadedAddonLine = {
   qty: number;
   unitPrice: number;
   unitCost: number;
+  // 2026-08-20: expected crew hours + sq ft on one-off/add-on lines. Null on
+  // rows saved before the columns existed.
+  estHours: number | null;
+  sqft: number | null;
   isOptional: boolean;
   selectedByCustomer: boolean;
 };
@@ -163,7 +167,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       .order('sort_order', { ascending: true }),
     supabase
       .from('estimate_line_items')
-      .select('addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,is_optional,selected_by_customer,sort_order')
+      .select('addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,est_hours,sqft,is_optional,selected_by_customer,sort_order')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
   ]);
@@ -252,6 +256,8 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       qty: Number(li.qty) > 0 ? Number(li.qty) : 1,
       unitPrice: Number(li.unit_price) || 0,
       unitCost: Number(li.unit_cost) || 0,
+      estHours: li.est_hours != null && Number(li.est_hours) > 0 ? Number(li.est_hours) : null,
+      sqft: li.sqft != null && Number(li.sqft) > 0 ? Number(li.sqft) : null,
       isOptional: li.is_optional === true,
       selectedByCustomer: li.selected_by_customer === true,
     }));

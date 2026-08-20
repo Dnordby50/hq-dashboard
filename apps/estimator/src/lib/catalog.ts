@@ -65,6 +65,10 @@ export type PricingConfig = {
   // Line editor sheet (prompt 76). Defaults MUST match the migration seeds:
   // true / 700.
   estimateLineGenerateEnabled: boolean; // estimate_line_generate_enabled: the per-line Generate with AI button on/off
+  // Polish is a SEPARATE flag (2026-08-20): it only cleans text the rep
+  // already typed into a line's description (never authors scope), so it
+  // stays available while generate is off. Default MUST match the seed: true.
+  estimateLinePolishEnabled: boolean; // estimate_line_polish_enabled: the per-line Polish with AI button on/off
   lineSheetBreakpointPx: number;        // estimator_line_sheet_breakpoint_px: below it the line editor is a bottom sheet, above it a centered modal
   syncStuckThreshold: number; // sync_stuck_threshold_attempts: failed attempts before a queued save shows the red not-syncing state (prompt 48)
   syncStuckEscalationEnabled: boolean; // sync_stuck_escalation_enabled: report stuck saves to the office (bell notification) (prompt 48)
@@ -145,6 +149,7 @@ export async function loadCatalog(): Promise<Catalog> {
         'sync_stuck_threshold_attempts',
         'sync_stuck_escalation_enabled',
         'estimate_line_generate_enabled',
+        'estimate_line_polish_enabled',
         'estimator_line_sheet_breakpoint_px',
         'estimate_autosave_enabled',
       ]),
@@ -199,6 +204,7 @@ export async function loadCatalog(): Promise<Catalog> {
       settings['estimator_default_commission_pct'] !== '',
     customerSearchEnabled: String(settings['estimator_customer_search_enabled'] ?? 'true').toLowerCase() !== 'false',
     estimateLineGenerateEnabled: String(settings['estimate_line_generate_enabled'] ?? 'true').toLowerCase() !== 'false',
+    estimateLinePolishEnabled: String(settings['estimate_line_polish_enabled'] ?? 'true').toLowerCase() !== 'false',
     lineSheetBreakpointPx: Math.max(320, num('estimator_line_sheet_breakpoint_px', 700)) || 700,
     // Guard against a zero/negative row making every queued op instantly
     // "broken": anything unparseable or < 1 falls back to 2.

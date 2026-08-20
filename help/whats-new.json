@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-ux-batch-0820",
+    "date": "2026-08-20",
+    "title": "Six estimate fixes: customer search, Polish with AI, and one-click email plus text.",
+    "summary": "New Estimate now has a search bar to find an existing customer or lead by name, phone, or email instead of scrolling the dropdown. A custom one-off line can carry estimated crew hours, a material budget, and square footage. The AI button is back on line descriptions, renamed Polish with AI: it cleans up text you typed and never invents scope. Customer email and phone now print on estimates and invoices. The estimate email window is bigger with the Send button always in reach. And the Send to Customer button now sends email and text together by default; use its arrow for one channel only.",
+    "howto": [
+      "In New Estimate, type a name, phone, or email in the search bar at the top and tap the match; everything fills in like before.",
+      "In a line's editor, type the description and tap Polish with AI to clean it up. Undo brings your exact words back.",
+      "On an estimate, clicking Send to customer now emails and texts together when both are on file. The window tells you the text is coming; the arrow next to the button still offers email only or text only."
+    ]
+  },
+  {
     "id": "online-booking",
     "date": "2026-08-19",
     "title": "Customers can book online through TopCoat.",

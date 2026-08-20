@@ -120,6 +120,12 @@ type AddonForm = {
   qty: string;
   unitPrice: string;
   unitCost: string;
+  // 2026-08-20 (Dylan): a custom/one-off line can carry its expected crew
+  // hours and square footage like a per-area custom line already does
+  // (unitCost above is the material budget). Recorded for costing honesty;
+  // never customer-facing and never priced from.
+  estHours: string;
+  sqft: string;
   optional: boolean;
 };
 
@@ -300,6 +306,12 @@ export default function EstimatorScreen({
   // auto-fire). Flipped off in prod once templates fill at pick time; the
   // code stays for rollback, and the server enforces the same flag.
   const generateOn = config.estimateLineGenerateEnabled !== false;
+  // 2026-08-20 (Dylan): the AI button is BACK on line descriptions, renamed
+  // "Polish with AI", on its own flag. Polish only cleans text the rep typed
+  // (grammar/structure, exclusions and dollars preserved verbatim); it never
+  // authors scope from a template, which is what generateOn still gates and
+  // what prompt 94 turned off in prod.
+  const polishOn = config.estimateLinePolishEnabled !== false;
   // Salesperson default (prompt 47): the edited estimate's pick if still
   // valid, else the member mapped to THIS login (auth_user_id), else blank.
   // Never salespeople[0]: an unmapped login gets a prompt, not a guess. Stays
@@ -468,6 +480,8 @@ export default function EstimatorScreen({
       qty: String(li.qty),
       unitPrice: String(li.unitPrice),
       unitCost: String(li.unitCost),
+      estHours: li.estHours != null ? String(li.estHours) : '',
+      sqft: li.sqft != null ? String(li.sqft) : '',
       optional: li.isOptional,
     })),
   );
@@ -1861,6 +1875,8 @@ export default function EstimatorScreen({
         qty: '1',
         unitPrice: String(a.default_price ?? 0),
         unitCost: String(a.default_cost ?? 0),
+        estHours: '',
+        sqft: '',
         optional: a.is_optional_default,
       },
     ]);
@@ -1871,7 +1887,7 @@ export default function EstimatorScreen({
     const key = uuid();
     setAddonForms((prev) => [
       ...prev,
-      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', optional: false },
+      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', estHours: '', sqft: '', optional: false },
     ]);
     setSheetFocusDesc(false);
     setOpenLine({ kind: 'addon', key });
@@ -2125,14 +2141,14 @@ export default function EstimatorScreen({
   const callPolish = useCallback(async (text: string): Promise<string> => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
-    if (!token) throw new Error('Sign in to use Generate.');
+    if (!token) throw new Error('Sign in to use Polish.');
     const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ text }),
     });
     const out = await res.json().catch(() => ({}));
-    if (!res.ok || !out.success || !out.polished) throw new Error(out.error || `Generate failed (${res.status})`);
+    if (!res.ok || !out.success || !out.polished) throw new Error(out.error || `Polish failed (${res.status})`);
     return String(out.polished);
   }, []);
 
@@ -2146,12 +2162,13 @@ export default function EstimatorScreen({
     setLinePolishError((prev) => ({ ...prev, [i]: '' }));
     const field: 'customScope' | 'lineDescription' = a.isCustom ? 'customScope' : 'lineDescription';
     const text = (a.isCustom ? a.customScope : a.lineDescription).trim();
-    if (!a.isCustom && !text) {
+    if (!a.isCustom && !text && generateOn) {
+      // Empty + template: the WRITER fills it, which is generation, not
+      // polish, so this branch only runs while the generate flag is on
+      // (off in prod since prompt 94; templates fill at pick time anyway).
       const sys = systemTypes.find((s) => s.id === a.systemTypeId);
       const tpl = sys ? ((a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template) : null;
       if (tpl) {
-        // Empty + template: the writer fills it. Pressing Generate IS asking,
-        // so this line's edited flag clears and the refresh may patch it.
         lineDescEditedRef.current.delete(i);
         await regenerateScopeRef.current();
         return;
@@ -2161,9 +2178,7 @@ export default function EstimatorScreen({
     if (!source) {
       setLinePolishError((prev) => ({
         ...prev,
-        [i]: a.isCustom
-          ? 'Type the scope first (or add internal notes for Generate to draft from).'
-          : 'No scope template exists for this system, so nothing writes itself. Type the scope here (or add internal notes for Generate to draft from).',
+        [i]: 'Type the description first (or add internal notes for Polish to draft from).',
       }));
       return;
     }
@@ -2179,7 +2194,7 @@ export default function EstimatorScreen({
     } finally {
       setLinePolishBusy(null);
     }
-  }, [areas, linePolishBusy, systemTypes, callPolish]);
+  }, [areas, linePolishBusy, systemTypes, callPolish, generateOn]);
   const revertLinePolish = useCallback((i: number) => {
     setLinePrePolish((prev) => {
       const undo = prev[i];
@@ -2201,13 +2216,15 @@ export default function EstimatorScreen({
     setAddonPolishError((prev) => ({ ...prev, [key]: '' }));
     const text = f.description.trim();
     if (!text) {
+      // Snippet-fill is the WRITER (generation), so it stays behind the
+      // generate flag; Polish alone only cleans typed text.
       const cat = f.addonId ? addonCatalog.find((x) => x.id === f.addonId) : null;
-      if (cat && cat.scope_snippet && cat.scope_snippet.trim()) {
+      if (generateOn && cat && cat.scope_snippet && cat.scope_snippet.trim()) {
         addonDescEditedRef.current.delete(key);
         await regenerateScopeRef.current();
         return;
       }
-      setAddonPolishError((prev) => ({ ...prev, [key]: 'Type a description first; this line has no catalog scope language to generate from.' }));
+      setAddonPolishError((prev) => ({ ...prev, [key]: 'Type a description first; Polish cleans up what you write.' }));
       return;
     }
     setAddonPolishBusy(key);
@@ -2222,7 +2239,7 @@ export default function EstimatorScreen({
     } finally {
       setAddonPolishBusy(null);
     }
-  }, [addonForms, addonPolishBusy, addonCatalog, callPolish]);
+  }, [addonForms, addonPolishBusy, addonCatalog, callPolish, generateOn]);
   const revertAddonPolish = useCallback((key: string) => {
     setAddonPrePolish((prev) => {
       if (prev[key] == null) return prev;
@@ -2574,6 +2591,8 @@ export default function EstimatorScreen({
           qty,
           unitPrice,
           unitCost: Number(f.unitCost) || 0,
+          estHours: Number(f.estHours) > 0 ? Number(f.estHours) : null,
+          sqft: Number(f.sqft) > 0 ? Number(f.sqft) : null,
           total: r2(qty * unitPrice),
           isOptional: f.optional,
           selectedByCustomer: false,
@@ -3286,16 +3305,16 @@ export default function EstimatorScreen({
                 <span>Scope of work</span>
                 <span className="scope-actions">
                   {prePolish != null && (
-                    <button type="button" className="link" onClick={revertPolish}>Undo generate</button>
+                    <button type="button" className="link" onClick={revertPolish}>Undo polish</button>
                   )}
-                  {config.estimateLineGenerateEnabled !== false && (
+                  {polishOn && (
                     <button type="button" className="link" onClick={polishScope} disabled={polishBusy || !online || !customScope.trim()}>
-                      {polishBusy ? 'Working…' : '✨ Generate with AI'}
+                      {polishBusy ? 'Working…' : '✨ Polish with AI'}
                     </button>
                   )}
                 </span>
               </div>
-              <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Generate (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
+              <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Polish (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
               <textarea
                 className="custom-scope"
                 rows={10}
@@ -3303,8 +3322,8 @@ export default function EstimatorScreen({
                 onChange={(e) => setCustomScope(e.target.value)}
                 placeholder="Describe the work: prep, what gets coated, what is excluded…"
               />
-              {polishError && <p className="warn">Generate failed: {polishError}</p>}
-              {!online && <p className="hint">Generate needs a connection; your typed text saves fine without it.</p>}
+              {polishError && <p className="warn">Polish failed: {polishError}</p>}
+              {!online && <p className="hint">Polish needs a connection; your typed text saves fine without it.</p>}
             </section>
           )}
 
@@ -4011,14 +4030,14 @@ export default function EstimatorScreen({
                     {linePrePolish[i] != null && (
                       <button type="button" className="link" onClick={() => revertLinePolish(i)}>Undo</button>
                     )}
-                    {generateOn && (
+                    {polishOn && (
                       <button
                         type="button"
                         className="link"
                         onClick={() => void generateForLine(i)}
                         disabled={linePolishBusy != null || scopeBusy || !online}
                       >
-                        {linePolishBusy === i || scopeBusy ? 'Working…' : '✨ Generate with AI'}
+                        {linePolishBusy === i || scopeBusy ? 'Working…' : '✨ Polish with AI'}
                       </button>
                     )}
                   </span>
@@ -4062,7 +4081,7 @@ export default function EstimatorScreen({
                     ))}
                   </div>
                 )}
-                {a.isCustom && <p className="hint">Used word for word on the customer proposal; the scope writer never rewrites it. Generate cleans up your typed text and can be undone.</p>}
+                {a.isCustom && <p className="hint">Used word for word on the customer proposal; the scope writer never rewrites it. Polish cleans up your typed text and can be undone.</p>}
                 {!a.isCustom && !tpl && (
                   <p className="warn">
                     {skipReasonByIdx[i] ? `The scope writer skipped this line (${skipReasonByIdx[i]}). ` : `No scope template exists for ${sys?.name ?? 'this system'}, so nothing fills itself in. `}
@@ -4125,7 +4144,9 @@ export default function EstimatorScreen({
               <div className="addon-nums">
                 <label className="field"><span>Qty</span><input inputMode="decimal" value={f.qty} onChange={(e) => setAddonForm(f.key, { qty: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
                 <label className="field"><span>Price $</span><input inputMode="decimal" value={f.unitPrice} onChange={(e) => setAddonForm(f.key, { unitPrice: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
-                <label className="field"><span>Cost $</span><input inputMode="decimal" value={f.unitCost} onChange={(e) => setAddonForm(f.key, { unitCost: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                <label className="field"><span>Material cost $</span><input inputMode="decimal" value={f.unitCost} onChange={(e) => setAddonForm(f.key, { unitCost: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                <label className="field"><span>Est. crew hours</span><input inputMode="decimal" value={f.estHours} onChange={(e) => setAddonForm(f.key, { estHours: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" /></label>
+                <label className="field"><span>Sq ft (optional)</span><input inputMode="decimal" value={f.sqft} onChange={(e) => setAddonForm(f.key, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" /></label>
                 <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, { optional: e.target.checked })} /><span>Optional (customer picks)</span></label>
                 <span className="addon-total">{money2(total)}</span>
               </div>
@@ -4140,14 +4161,14 @@ export default function EstimatorScreen({
                   {addonPrePolish[f.key] != null && (
                     <button type="button" className="link" onClick={() => revertAddonPolish(f.key)}>Undo</button>
                   )}
-                  {generateOn && (
+                  {polishOn && (
                     <button
                       type="button"
                       className="link"
                       onClick={() => void generateForAddon(f.key)}
                       disabled={addonPolishBusy != null || scopeBusy || !online}
                     >
-                      {addonPolishBusy === f.key || scopeBusy ? 'Working…' : '✨ Generate with AI'}
+                      {addonPolishBusy === f.key || scopeBusy ? 'Working…' : '✨ Polish with AI'}
                     </button>
                   )}
                 </span>
@@ -4160,7 +4181,7 @@ export default function EstimatorScreen({
                 onChange={(e) => { addonDescEditedRef.current.add(f.key); setAddonForm(f.key, { description: e.target.value }); }}
                 placeholder="Description (customer sees this)"
               />
-              {hasSnippet && f.description.trim() === '' && (
+              {hasSnippet && f.description.trim() === '' && generateOn && (
                 <p className="hint">Empty: Generate fills it from the catalog scope language on the next scope write, or type your own.</p>
               )}
               {addonPolishError[f.key] && <p className="warn">{addonPolishError[f.key]}</p>}

@@ -1,3 +1,29 @@
+## [2026-08-20 MST] Six estimate fixes from Dylan: customer search on New Estimate, hours/material/sqft on one-off lines, Polish with AI is back, contact info on the documents, a send modal that fits, and Email + Text as the real default
+
+By: Claude Code
+
+Changed: index.html (New Estimate search, send modal sizing, split-send default, Settings Line editor toggle), apps/estimator (EstimatorScreen.tsx, catalog.ts, estimateLoad.ts, offline/estimates.ts) + REBUILT estimator/, netlify/functions/pec-estimate-custom-polish.cjs, pec-public-estimate.cjs, pec-public-invoice.cjs, NEW migration 2026-09-12_estimate_ux_fixes.sql (APPLIED TO PROD), features.json, SCHEMA.md, help/whats-new.json.
+
+**1. Customer search on New Estimate.** The Contact dropdown held 90+ customers with no way to search. A search bar now filters the SAME loaded lists by name, phone digits, or email and picking a result just sets the dropdown, so the summary, address prefill, and the duplicate-estimate check all stay the one existing path. No new query; the modal already loaded both lists.
+
+**2. One-off lines carry hours, material budget, and sqft.** The per-area custom line already had all three (prompt 69); the one-off/add-on line (the sheet whose chip literally reads "custom") only had Qty/Price/Cost. It now has Material cost $ (the relabeled unit_cost), Est. crew hours, and Sq ft, round-tripped through NEW estimate_line_items.est_hours/.sqft. WHY columns and not a UI-only nicety: these are the numbers costing reconciles against later, and a fact that does not survive a reload is not a fact. Migration applied to prod BEFORE this deploy because the estimator's load now selects the columns (an unknown column would 400 every estimate open).
+
+**3. Polish with AI is back, and it is only polish.** Prompt 94 flipped estimate_line_generate_enabled off (templates fill scopes at pick time), which also hid the POLISH path, and that was collateral damage: polish only cleans text the rep typed (grammar/structure; exclusions and dollars verbatim; undoable) and authors nothing. It now has its own flag, estimate_line_polish_enabled (seeded 'true', toggle in Settings > Estimates > Line editor), the three description buttons read "Polish with AI", and pec-estimate-custom-polish.cjs gates on the new key server-side. Real generation (the whole-document writer, template fill-ins through the writer) stays behind the generate flag, still off. The empty-description branches that used to fall through to the WRITER now only do so while generate is on.
+
+**4. Customer email and phone on the documents.** The public estimate's "Prepared for" block and the public invoice's "Bill to" block now carry the customer's phone and email under the address (both pages already loaded the fields; estimates has customer_phone/customer_email, pec_job_ar exposes both). Print views are these same pages, so paper gets it too.
+
+**5. The send-estimate modal fits.** New openModal wide option (760px, additive; every existing caller keeps 520px) plus a sticky action bar (.pec-modal-sticky-actions) pinned to the scrollport bottom, so Send is clickable without scrolling past the editor regardless of screen height.
+
+**6. Email + Text is what the button says, so it is what the button does.** The old "both" path ran a confirm() whose dismissal quietly downgraded to email-only, meaning a plain click on "Send to customer" sent one channel. The confirm is gone: a phone on file means the text leg is on, the compose modal announces it ("Also texting (928) ... right after this email sends") so the no-confirm change stays transparent, missing phone or email degrades with a toast, the caret menu still offers single channels, and the text still fires only after the email succeeds with skipFlip keeping sent-state single-stamp.
+
+**Verified:** estimator build green (tsc --noEmit + vite, PWA rebuilt into estimator/), all inline index.html scripts parse, the three touched functions parse, full npm test suite green (27 files), migration verified live (2 columns + the seed) before commit.
+
+Files touched: see Changed.
+
+Next steps: none for this batch. Booking go-live (prompt 101 handoff) remains with Cowork.
+
+---
+
 ## [2026-08-19 MST] Housekeeping: shipped prompt specs archived, the _to_delete quarantine emptied, a stray .DS_Store unbroke git fsck
 
 By: Claude Code

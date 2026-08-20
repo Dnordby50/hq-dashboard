@@ -433,7 +433,14 @@ function invoicePage(row, brand, payments, opts) {
               : (ask.mode === 'none' && dueNet > 0.005 ? `<div class="duebox" style="background:#f8fafc;border-color:#cbd5e1">No payment is due right now. Your payment schedule is below.</div>` : ''))
           : (dueNet > 0.005 ? `<div class="duebox">A payment of ${usd(dueNet)} is due. See payment options below.</div>` : '')}
         <div class="grid2">
-          <div><div class="lbl">Bill to</div><div style="font-weight:700">${esc(row.customer_name || '')}</div><div style="color:#4b5563;margin-top:2px">${esc(billTo)}</div></div>
+          <div><div class="lbl">Bill to</div><div style="font-weight:700">${esc(row.customer_name || '')}</div><div style="color:#4b5563;margin-top:2px">${esc(billTo)}</div>${(() => {
+            // 2026-08-20 (Dylan): the customer's phone/email render on the
+            // invoice like any bill-to block. pec_job_ar already carries both.
+            const d = String(row.customer_phone == null ? '' : row.customer_phone).replace(/\D/g, '');
+            const ph = d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(row.customer_phone || '').trim();
+            const line = [ph, String(row.customer_email || '').trim()].filter(Boolean).join(' · ');
+            return line ? `<div style="color:#4b5563;margin-top:2px">${esc(line)}</div>` : '';
+          })()}</div>
           <div><div class="lbl">Job address</div><div style="color:#4b5563">${esc(row.address || billTo)}</div>${dateLine ? `<div style="color:#4b5563;font-size:13px;margin-top:4px">${dateLine}</div>` : ''}</div>
           ${termsLine ? `<div><div class="lbl">Terms</div><div style="color:#4b5563;font-weight:600">${termsLine}</div></div>` : ''}
         </div>
