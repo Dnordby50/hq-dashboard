@@ -26,6 +26,66 @@ Printed in chat as a standalone prompt: seed the service-area zips (get the list
 
 ---
 
+## [2026-08-19 MST] Morning verification for prompts 97 and 98: all three schedules fired, but the follow-up rank wrote ZERO rows again (so the bug is in the shared engine, not the HTTP twin), the Slack digest has no webhook to post to, and the lead re-score correctly had nothing eligible yet.
+
+By: Cowork
+
+Changed: no code, no schema, no settings. Read-only verification. PROJECT-LOG.md.
+
+**Heartbeats: all three fresh (task 5 of both handoffs).**
+
+| function | last_ok_at (UTC) | AZ | age at check |
+|---|---|---|---|
+| pec-followup-rank | 2026-08-19 13:15:30 | 06:15 | 3h30m |
+| pec-followup-digest | 2026-08-19 16:45:21 | 09:45 | 10s |
+| pec-lead-score-runner | 2026-08-19 15:30:38 | 08:30 | 1h15m |
+
+Every schedule fired on time. The digest heartbeat is seconds old because that function ticks every 15 minutes and gates internally on `followup_digest_time`; the stamp proves the schedule, not a post.
+
+---
+
+## PROMPT 98
+
+**`select count(*) from pec_followup_ranks` = 0, again, after the 06:15 nightly ran.**
+
+This is the answer to the question yesterday's entry left open. The zero-subject bug is NOT specific to the on-demand HTTP twin: the schedule-declared `pec-followup-rank` hit it too, stamped a successful heartbeat, and wrote nothing. Both callers go through `runFollowupRank` in `_pec-followup.cjs`, so the fault is in the shared engine (gather or membership), not in either entry point. That narrows the search and rules out the "maybe it is a twin-only wiring problem" branch.
+
+Yesterday's evidence stands unchanged: the deployed CLIENT mirror on the same commit renders 5 due plus 1 cold, and an independent SQL reconstruction of last-human-touch agrees with the client. The server-side engine is the outlier. First instrumentation is still the one line logging `estimates.length` and each log array's length at the top of `computeQueue`.
+
+**Task 3, the opener audit: STILL BLOCKED.** No rank rows means no stored openers, so acceptance criterion 5 (every opener grounded in its SalesAsk visit) cannot be checked. The queue continues to serve the client-side deterministic fallback copy, which is identical for every customer apart from name and price. Two verbatim examples are in yesterday's entry.
+
+**Task 3b, the Slack digest: nothing posted, and it CANNOT post.** A Slack search across public and private channels including bot messages, for the digest's content and time window, returns no results. The cause is upstream of the code: **the prescottepoxy site has no SLACK_OFFICE_WEBHOOK and no SLACK_LEADS_WEBHOOK environment variable at all** (full env-var list read 2026-08-18; the only integration secrets present are Anthropic, BusyBusy, CompanyCam, Google OAuth, MCP, Sheets, Quo, Resend, SalesAsk, Stripe, Supabase and the BusyBusy Zapier hook). So the digest is a logged no-op by construction, exactly as the handoff's fallback wording predicted, and it will stay one until someone sets that variable in Netlify.
+
+Worth stating plainly because it affects two features: `pec-lead-intake`'s new-lead Slack alert (prompt 73) has the same dependency and is therefore also silently dark. Neither is broken code; both are waiting on one env var.
+
+The "did a digest go out claiming nothing was due while five estimates were due" risk could not materialize today, since nothing could be sent. It becomes live the moment the webhook is set while ranks are still empty, so **set the webhook AFTER the rank bug is fixed, not before.**
+
+---
+
+## PROMPT 97
+
+**The nightly re-score ran and scored zero leads. That is correct behavior, not a second bug.** Yesterday's backfill stamped all 16 open leads between 03:36 and 03:40 UTC. The 08:30 AZ run started at 15:30:38 UTC, roughly 11.9 hours later, and the runner skips anything scored within the last 20 hours. Every candidate was inside that window, so the pass had nothing eligible.
+
+Consequence for the acceptance criterion: **the freshness comparison cannot be made today.** The first nightly run with eligible leads is 2026-08-20 at 08:30 AZ, when the backfill stamps will be about 29 hours old. Nothing was hand-refreshed, so that comparison stays honest and available tomorrow.
+
+**What DID prove itself, on a real lead, is Part A (the intake kick).** A live Angi lead, **Mattie Magonigal**, was created at 15:12:20 UTC and scored **58** at 15:12:38, eighteen seconds later, with an `ai_analysis` lead_event at 15:12:39. Her timeline reads `created@15:12:21, stage_change@15:12:28, ai_analysis@15:12:39, note@15:12:59`. Before prompt 97 she would have sat at null until a human pressed Refresh. Open leads are now 17 with **unscored = 0**, so the invariant survives a new arrival.
+
+**Minor defect found, not fixed.** Mattie's first-ever score wrote **no `score_band_changed` event**. The prompt-97 entry states that a first-ever score counts as a band move (`from_band` null) and is "the one row that records when scoring began". The ten most recent `score_band_changed` rows are all from yesterday's backfill, tagged `via: manual_run`, and stop at 03:40:16; there is nothing for 15:12. So the runner and the manual path write the row and the INTAKE path does not, which means every lead arriving from now on loses its scoring-started marker. Small, but it is exactly the provenance the timeline was supposed to carry.
+
+---
+
+Files touched: PROJECT-LOG.md.
+
+Handoff to Claude Code:
+1. The follow-up rank engine writes zero rows from BOTH callers. Fix the shared path in `_pec-followup.cjs`; the instrumentation line above settles the hypothesis in one invocation.
+2. The intake scoring path skips the first-ever `score_band_changed` event (Mattie Magonigal, lead 59475da8, 2026-08-19 15:12). Make the kick write it like the runner does.
+
+Handoff to Dylan:
+1. Set `SLACK_OFFICE_WEBHOOK` in Netlify if you want the morning digest and the new-lead alerts. Do it after the rank fix lands, so the first digest you ever receive is not an empty one.
+2. Your first live lead through the new scoring path (Mattie Magonigal, Angi) arrived scored at 58 within 18 seconds, with no human touch. That half of prompt 97 is working in production.
+
+---
+
 ## [2026-08-19 MST] Appointment form now captures and requires the customer's email and address when booking a quote, and completes the profile in one save
 
 By: Claude Code
