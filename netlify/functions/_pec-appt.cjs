@@ -54,6 +54,28 @@ const apptTimeStr = (iso) => fmtPhx(iso, { hour: 'numeric', minute: '2-digit' })
 // customer no matter what was typed into the rules editor.
 const scrubDashes = (s) => String(s == null ? '' : s).replace(/\s*[—–]\s*/g, ', ');
 
+// Prompt 101: an online booking's confirmations and reminders carry the
+// customer's private manage link (/book/manage/<token>). Appended ONLY for
+// rows that carry booking_manage_token, so every pre-existing caller's
+// output is byte-identical (the add-a-parameter-with-a-default contract in
+// the prompt's do-not-touch list, honored as add-a-column-gated-branch).
+// Template text is a setting (booking_manage_link_text); one read per run
+// via the caches object the reminder pass already threads through.
+const BOOKING_SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
+async function bookingManageLine(sb, caches, appt) {
+  if (!appt || !appt.booking_manage_token) return '';
+  if (caches.manageTpl === undefined) {
+    try {
+      const rows = await sb('GET', '/settings?key=eq.booking_manage_link_text&select=value&limit=1');
+      caches.manageTpl = (Array.isArray(rows) && rows[0] && String(rows[0].value || '').trim())
+        || 'Need to change it? Reschedule or cancel here: {link}';
+    } catch (_) {
+      caches.manageTpl = 'Need to change it? Reschedule or cancel here: {link}';
+    }
+  }
+  return caches.manageTpl.replace('{link}', `${BOOKING_SITE_URL}/book/manage/${appt.booking_manage_token}`);
+}
+
 function renderTemplate(tpl, ctx) {
   return scrubDashes(tpl || '')
     .replace(/\{customer_first\}/g, ctx.customerFirst || 'there')
@@ -141,8 +163,10 @@ async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches, se
   // it; select('*') simply lacks the column pre-migration, so this is a
   // clean no-op until 2026-07-21_appointment_customer_notes.sql lands.
   const jobNote = String(appt.customer_notes || '').trim();
+  const manageLine = await bookingManageLine(sb, caches, appt);
   const body = renderTemplate(rule.message_template, ctx)
-    + (jobNote ? '\n\n' + scrubDashes(jobNote) : '');
+    + (jobNote ? '\n\n' + scrubDashes(jobNote) : '')
+    + (manageLine ? '\n\n' + scrubDashes(manageLine) : '');
   const started = new Date(appt.start_at) <= now;
 
   if (wantSms) {

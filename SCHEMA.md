@@ -656,10 +656,12 @@ RLS: enabled · rows: 0
 | salesask_sync_hash | text | yes |  |
 | google_recurring_event_id | text | yes |  |
 | google_readonly_reason | text | yes |  |
+| booking_manage_token | text | yes |  |
+| booking_request_id | uuid | yes |  |
 
 PK: id
 FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
-Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google / routemize. Unique (google_event_id) where not null; unique (routemize_appt_id) where not null (the Routemize intake idempotency + lookup key; routemize_appt_id = external Routemize appointment id, set when source = 'routemize'). notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google). Prompt 96: google_recurring_event_id = Google's recurringEventId when the row is an expanded recurring instance (the push patches the instance id only, never the series); google_readonly_reason non-null = an imported event TopCoat must not write back (calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit), computed at pull time, rendered read-only in the UI straight off the column. source='google' rows never trigger customer-facing automation (reminders, bell, stage moves, sold-on-site).
+Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google / routemize / booking (prompt 101: 'booking' = the TopCoat /book public form; booking_manage_token, unique where not null, is the customer's private reschedule/cancel key and dies when the appointment ends; booking_request_id ties back to the pec_booking_requests audit row). Unique (google_event_id) where not null; unique (routemize_appt_id) where not null (the Routemize intake idempotency + lookup key; routemize_appt_id = external Routemize appointment id, set when source = 'routemize'). notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google). Prompt 96: google_recurring_event_id = Google's recurringEventId when the row is an expanded recurring instance (the push patches the instance id only, never the series); google_readonly_reason non-null = an imported event TopCoat must not write back (calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit), computed at pull time, rendered read-only in the UI straight off the column. source='google' rows never trigger customer-facing automation (reminders, bell, stage moves, sold-on-site).
 
 ### pec_bonus_payouts
 RLS: enabled · rows: 16
@@ -679,6 +681,95 @@ RLS: enabled · rows: 16
 
 PK: bonus_id
 FK: bonus_id → pec_prod_job_bonuses.id
+
+### pec_booking_forms
+RLS: enabled · rows: 1 (seeded 'pec')
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| slug | text | no |  |
+| brand | text | no | 'PEC' |
+| name | text | no |  |
+| active | boolean | no | true |
+| headline | text | yes |  |
+| intro_text | text | yes |  |
+| success_message | text | yes |  |
+| appt_types | jsonb | no | '[]' |
+| questions | jsonb | no | '[]' |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id · Unique: slug
+Note (prompt 101): one row per public booking form; FTP is a future row, not a refactor. appt_types = [{key,label,duration_minutes}] (which types the form offers and their durations). questions = the editable question set [{id,label,type,required,routing,options?,help?,maps_to?}], type in short_text/long_text/choice/yes_no, routing in customer/internal/drop mirroring routemize_answer_routing; maps_to 'lead_source' feeds lead attribution. Edited via the JSON editor behind Advanced on Settings > Appointments > Online booking until the prompt-102 visual builder ships; updated_at is the optimistic-concurrency anchor. RLS: staff all-verbs (is_admin_staff); the public endpoint reads with the service role.
+
+### pec_booking_requests
+RLS: enabled · rows: grows with every submission attempt
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| form_id | uuid | yes |  |
+| status | text | no |  |
+| name | text | yes |  |
+| phone | text | yes |  |
+| email | text | yes |  |
+| address_line1 | text | yes |  |
+| address_city | text | yes |  |
+| address_state | text | yes |  |
+| address_zip | text | yes |  |
+| place_id | text | yes |  |
+| in_area | boolean | yes |  |
+| requested_start | timestamptz | yes |  |
+| appointment_id | uuid | yes |  |
+| lead_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
+| answers | jsonb | yes |  |
+| sms_consent | boolean | no | false |
+| sms_consent_disclosure | text | yes |  |
+| ip_hash | text | yes |  |
+| user_agent | text | yes |  |
+| error_text | text | yes |  |
+| created_at | timestamptz | no | now() |
+
+PK: id
+FK: form_id → pec_booking_forms.id; appointment_id → pec_appointments.id (on delete set null). lead_id/customer_id carry NO FK (the appointments convention).
+Indexes: (created_at desc); (ip_hash, created_at desc); (status, created_at desc)
+Note (prompt 101): EVERY submission attempt, the "are we losing bookings?" audit trail and the rate-limit source. status check: booked / out_of_area / rejected / error; error_text doubles as the reject reason (honeypot / too_fast / rate_limit / duplicate / slot_taken). IMPORTANT for client code: ip_hash is NOT granted to authenticated — the table grant enumerates every column except it, so a staff read MUST name columns; .select('*') is a Postgres permission error by design. Service-role writes only; staff select via is_admin_staff.
+
+### pec_booking_service_areas
+RLS: enabled · rows: 0 until Cowork seeds the real zip list
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| form_id | uuid | no |  |
+| zip | text | yes |  |
+| city | text | yes |  |
+| active | boolean | no | true |
+| note | text | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: form_id → pec_booking_forms.id (on delete cascade)
+Unique: (form_id, zip) — NULL zips (city-only rows) stay distinct. CHECK: zip or city must be present.
+Note (prompt 101): the booking allowlist (zip match first, then case-insensitive city). An EMPTY allowlist renders the public page as "almost ready", never as everyone-out-of-area. Edited from Settings > Appointments > Online booking > Advanced (bulk zip paste supported). Staff all-verbs RLS.
+
+### pec_drive_time_cache
+RLS: enabled · rows: cache, service-role only
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| origin_key | text | no |  |
+| dest_key | text | no |  |
+| minutes | numeric | yes |  |
+| meters | numeric | yes |  |
+| fetched_at | timestamptz | no | now() |
+
+PK: id · Unique: (origin_key, dest_key)
+Note (prompt 101): memoized Google Routes results so one booking session costs at most one computeRouteMatrix call. Keys are booking-availability addrKey normalizations ('__home__' = the home base). ZERO policies on purpose (default deny, the google-tokens posture): it is state, not data anyone browses, and per rule 12 it gets no Settings control. TTL enforced at read time (booking_drive_cache_ttl_days).
 
 ### pec_brand_identity
 RLS: enabled · rows: 1
@@ -2213,7 +2304,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 140 (live count 2026-08-17, after the radar and quo_number_brand_map migrations)
+RLS: enabled · rows: 184 (live count 2026-08-19, after the prompt-101 online-booking migration)
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -2224,6 +2315,7 @@ RLS: enabled · rows: 140 (live count 2026-08-17, after the radar and quo_number
 
 PK: id
 Trigger: settings_touch_updated_at (BEFORE INSERT OR UPDATE, sets updated_at := now(); the trigger is the ONLY writer, there is no column default). **Do NOT backfill updated_at: a NULL means the row has not been written since the 2026-08-16 prompt-79 migration ran, and that NULL is the audit signal the column exists to provide.** Row-count note: this block previously read 95; a live count on 2026-08-08 (pre-migration) returned 97, so the documented number had drifted by 2 (the live schema wins); 98 after the settings_rail_breakpoint_px seed.
+Keys added 2026-08-19 (prompt 101), Settings > Appointments 'Online booking' card: booking_enabled ('false' until the service area is seeded; front-of-card with the booking link/embed control) and behind Advanced booking_url ('' ; the drip {booking_link} token source, renamed from routemize_booking_url which getBookingUrl still reads as fallback; auto-filled with /book on first enable), booking_working_hours (JSON per weekday, Phoenix), booking_slot_granularity_minutes ('30'), booking_min_notice_minutes ('120'), booking_horizon_days ('30'), booking_buffer_min/max/default_minutes ('20'/'90'/'30'), booking_drive_time_enabled ('true'), booking_routes_max_origins_per_request ('25'), booking_routes_timeout_ms ('4000'), booking_drive_cache_ttl_days ('30'), booking_home_base_address (''), booking_rate_limit_per_hour ('5'), booking_min_fill_seconds ('2'), booking_duplicate_window_hours ('24'), booking_sms_disclosure (TCPA text), booking_manage_link_text, plus routemize_intake_enabled ('true'; 'false' turns pec-appt-intake into a logged 200 no-op) and the ops pair ops_check_booking_out_of_area ('true') / ops_booking_days ('7'). Inserted insert-only. Settings 162 rows to 184 (live count verified 2026-08-19 post-apply). Same migration added the SECURITY DEFINER function book_appointment_slot (advisory-lock booking write, EXECUTE service-role only).
 Keys added 2026-08-16 (prompt 94), Settings > Estimates: sold_on_site_enabled ('true', front-of-card), sold_on_site_grace_minutes ('120', front-of-card), and behind that card's Advanced: sold_on_site_appt_types ('on_site_estimate', comma-separated) and sold_on_site_lookback_hours ('0'). Read at accept time by pec-public-estimate.cjs and the dashboard mirror. Same migration DATA-FLIPPED estimate_line_generate_enabled to 'false' (prompt 94 B4: templates fill line scopes at pick time; pec-estimate-scope.cjs and pec-estimate-custom-polish.cjs now check this key server-side and refuse cleanly when 'false'). Settings 123 rows to 127.
 Keys added 2026-08-16 (prompt 93), Settings > Estimates, all read SERVER-side by pec-public-estimate.cjs: estimate_warranty_enabled ('true'; the pinned warranty document on customer estimates, front-of-card), estimate_color_chart_enabled ('true'; catalog-generated color charts, front-of-card), and behind that card's Advanced: estimate_color_chart_min_products ('6'; a slot charts only when this many of its eligible active products have an image_url, the no-allowlist coverage floor), estimate_color_chart_max_swatches ('60'; per-chart cap, selected products never dropped), estimate_color_chart_print_mode ('omit'; ?print=1 drops the charts, 'cap' keeps them capped). Inserted insert-only. Settings 118 rows to 123.
 Keys added 2026-08-16 (prompt 92): schedule_mobile_breakpoint_px ('720'; below this viewport width the Job Schedule 3-week view renders as the one-week swipe grid; Settings > General under Schedule / Production; read once at page load, missing row = 720) and four payment-bell keys in Settings > Invoicing, all read SERVER-side (pec-stripe-webhook.cjs per event; the log_payment_recorded RPC for staff-recorded): payment_notifications_enabled ('true'; master switch for all four payment bells, 'false' is a silent no-op that never affects the payment path or the webhook response), payment_notify_min_amount ('0'; payments under this dollar amount record normally but do not ring), payment_notify_staff_recorded ('true'; item-4-only kill switch behind Advanced), payment_notify_ach_failed_priority ('high'; the priority written on a payment_failed_ach row, behind Advanced). Inserted insert-only. Settings live count 118.

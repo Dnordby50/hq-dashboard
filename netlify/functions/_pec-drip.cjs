@@ -207,15 +207,18 @@ function renderFixedTemplate(tpl, ctx = {}) {
   return s || null;
 }
 
-// The booking link lives in ONE settings row (routemize_booking_url, rule 12:
-// editable in Settings > Drips, never a deploy). Empty / missing / unreadable
-// all read as "no link", which the template conditional and the render prompt
-// both degrade around.
+// The booking link lives in ONE settings row (rule 12: editable in Settings,
+// never a deploy). Prompt 101 renamed the key routemize_booking_url ->
+// booking_url when TopCoat's own /book page replaced Routemize; the old key
+// is still read as a fallback so nothing breaks if only it holds a value.
+// Empty / missing / unreadable all read as "no link", which the template
+// conditional and the render prompt both degrade around.
 async function getBookingUrl(sb) {
   try {
-    const rows = await sb('GET', `/settings?key=eq.routemize_booking_url&select=value&limit=1`);
-    const v = Array.isArray(rows) && rows[0] ? String(rows[0].value || '').trim() : '';
-    return v || null;
+    const rows = await sb('GET', `/settings?key=in.(booking_url,routemize_booking_url)&select=key,value`);
+    const map = {};
+    for (const r of (Array.isArray(rows) ? rows : [])) map[r.key] = String(r.value || '').trim();
+    return map.booking_url || map.routemize_booking_url || null;
   } catch (_) { return null; }
 }
 

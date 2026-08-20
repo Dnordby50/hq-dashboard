@@ -21281,7 +21281,7 @@ function openPresentationSectionModal(existing, brandKey, allSections) {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes, gcalRes, gcSetRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes, gcalRes, gcSetRes, bkSetRes, bkFormRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
     supabase.from('settings').select('key,value').like('key', 'salesask_%'),
@@ -21293,6 +21293,9 @@ async function renderSettingsAppointments() {
     // service-role only) and the pull-window knobs.
     supabase.from('pec_member_google_calendars_v').select('*').order('summary'),
     supabase.from('settings').select('key,value').in('key', ['google_pull_window_days_past', 'google_pull_window_days_future', 'google_pull_max_pages_per_calendar', 'google_imported_default_appt_type', 'google_pull_include_all_day', 'google_pull_include_declined']),
+    // Prompt 101: the Online booking card's knobs + the PEC form row.
+    supabase.from('settings').select('key,value').or('key.like.booking_%,key.eq.routemize_intake_enabled'),
+    supabase.from('pec_booking_forms').select('*').eq('slug', 'pec').maybeSingle(),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
   // Multi-calendar sync rows keyed by member (empty pre-migration: the card
@@ -21344,6 +21347,26 @@ async function renderSettingsAppointments() {
   } catch (_) { /* falls back to the default below */ }
   if (!rsMap || !Object.keys(rsMap).length) rsMap = { ...RS_DEFAULT };
   const RS_STATUSES = [['scheduled', 'Scheduled'], ['canceled', 'Canceled'], ['completed', 'Completed']];
+
+  // Online booking state (prompt 101). bkMigrated false = the migration has
+  // not landed; the card renders its run-the-migration empty state.
+  const bkSettings = {};
+  for (const s of ((bkSetRes && bkSetRes.data) || [])) bkSettings[s.key] = s.value;
+  const bkMigrated = !(bkFormRes && bkFormRes.error);
+  const bkForm = (bkFormRes && !bkFormRes.error && bkFormRes.data) || null;
+  let bkAreas = [];
+  if (bkForm) {
+    const ar = await withFreshSession(() => supabase.from('pec_booking_service_areas').select('*').eq('form_id', bkForm.id).order('zip'), { label: 'booking-areas' });
+    if (!ar.error) bkAreas = ar.data || [];
+  }
+  const bkUrl = (bkSettings.booking_url || '').trim() || (location.origin + '/book');
+  const bkEmbedSnippet = `<iframe src="${bkUrl}?embed=1" style="width:100%;border:0;min-height:760px" loading="lazy" title="Book your free estimate"></iframe>`;
+  let bkHours = { mon: ['08:00', '17:00'], tue: ['08:00', '17:00'], wed: ['08:00', '17:00'], thu: ['08:00', '17:00'], fri: ['08:00', '17:00'], sat: null, sun: null };
+  try {
+    const parsed = JSON.parse(bkSettings.booking_working_hours || '');
+    if (parsed && typeof parsed === 'object') bkHours = { ...bkHours, ...parsed };
+  } catch (_) { /* the shipped default above */ }
+  const BK_DAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
 
   const whenLabel = (r) => {
     if (r.on_book) return 'On booking';
@@ -21477,6 +21500,124 @@ async function renderSettingsAppointments() {
     </div>
 
     <div class="pec-card">
+      <h3 style="margin:0 0 8px">Online booking</h3>
+      ${!bkMigrated ? '<div class="pec-empty">Run the 2026-09-11_prompt101_topcoat_booking.sql migration to enable online booking.</div>' : !bkForm ? '<div class="pec-empty">The PEC booking form row is missing. Re-run the prompt 101 migration seed.</div>' : `
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        Customers book their own estimate visits at the link below: the form checks the service
+        area, shows real openings from the appointment calendar (Google events block time too),
+        spaces visits by drive time, and sends the confirmation with a private reschedule link.
+        This is TopCoat's replacement for Routemize.
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="bkEnabled" style="width:auto" ${bkSettings.booking_enabled === 'true' ? 'checked' : ''}>
+        <strong>Booking enabled</strong> <span style="color:var(--muted);font-size:.76rem">(off shows a call-us page; nothing books)</span></label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <input readonly value="${esc(bkUrl)}" style="max-width:320px;font-size:.8rem" id="bkUrlShow">
+        <button class="pec-btn sm" id="bkCopyLink">Copy link</button>
+        <button class="pec-btn ghost sm" id="bkCopyEmbed" title="One line to paste into the website. The frame sizes itself.">Copy embed code</button>
+        <a class="pec-btn ghost sm" href="${esc(bkUrl)}" target="_blank" rel="noopener">Open</a>
+        <span id="bkCopyStatus" style="font-size:.72rem;color:var(--muted)"></span>
+      </div>
+      ${!bkAreas.filter(a => a.active).length ? '<div style="font-size:.78rem;color:#b45309;font-weight:600;margin-bottom:6px">The service area is empty. Add zips under Advanced before enabling, or every visitor lands on the call-us page.</div>' : ''}
+      <details>
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Working hours (Arizona time)</div>
+        ${BK_DAYS.map(([k, lbl]) => `
+        <div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:.82rem">
+          <label style="width:96px;margin:0;display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;cursor:pointer">
+            <input type="checkbox" style="width:auto" data-bk-day-open="${k}" ${Array.isArray(bkHours[k]) ? 'checked' : ''}>${lbl}</label>
+          <input type="time" data-bk-day-start="${k}" value="${esc(Array.isArray(bkHours[k]) ? bkHours[k][0] : '08:00')}" style="max-width:120px;font-size:.8rem" ${Array.isArray(bkHours[k]) ? '' : 'disabled'}>
+          <span style="color:var(--muted)">to</span>
+          <input type="time" data-bk-day-end="${k}" value="${esc(Array.isArray(bkHours[k]) ? bkHours[k][1] : '17:00')}" style="max-width:120px;font-size:.8rem" ${Array.isArray(bkHours[k]) ? '' : 'disabled'}>
+        </div>`).join('')}
+
+        <div class="pec-row-2" style="max-width:460px;margin-top:10px">
+          <div class="pec-field"><label>Slot every (minutes)</label>
+            <input type="number" min="10" step="5" data-bk-set="booking_slot_granularity_minutes" value="${esc(bkSettings.booking_slot_granularity_minutes || '30')}"></div>
+          <div class="pec-field"><label>Minimum notice (minutes)</label>
+            <input type="number" min="0" step="15" data-bk-set="booking_min_notice_minutes" value="${esc(bkSettings.booking_min_notice_minutes || '120')}"></div>
+        </div>
+        <div class="pec-row-2" style="max-width:460px">
+          <div class="pec-field"><label>Horizon (days out)</label>
+            <input type="number" min="1" step="1" data-bk-set="booking_horizon_days" value="${esc(bkSettings.booking_horizon_days || '30')}"></div>
+          <div class="pec-field"><label>Home base address</label>
+            <input data-bk-set="booking_home_base_address" value="${esc(bkSettings.booking_home_base_address || '')}" placeholder="Shop address for first/last drive"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Drive-time spacing</div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:4px 0;cursor:pointer">
+          <input type="checkbox" id="bkDriveEnabled" style="width:auto" ${bkSettings.booking_drive_time_enabled !== 'false' ? 'checked' : ''}>
+          Measure real drive time (Google Routes API; needs GOOGLE_ROUTES_API_KEY in Netlify)</label>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:520px">
+          <div class="pec-field"><label>Buffer floor (min)</label>
+            <input type="number" min="0" step="5" data-bk-set="booking_buffer_min_minutes" value="${esc(bkSettings.booking_buffer_min_minutes || '20')}"></div>
+          <div class="pec-field"><label>Buffer cap (min)</label>
+            <input type="number" min="0" step="5" data-bk-set="booking_buffer_max_minutes" value="${esc(bkSettings.booking_buffer_max_minutes || '90')}"></div>
+          <div class="pec-field"><label>Flat fallback (min)</label>
+            <input type="number" min="0" step="5" data-bk-set="booking_buffer_default_minutes" value="${esc(bkSettings.booking_buffer_default_minutes || '30')}"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:520px">
+          <div class="pec-field"><label>Max origins/request</label>
+            <input type="number" min="1" step="1" data-bk-set="booking_routes_max_origins_per_request" value="${esc(bkSettings.booking_routes_max_origins_per_request || '25')}"></div>
+          <div class="pec-field"><label>API timeout (ms)</label>
+            <input type="number" min="500" step="500" data-bk-set="booking_routes_timeout_ms" value="${esc(bkSettings.booking_routes_timeout_ms || '4000')}"></div>
+          <div class="pec-field"><label>Cache TTL (days)</label>
+            <input type="number" min="1" step="1" data-bk-set="booking_drive_cache_ttl_days" value="${esc(bkSettings.booking_drive_cache_ttl_days || '30')}"></div>
+        </div>
+
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Service area (zips and cities)</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">
+          An address books only when its zip (first) or city (second, case-insensitive) is on this
+          list and active. Everyone else is offered the we-will-call-you form and lands as an
+          out-of-area lead.</div>
+        <div id="bkAreaRows">
+          ${bkAreas.map(a => `
+          <div style="display:flex;gap:8px;align-items:center;padding:4px 0" data-bk-area="${esc(a.id)}">
+            <input data-bka-zip value="${esc(a.zip || '')}" placeholder="Zip" style="max-width:100px;font-size:.8rem">
+            <input data-bka-city value="${esc(a.city || '')}" placeholder="City" style="max-width:170px;font-size:.8rem">
+            <input data-bka-note value="${esc(a.note || '')}" placeholder="Note" style="max-width:170px;font-size:.8rem">
+            <label style="margin:0;display:flex;align-items:center;gap:5px;font-weight:400;text-transform:none;font-size:.74rem;cursor:pointer">
+              <input type="checkbox" data-bka-active style="width:auto" ${a.active ? 'checked' : ''}>Active</label>
+            <button class="pec-btn ghost sm danger" data-bka-del>Remove</button>
+          </div>`).join('') || '<div style="font-size:.76rem;color:var(--muted)">No service area yet.</div>'}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+          <button class="pec-btn ghost sm" id="bkAreaAdd">+ Add row</button>
+          <button class="pec-btn ghost sm" id="bkAreaBulk" title="Paste a list of zips separated by spaces, commas, or new lines.">Paste a zip list</button>
+          <span id="bkAreaStatus" style="font-size:.72rem;color:var(--muted)"></span>
+        </div>
+
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Form questions (JSON)</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">
+          Each question: {"id","label","type","required","routing"} with type short_text / long_text /
+          choice / yes_no (choice adds "options") and routing customer / internal / drop. Routing
+          decides where the answer lands: the customer note rides confirmations the customer reads,
+          internal is reps only, drop discards it. The visual builder ships in prompt 102.</div>
+        <textarea id="bkQuestionsJson" rows="8" style="font-family:ui-monospace,monospace;font-size:.74rem">${esc(JSON.stringify(bkForm.questions || [], null, 2))}</textarea>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+          <button class="pec-btn sm" id="bkQuestionsSave">Save questions</button>
+          <span id="bkQuestionsStatus" style="font-size:.72rem;color:var(--muted)"></span>
+        </div>
+
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Abuse control and copy</div>
+        <div class="pec-row-2" style="max-width:460px">
+          <div class="pec-field"><label>Bookings per hour per visitor</label>
+            <input type="number" min="0" step="1" data-bk-set="booking_rate_limit_per_hour" value="${esc(bkSettings.booking_rate_limit_per_hour || '5')}"></div>
+          <div class="pec-field"><label>Duplicate window (hours)</label>
+            <input type="number" min="0" step="1" data-bk-set="booking_duplicate_window_hours" value="${esc(bkSettings.booking_duplicate_window_hours || '24')}"></div>
+        </div>
+        <div class="pec-field" style="max-width:560px"><label>Text-consent disclosure (shown at the checkbox)</label>
+          <textarea rows="3" data-bk-set="booking_sms_disclosure" style="font-size:.78rem">${esc(bkSettings.booking_sms_disclosure || '')}</textarea></div>
+        <div class="pec-field" style="max-width:560px"><label>Manage-link line (rides confirmations; {link} is the link)</label>
+          <input data-bk-set="booking_manage_link_text" value="${esc(bkSettings.booking_manage_link_text || '')}"></div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:8px 0;cursor:pointer">
+          <input type="checkbox" id="bkRzIntake" style="width:auto" ${bkSettings.routemize_intake_enabled !== 'false' ? 'checked' : ''}>
+          Keep accepting Routemize webhooks <span style="color:var(--muted);font-size:.74rem">(switch off once the Routemize account is closed)</span></label>
+        <div style="font-size:.7rem;color:var(--muted)" id="bkSetStatus"></div>
+      </details>`}
+    </div>
+
+    <div class="pec-card">
       <h3 style="margin:0 0 8px">Routemize booking intake</h3>
       <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
         Appointments booked on Routemize land on this calendar automatically. Map each Routemize
@@ -21570,6 +21711,145 @@ async function renderSettingsAppointments() {
 
   wireSettingsTabs(root);
   $('apptGoogleRefresh').addEventListener('click', () => renderSettingsAppointments());
+
+  // ---- Online booking card wiring (prompt 101) ------------------------------
+  if (bkMigrated && bkForm && $('bkEnabled')) {
+    const bkSave = async (key, value) => {
+      const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'booking-setting-save' });
+      if (w && w.error) throw w.error;
+    };
+    const bkStatus = (msg) => { const el = $('bkSetStatus'); if (el) { el.textContent = msg; setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 2000); } };
+
+    $('bkEnabled').addEventListener('change', async (e) => {
+      const onNow = e.target.checked;
+      if (onNow && !bkAreas.filter(a => a.active).length) {
+        e.target.checked = false;
+        showToast('Add at least one active service-area zip or city (under Advanced) before enabling booking.', { ttl: 6000 });
+        return;
+      }
+      try {
+        await bkSave('booking_enabled', onNow ? 'true' : 'false');
+        // Enabling fills the drip {booking_link} token if it is still blank,
+        // so nurture messages start carrying the live /book link the moment
+        // booking opens; an existing value is never overwritten.
+        if (onNow && !(bkSettings.booking_url || '').trim()) {
+          await bkSave('booking_url', location.origin + '/book');
+          bkSettings.booking_url = location.origin + '/book';
+        }
+        showToast(onNow ? 'Online booking is LIVE' : 'Online booking switched off', { ttl: 3000 });
+      } catch (err) { e.target.checked = !onNow; showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); }
+    });
+
+    $('bkCopyLink').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(bkUrl); $('bkCopyStatus').textContent = 'Link copied.'; }
+      catch (_) { $('bkCopyStatus').textContent = bkUrl; }
+      setTimeout(() => { $('bkCopyStatus').textContent = ''; }, 2500);
+    });
+    $('bkCopyEmbed').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(bkEmbedSnippet); $('bkCopyStatus').textContent = 'Embed code copied. Paste it into the website.'; }
+      catch (_) { $('bkCopyStatus').textContent = 'Copy failed; embed code logged to console.'; console.log(bkEmbedSnippet); }
+      setTimeout(() => { $('bkCopyStatus').textContent = ''; }, 3500);
+    });
+
+    root.querySelectorAll('[data-bk-set]').forEach(el => el.addEventListener('change', async () => {
+      try { await bkSave(el.dataset.bkSet, el.value.trim()); bkStatus('Saved.'); }
+      catch (err) { bkStatus('Save failed: ' + (err.message || err)); }
+    }));
+
+    const saveHours = async () => {
+      const map = {};
+      for (const [k] of BK_DAYS) {
+        const open = root.querySelector(`[data-bk-day-open="${k}"]`);
+        const st = root.querySelector(`[data-bk-day-start="${k}"]`);
+        const en = root.querySelector(`[data-bk-day-end="${k}"]`);
+        map[k] = (open && open.checked && st && en && st.value && en.value && en.value > st.value)
+          ? [st.value, en.value] : null;
+      }
+      try { await bkSave('booking_working_hours', JSON.stringify(map)); bkStatus('Hours saved.'); }
+      catch (err) { bkStatus('Save failed: ' + (err.message || err)); }
+    };
+    root.querySelectorAll('[data-bk-day-open]').forEach(el => el.addEventListener('change', () => {
+      const k = el.dataset.bkDayOpen;
+      root.querySelector(`[data-bk-day-start="${k}"]`).disabled = !el.checked;
+      root.querySelector(`[data-bk-day-end="${k}"]`).disabled = !el.checked;
+      saveHours();
+    }));
+    root.querySelectorAll('[data-bk-day-start],[data-bk-day-end]').forEach(el => el.addEventListener('change', saveHours));
+
+    $('bkDriveEnabled').addEventListener('change', async (e) => {
+      try { await bkSave('booking_drive_time_enabled', e.target.checked ? 'true' : 'false'); bkStatus('Saved.'); }
+      catch (err) { e.target.checked = !e.target.checked; bkStatus('Save failed: ' + (err.message || err)); }
+    });
+    $('bkRzIntake').addEventListener('change', async (e) => {
+      try { await bkSave('routemize_intake_enabled', e.target.checked ? 'true' : 'false'); bkStatus('Saved.'); }
+      catch (err) { e.target.checked = !e.target.checked; bkStatus('Save failed: ' + (err.message || err)); }
+    });
+
+    // Service area rows: edits write through immediately (staff RLS).
+    const areaStatus = (msg) => { const el = $('bkAreaStatus'); if (el) { el.textContent = msg; setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 2500); } };
+    root.querySelectorAll('[data-bk-area]').forEach(row => {
+      const id = row.dataset.bkArea;
+      const patch = async (fields) => {
+        const w = await withFreshWriteRetry(() => supabase.from('pec_booking_service_areas').update({ ...fields, updated_at: new Date().toISOString() }).eq('id', id), { label: 'booking-area-save' });
+        if (w && w.error) { areaStatus('Save failed: ' + w.error.message); return false; }
+        areaStatus('Saved.'); return true;
+      };
+      row.querySelector('[data-bka-zip]').addEventListener('change', e => patch({ zip: e.target.value.trim() || null }));
+      row.querySelector('[data-bka-city]').addEventListener('change', e => patch({ city: e.target.value.trim() || null }));
+      row.querySelector('[data-bka-note]').addEventListener('change', e => patch({ note: e.target.value.trim() || null }));
+      row.querySelector('[data-bka-active]').addEventListener('change', e => patch({ active: e.target.checked }));
+      row.querySelector('[data-bka-del]').addEventListener('click', async () => {
+        if (!confirm('Remove this service-area row? Deactivating (untick Active) keeps the record.')) return;
+        const w = await withFreshWriteRetry(() => supabase.from('pec_booking_service_areas').delete().eq('id', id), { label: 'booking-area-del' });
+        if (w && w.error) { areaStatus('Delete failed: ' + w.error.message); return; }
+        renderSettingsAppointments();
+      });
+    });
+    $('bkAreaAdd').addEventListener('click', async () => {
+      const w = await withFreshWriteRetry(() => supabase.from('pec_booking_service_areas').insert({ form_id: bkForm.id, city: 'New area', active: false }), { label: 'booking-area-add' });
+      if (w && w.error) { areaStatus('Add failed: ' + w.error.message); return; }
+      renderSettingsAppointments();
+    });
+    $('bkAreaBulk').addEventListener('click', async () => {
+      const raw = prompt('Paste zips separated by spaces, commas, or new lines:');
+      if (!raw) return;
+      const zips = [...new Set(String(raw).split(/[\s,;]+/).map(z => z.replace(/\D/g, '').slice(0, 5)).filter(z => z.length === 5))];
+      if (!zips.length) { areaStatus('No 5-digit zips found in the paste.'); return; }
+      const existing = new Set(bkAreas.map(a => a.zip).filter(Boolean));
+      const rows = zips.filter(z => !existing.has(z)).map(z => ({ form_id: bkForm.id, zip: z, active: true }));
+      if (!rows.length) { areaStatus('All of those zips are already listed.'); return; }
+      const w = await withFreshWriteRetry(() => supabase.from('pec_booking_service_areas').insert(rows), { label: 'booking-area-bulk' });
+      if (w && w.error) { areaStatus('Bulk add failed: ' + w.error.message); return; }
+      showToast(`Added ${rows.length} zip${rows.length === 1 ? '' : 's'} to the service area`, { ttl: 3000 });
+      renderSettingsAppointments();
+    });
+
+    // Question-set JSON editor: validated before it writes; the public form
+    // renders straight off this column, so a broken save would break the form.
+    $('bkQuestionsSave').addEventListener('click', async () => {
+      const st = $('bkQuestionsStatus');
+      st.textContent = '';
+      let parsed;
+      try { parsed = JSON.parse($('bkQuestionsJson').value); }
+      catch (err) { st.textContent = 'Not valid JSON: ' + err.message; return; }
+      if (!Array.isArray(parsed)) { st.textContent = 'Must be a JSON array of questions.'; return; }
+      const TYPES = ['short_text', 'long_text', 'choice', 'yes_no'];
+      const ROUTES = ['customer', 'internal', 'drop'];
+      const ids = new Set();
+      for (const q of parsed) {
+        if (!q || typeof q !== 'object') { st.textContent = 'Every entry must be an object.'; return; }
+        if (!q.id || ids.has(q.id)) { st.textContent = `Duplicate or missing id: ${q.id || '(none)'}.`; return; }
+        ids.add(q.id);
+        if (!String(q.label || '').trim()) { st.textContent = `Question ${q.id} needs a label.`; return; }
+        if (!TYPES.includes(q.type)) { st.textContent = `Question ${q.id}: type must be one of ${TYPES.join(', ')}.`; return; }
+        if (!ROUTES.includes(q.routing)) { st.textContent = `Question ${q.id}: routing must be one of ${ROUTES.join(', ')}.`; return; }
+        if (q.type === 'choice' && (!Array.isArray(q.options) || q.options.length < 2)) { st.textContent = `Question ${q.id}: choice needs at least two options.`; return; }
+      }
+      const w = await withFreshWriteRetry(() => supabase.from('pec_booking_forms').update({ questions: parsed, updated_at: new Date().toISOString() }).eq('id', bkForm.id), { label: 'booking-questions-save' });
+      if (w && w.error) { st.textContent = 'Save failed: ' + w.error.message; return; }
+      st.textContent = 'Saved. Live on the booking form now.';
+    });
+  }
 
   // Connect: mint the consent URL through the authenticated start endpoint,
   // then open it in a new tab (the callback page tells them to come back).
@@ -23470,6 +23750,7 @@ async function renderOpsQueue() {
   const tuDays = daysOf('ops_touchup_age_days', 7);
   const depDays = daysOf('ops_deposit_age_days', 7);
   const aiDays = daysOf('ops_appt_intake_days', 7);
+  const bkDays = daysOf('ops_booking_days', 7);
 
   // Prod core + the shared estimate facts: checks 2/3/6/8 read state.prodJobs
   // and the Part A helper (prodJobEstimateFacts) — the SAME loaders the
@@ -23496,13 +23777,21 @@ async function renderOpsQueue() {
       // that landed without being applied surface here. Admin-read RLS on
       // the ingest log matches this view's admin gate.
       supabase.from('pec_webhook_ingest_log').select('id,deal_id,message,outcome,created_at').eq('endpoint', 'appt-intake').gte('created_at', new Date(Date.now() - aiDays * 86400000).toISOString()).order('created_at'),
+      // Check 12 (prompt 101): out-of-area online booking requests, plus the
+      // outbound calls/texts since the window opened so "nobody has called
+      // them back" is derivable at render. Columns are ENUMERATED on the
+      // requests read on purpose: the staff grant excludes ip_hash, so a
+      // select('*') would be a Postgres permission error, not data.
+      supabase.from('pec_booking_requests').select('id,name,phone,address_city,address_zip,lead_id,customer_id,created_at').eq('status', 'out_of_area').gte('created_at', new Date(Date.now() - bkDays * 86400000).toISOString()).order('created_at'),
+      supabase.from('pec_call_log').select('customer_id,to_number,created_at').eq('direction', 'out').gte('created_at', new Date(Date.now() - bkDays * 86400000).toISOString()),
+      supabase.from('pec_sms_log').select('customer_id,to_number,created_at').eq('direction', 'out').gte('created_at', new Date(Date.now() - bkDays * 86400000).toISOString()),
     ]), { label: 'renderOpsQueue' });
   } catch (e) {
     root.innerHTML = `<div class="pec-empty">Could not load the Ops Queue: ${esc(e.message || e)}</div>`;
     return;
   }
   if (state.view !== 'ops') return; // user navigated away mid-read
-  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes, apptIngestRes] = res;
+  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes, apptIngestRes, bookingReqRes, bkCallsRes, bkSmsRes] = res;
   const admins = adminsRes.error ? [] : (adminsRes.data || []);
   if (admins.length) state.adminUsers = admins;
   const adminName = id => { const a = admins.find(x => x.id === id); return a ? (a.name || a.email) : ''; };
@@ -23674,6 +23963,30 @@ async function renderOpsQueue() {
             nav: m ? { view: 'appointments', apptId: m[1] } : { view: 'dripjobs-sync-health' },
           };
         }));
+  }
+
+  // 12. Out-of-area online booking requests nobody has called back (prompt
+  //     101). The public form promised these people "we will call you about
+  //     scheduling"; a request self-clears once an outbound call or text to
+  //     that customer (by customer_id, else last-10 phone) lands AFTER it.
+  if (on('ops_check_booking_out_of_area')) {
+    const reqs = (bookingReqRes && !bookingReqRes.error) ? (bookingReqRes.data || []) : [];
+    const touches = [
+      ...((bkCallsRes && !bkCallsRes.error) ? (bkCallsRes.data || []) : []),
+      ...((bkSmsRes && !bkSmsRes.error) ? (bkSmsRes.data || []) : []),
+    ];
+    const last10 = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : d; };
+    const contactedSince = (r) => touches.some(t => t.created_at > r.created_at
+      && ((r.customer_id && t.customer_id === r.customer_id)
+        || (r.phone && last10(t.to_number) && last10(t.to_number) === last10(r.phone))));
+    push('bookingooa', `Out-of-area booking requests waiting on a call (last ${bkDays} day${bkDays === 1 ? '' : 's'})`,
+      'These people tried to book online from outside the service area and were told we would call about scheduling. A row clears once an outbound call or text to them lands.',
+      reqs.filter(r => !contactedSince(r))
+        .map(r => ({
+          key: `booking_out_of_area:${r.id}`,
+          label: `${esc(fmtDate(r.created_at))} · ${esc(r.name || 'No name')}${r.address_city ? ` in ${esc(r.address_city)}` : ''}${r.address_zip ? ` (${esc(r.address_zip)})` : ''} · no call back yet`,
+          nav: { view: 'leads' },
+        })));
   }
 
   const derivedCount = sections.reduce((s, x) => s + x.rows.length, 0);
@@ -24060,6 +24373,7 @@ async function renderSettings() {
           ['ops_check_deposit_uncollected', 'Deposits not collected'],
           ['ops_check_system_health', 'System health (drift + stuck syncs)'],
           ['ops_check_appt_intake', 'Routemize events not applied'],
+          ['ops_check_booking_out_of_area', 'Online booking out-of-area requests'],
         ].map(([k, l]) => `<div class="pec-field"><label>${l}</label>
           <select name="${k}">
             <option value="true" ${(map[k] || 'true') !== 'false' ? 'selected' : ''}>On</option>
@@ -24068,6 +24382,7 @@ async function renderSettings() {
         <div class="pec-field"><label>Touch-up open threshold (days)</label><input name="ops_touchup_age_days" type="number" min="0" step="1" value="${esc(map.ops_touchup_age_days || '7')}"><span style="color:var(--muted);font-size:.68rem">An open touch-up appears on the Ops Queue after this many days.</span></div>
         <div class="pec-field"><label>Deposit threshold (days)</label><input name="ops_deposit_age_days" type="number" min="0" step="1" value="${esc(map.ops_deposit_age_days || '7')}"><span style="color:var(--muted);font-size:.68rem">A signed job with no deposit collected (and not waived) appears on the Ops Queue after this many days.</span></div>
         <div class="pec-field"><label>Routemize event window (days)</label><input name="ops_appt_intake_days" type="number" min="0" step="1" value="${esc(map.ops_appt_intake_days || '7')}"><span style="color:var(--muted);font-size:.68rem">How far back the Routemize-events-not-applied check looks in the webhook log.</span></div>
+        <div class="pec-field"><label>Out-of-area booking window (days)</label><input name="ops_booking_days" type="number" min="0" step="1" value="${esc(map.ops_booking_days || '7')}"><span style="color:var(--muted);font-size:.68rem">How far back the online-booking out-of-area check looks for requests nobody has called back.</span></div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>

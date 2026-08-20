@@ -737,6 +737,20 @@ async function processApptIntake(deps, body) {
   // The ingest log must show what Routemize ACTUALLY sent, not our mapping.
   const rawPayload = body;
 
+  // Prompt 101 G4: the kill switch for the Routemize wind-down. The intake
+  // stays running while the subscription lapses (a stray booking landing in
+  // TopCoat is better than one landing nowhere); once Dylan closes the
+  // account he flips routemize_intake_enabled off in Settings > Appointments
+  // and every delivery becomes a logged 200 no-op, no deploy. Missing or
+  // unreadable reads as ENABLED: a settings blip must never drop a booking.
+  try {
+    const rows = await db('GET', '/settings?key=eq.routemize_intake_enabled&select=value&limit=1');
+    if (Array.isArray(rows) && rows[0] && String(rows[0].value).trim() === 'false') {
+      await log({ endpoint: ENDPOINT, deal_id: null, customer_name: null, outcome: 'ok', status_code: 200, message: 'intake disabled by routemize_intake_enabled; delivery ignored', payload: rawPayload });
+      return { status: 200, body: { success: true, disabled: true } };
+    }
+  } catch (_) { /* enabled */ }
+
   // Auto-detect the Routemize native envelope (decision 1): eventType AND a
   // data object mean native; anything else falls through to the hand-rolled
   // contract untouched. An unrecognized eventType (including the synthetic

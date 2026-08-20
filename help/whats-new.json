@@ -1,5 +1,16 @@
 [
   {
+    "id": "online-booking",
+    "date": "2026-08-19",
+    "title": "Customers can book online through TopCoat.",
+    "summary": "TopCoat now has its own booking page, replacing Routemize. Customers enter their address, see real open times from the appointment calendar (Google events block time too), and book their estimate visit. Visits are spaced by actual drive time, out-of-area visitors become tagged leads instead of bookings, and every confirmation includes a private link to reschedule or cancel. Booking ships switched off until the service area zips are loaded.",
+    "howto": [
+      "Open Settings, then Appointments, and find the Online booking card. Copy the link for texts and ads, or Copy embed code for the website.",
+      "Under Advanced, add your service area zips (Paste a zip list takes a whole list at once), then turn on Booking enabled.",
+      "Bookings appear on the Appointments calendar like any other visit, ring the bell, and send the customer a confirmation with their reschedule link."
+    ]
+  },
+  {
     "id": "appointment-customer-profile",
     "date": "2026-08-19",
     "title": "Booking a quote now completes the customer profile.",

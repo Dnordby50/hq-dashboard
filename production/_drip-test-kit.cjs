@@ -21,6 +21,7 @@ function makeDb(tables) {
     if (val.startsWith('lte.')) return row[key] != null && String(row[key]) <= decodeURIComponent(val.slice(4));
     if (val.startsWith('gte.')) return row[key] != null && String(row[key]) >= decodeURIComponent(val.slice(4));
     if (val.startsWith('gt.')) return row[key] != null && String(row[key]) > decodeURIComponent(val.slice(3));
+    if (val.startsWith('lt.')) return row[key] != null && String(row[key]) < decodeURIComponent(val.slice(3));
     if (val.startsWith('neq.')) return String(row[key]) !== val.slice(4);
     if (val === 'is.null') return row[key] == null;
     if (val === 'not.is.null') return row[key] != null;

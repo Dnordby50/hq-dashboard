@@ -247,6 +247,29 @@
   status = 200
   force = true
 
+# TopCoat online booking (prompt 101). /book is the hosted public page
+# (plus /book/<slug> for future brands and /book/manage/<token> for the
+# customer's reschedule/cancel link); /api/booking/* are its JSON actions.
+# The function parses the path from event.rawUrl, so no :splat interpolation
+# is needed (the tokenFromEvent lesson: toml splat-into-query is unreliable).
+[[redirects]]
+  from = "/book"
+  to = "/.netlify/functions/pec-booking"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/book/*"
+  to = "/.netlify/functions/pec-booking"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/booking/*"
+  to = "/.netlify/functions/pec-booking"
+  status = 200
+  force = true
+
 # Public hosted invoice page. /pay/<token> rewrites to the function with the
 # token in the query string (event.queryStringParameters.token).
 [[redirects]]
