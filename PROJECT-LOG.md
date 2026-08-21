@@ -1,3 +1,17 @@
+## [2026-08-21 MST] Booking page redesigned to the Routemize look Dylan sent
+
+By: Claude Code
+
+Changed: netlify/functions/pec-booking.cjs (pageShell CSS, bookingPageInner layout, client day/time renderers, closed page, logo fallback). No schema, no settings, no flow change: address-first stays (the availability engine needs the address for drive-time buffers before it can offer honest times), every step just wears the new design.
+
+From Dylan's screenshot of the old Routemize widget, now on /book: one big rounded white card with the centered panther logo (same /assets/pec-logo.png fallback the estimate page uses; pec_brand_identity.logo_url is null), the headline with its LAST word in the accent color ("Book your free on-site <accent>estimate</accent>", form-editable text so the split is computed, and the preview's setHeadline applies the identical split), centered question headings ("Where is the project?", "What's your preferred day?", "What time works best?"), the day picker as three big cards (MON / 24 / Aug) with the orange INSTANT pill, the dashed "Choose a different date" expander revealing the remaining horizon, rounded time pills, and the gray trust strip (2 min | Secure | Instant) built into the card bottom. Poppins replaces Inter on this page only. The step bar is gone (step() is now a guarded no-op so call sites stay harmless). The builder preview, embed mode, manage page, and all 60 booking tests are unchanged and green; the closed page got the same dress.
+
+Files touched: netlify/functions/pec-booking.cjs, PROJECT-LOG.md, help/whats-new.json.
+
+Next steps: none. If Dylan wants the day-first flow (days before address, like Routemize showed), that is an engine-order conversation, not styling; today the times shown are honest per-address, which day-first cannot be.
+
+---
+
 ## [2026-08-21 MST] Signature visibility fixed (Susan Nasser report): the record was always complete, three surfaces just did not show it
 
 By: Claude Code

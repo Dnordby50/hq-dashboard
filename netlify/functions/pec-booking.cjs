@@ -989,9 +989,15 @@ async function loadBookingBrand(db) {
   };
   try {
     const rows = await db('GET', '/pec_brand_identity?brand=eq.prescott-epoxy&select=business_name,logo_url,primary_color,accent_color,phone&limit=1');
-    if (Array.isArray(rows) && rows[0]) return { ...dflt, ...rows[0] };
+    if (Array.isArray(rows) && rows[0]) {
+      const b = { ...dflt, ...rows[0] };
+      // Same fallback the estimate page uses: the identity row's logo_url is
+      // null today, but the committed asset is the real panther logo.
+      if (!b.logo_url) b.logo_url = '/assets/pec-logo.png';
+      return b;
+    }
   } catch (_) { /* defaults */ }
-  return dflt;
+  return { ...dflt, logo_url: '/assets/pec-logo.png' };
 }
 
 function htmlResponse(statusCode, html) {
@@ -1006,44 +1012,66 @@ function htmlResponse(statusCode, html) {
   };
 }
 
-function pageShell(brand, title, inner, { embed = false } = {}) {
+// bare: true suppresses the default left-aligned header even on the hosted
+// page; the booking page renders its own centered logo inside its card
+// (the 2026-08-21 Routemize-style redesign Dylan asked for).
+function pageShell(brand, title, inner, { embed = false, bare = false } = {}) {
   const accent = brand.accent_color || '#D8531C';
   const primary = brand.primary_color || '#14181C';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--accent:${esc(accent)};--ink:${esc(primary)};--muted:#5c6470;--line:#e6e8ec;--bg:#f4f5f7}
-*{box-sizing:border-box}body{margin:0;font-family:'Inter',-apple-system,'Segoe UI',Arial,sans-serif;background:${embed ? 'transparent' : 'var(--bg)'};color:var(--ink)}
-.wrap{max-width:560px;margin:0 auto;padding:${embed ? '0' : '18px 14px 60px'}}
-.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin-top:14px;box-shadow:0 2px 10px rgba(15,20,32,.05)}
-h1{font-size:1.35rem;margin:.2em 0}h2{font-size:1.02rem;margin:0 0 10px}
+:root{--accent:${esc(accent)};--ink:${esc(primary)};--muted:#8a919c;--line:#ececef;--bg:#f5f5f7}
+*{box-sizing:border-box}body{margin:0;font-family:'Poppins',-apple-system,'Segoe UI',Arial,sans-serif;background:${embed ? 'transparent' : 'var(--bg)'};color:var(--ink)}
+.wrap{max-width:540px;margin:0 auto;padding:${embed ? '4px' : '26px 14px 50px'}}
+.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;margin-top:14px;box-shadow:0 6px 24px rgba(20,24,31,.06)}
+.bigcard{background:#fff;border:1px solid var(--line);border-radius:26px;box-shadow:0 12px 44px rgba(20,24,31,.09);overflow:hidden}
+.bigcard .inner{padding:30px 24px 26px}
+.bklogo{display:block;max-height:80px;max-width:230px;margin:0 auto 16px}
+h1{text-align:center;font-size:1.85rem;font-weight:700;margin:.1em 0 .35em;letter-spacing:-.5px}
+h1 .accentword{color:var(--accent);opacity:.85}
+h2{font-size:1.02rem;margin:0 0 10px}
+.q{text-align:center;font-size:1.22rem;font-weight:600;margin:6px 0 4px}
+.qsub{text-align:center;color:var(--muted);font-size:.92rem;margin:0 0 18px}.qsub strong{color:var(--ink)}
 p{line-height:1.5}.muted{color:var(--muted);font-size:.86rem}
-label{display:block;font-size:.78rem;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}
-input,textarea,select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:9px;font:inherit;font-size:1rem}
-input:focus,textarea:focus,select:focus{outline:2px solid var(--accent);border-color:var(--accent)}
-.btn{display:inline-block;width:100%;padding:13px 16px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-weight:700;font-size:1rem;cursor:pointer;text-align:center;text-decoration:none}
+label{display:block;font-size:.74rem;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}
+input,textarea,select{width:100%;padding:12px 13px;border:1.5px solid var(--line);border-radius:12px;font:inherit;font-size:1rem;background:#fff}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+.btn{display:inline-block;width:100%;padding:14px 16px;border:0;border-radius:14px;background:var(--accent);color:#fff;font-weight:600;font-size:1rem;cursor:pointer;text-align:center;text-decoration:none;font-family:inherit}
 .btn[disabled]{opacity:.55;cursor:default}
-.btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
-.slot{display:inline-block;padding:9px 13px;margin:4px 5px 4px 0;border:1px solid var(--line);border-radius:9px;background:#fff;font-weight:600;cursor:pointer;font-size:.94rem}
+.btn.ghost{background:#fff;color:var(--ink);border:1.5px solid var(--line)}
+.daygrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding-top:12px}
+.daycard{position:relative;background:#fff;border:1.5px solid var(--line);border-radius:18px;padding:24px 6px 16px;text-align:center;cursor:pointer;box-shadow:0 2px 10px rgba(20,24,31,.04);font-family:inherit;transition:border-color .12s}
+.daycard:hover{border-color:var(--accent)}
+.daypill{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:.6rem;font-weight:700;letter-spacing:.8px;border-radius:999px;padding:3px 11px;white-space:nowrap}
+.dw{display:block;color:var(--muted);font-weight:600;letter-spacing:2.5px;font-size:.76rem;text-transform:uppercase}
+.dn{display:block;font-size:2.25rem;font-weight:700;line-height:1.2;color:var(--ink)}
+.dm{display:block;color:var(--muted);font-size:.92rem}
+.dashedbtn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-top:18px;padding:17px 14px;border:2px dashed #d8dade;border-radius:16px;background:#fbfbfc;font-weight:600;font-size:1rem;color:var(--ink);cursor:pointer;font-family:inherit}
+.dashedbtn:hover{border-color:var(--accent)}
+.slot{display:inline-block;padding:11px 15px;margin:5px 6px 5px 0;border:1.5px solid var(--line);border-radius:12px;background:#fff;font-weight:600;cursor:pointer;font-size:.94rem;font-family:inherit}
+.slot:hover{border-color:var(--accent)}
 .slot.sel{background:var(--accent);border-color:var(--accent);color:#fff}
-.daybtn{display:block;width:100%;text-align:left;padding:11px 13px;margin-top:7px;border:1px solid var(--line);border-radius:9px;background:#fff;font-weight:600;cursor:pointer;font-size:.95rem}
-.daybtn .n{float:right;color:var(--muted);font-weight:400;font-size:.8rem}
+.trust{display:flex;justify-content:center;align-items:center;gap:14px;background:#f7f7f8;border-top:1px solid var(--line);padding:16px 10px;color:var(--muted);font-size:.92rem;flex-wrap:wrap}
+.trust .tchip{display:flex;align-items:center;gap:8px}
+.trust .tico{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;border:1.5px solid var(--line);background:#fff;font-size:.85rem}
+.trust .tsep{color:#d8dade}
+.underline-note{text-align:center;color:var(--muted);font-size:.82rem;margin-top:14px}
 .err{color:#b42318;font-size:.88rem;min-height:18px;margin-top:8px}
-.ok-badge{font-size:2.2rem}
-.sug{position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:240px;overflow-y:auto;display:none;margin-top:2px}
+.ok-badge{font-size:2.2rem;text-align:center}
+.sug{position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:240px;overflow-y:auto;display:none;margin-top:2px}
 .sug div{padding:9px 11px;cursor:pointer;font-size:.9rem;border-top:1px solid var(--line)}
 .sug div:first-child{border-top:0}.sug div:hover{background:rgba(15,20,32,.05)}
 .consent{display:flex;gap:9px;align-items:flex-start;margin-top:14px;font-size:.8rem;color:var(--muted)}
 .consent input{width:auto;margin-top:2px}
 .hpwrap{position:absolute;left:-9999px;top:-9999px;height:1px;overflow:hidden}
-.steps{display:flex;gap:6px;margin-top:10px}.steps span{flex:1;height:4px;border-radius:2px;background:var(--line)}.steps span.on{background:var(--accent)}
 header.bk{display:flex;align-items:center;gap:12px;padding-top:18px}
-header.bk img{height:44px}header.bk .bn{font-weight:800;font-size:1.05rem}
+header.bk img{height:44px}header.bk .bn{font-weight:700;font-size:1.05rem}
 a{color:var(--accent)}
-</style></head><body><div class="wrap">${embed ? '' : `
+</style></head><body><div class="wrap">${(embed || bare) ? '' : `
 <header class="bk">${brand.logo_url ? `<img src="${esc(brand.logo_url)}" alt="${esc(brand.business_name)}">` : ''}<div><div class="bn">${esc(brand.business_name)}</div>${brand.phone ? `<div class="muted">Questions? Call <a href="tel:${esc(brand.phone)}">${esc(brand.phone)}</a></div>` : ''}</div></header>`}
 ${inner}
 </div>${embed ? `<script>
@@ -1054,8 +1082,10 @@ window.addEventListener('load',post);setInterval(post,800);})();
 }
 
 function closedInner(brand) {
-  return `<div class="card"><h1>Online booking is almost ready</h1>
-<p>We are putting the finishing touches on online scheduling.${brand.phone ? ` In the meantime, call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a> and we will get you on the calendar right away.` : ' Please call us and we will get you on the calendar right away.'}</p></div>`;
+  return `<div class="bigcard"><div class="inner">
+  ${brand.logo_url ? `<img class="bklogo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}">` : ''}
+  <h1>Online booking is <span class="accentword">almost ready</span></h1>
+<p class="qsub">We are putting the finishing touches on online scheduling.${brand.phone ? ` In the meantime, call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a> and we will get you on the calendar right away.` : ' Please call us and we will get you on the calendar right away.'}</p></div></div>`;
 }
 
 // The booking page: a 3-step client flow (address -> time -> details) that
@@ -1078,16 +1108,24 @@ function bookingPageInner(form, mapsKey, opts = {}) {
     preview,
     successMessage: form.success_message || 'You are booked!',
   }).replace(/</g, '\\u003c');
+  // Headline treatment (2026-08-21 redesign): the LAST word renders in the
+  // accent color, the same trick the old Routemize page used. The client's
+  // setHeadline() applies the identical split on preview updates.
+  const headline = form.headline || 'Book your free on-site estimate';
+  const hWords = headline.trim().split(/\s+/);
+  const hLast = hWords.length > 1 ? hWords.pop() : '';
+  const brand = opts.brand || {};
   return `
-${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px"><span class="muted" style="font-size:.78rem">Preview. Nothing here submits; edits in the builder appear live.</span></div>' : ''}
-<div class="card">
-  <h1 id="bkHeadline">${esc(form.headline || 'Book your free on-site estimate')}</h1>
-  <p class="muted" id="bkIntro"${form.intro_text ? '' : ' style="display:none"'}>${esc(form.intro_text || '')}</p>
-  <div class="steps"><span class="on" id="st1"></span><span id="st2"></span><span id="st3"></span></div>
-</div>
+${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px;margin-bottom:12px"><span class="muted" style="font-size:.78rem">Preview. Nothing here submits; edits in the builder appear live.</span></div>' : ''}
+<div class="bigcard">
+  <div class="inner">
+  ${brand.logo_url ? `<img class="bklogo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}">` : ''}
+  <h1 id="bkHeadline">${esc(hWords.join(' '))}${hLast ? ` <span class="accentword">${esc(hLast)}</span>` : ''}</h1>
+  <p class="qsub" id="bkIntro"${form.intro_text ? '' : ' style="display:none"'}>${esc(form.intro_text || '')}</p>
 
-<div class="card" id="stepAddr">
-  <h2>Where is the project?</h2>
+<div id="stepAddr">
+  <div class="q">Where is the project?</div>
+  <div class="qsub">We'll find the best available times <strong>based on your area</strong></div>
   <div style="position:relative">
     <label for="bkAddr">Street address</label>
     <input id="bkAddr" autocomplete="street-address" placeholder="123 N Example St" inputmode="text">
@@ -1101,9 +1139,9 @@ ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px"><sp
   <button class="btn" id="bkAddrNext" style="margin-top:10px">See open times</button>
 </div>
 
-<div class="card" id="stepOut" style="display:none">
-  <h2>We may still be able to help</h2>
-  <p class="muted">That address is outside the area we book online. Leave your details and we will call you about scheduling, because we take projects like this case by case.</p>
+<div id="stepOut" style="display:none">
+  <div class="q">We may still be able to help</div>
+  <p class="qsub">That address is outside the area we book online. Leave your details and we will call you about scheduling, because we take projects like this case by case.</p>
   <label for="ooName">Name</label><input id="ooName" autocomplete="name">
   <label for="ooPhone">Phone</label><input id="ooPhone" autocomplete="tel" inputmode="tel">
   <label for="ooEmail">Email</label><input id="ooEmail" autocomplete="email" inputmode="email">
@@ -1113,20 +1151,22 @@ ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px"><sp
   <button class="btn" id="ooSend" style="margin-top:10px">Request a call</button>
 </div>
 
-<div class="card" id="stepTime" style="display:none">
-  <h2>Pick a time</h2>
-  <p class="muted">Visits take about ${t.duration} minutes. Times shown are Arizona time.</p>
+<div id="stepTime" style="display:none">
+  <div class="q">What's your preferred day?</div>
+  <div class="qsub">Visits take about ${t.duration} minutes. Times shown are <strong>Arizona time</strong></div>
   <div id="bkDays"></div>
   <div id="bkTimes" style="display:none">
-    <button class="btn ghost" id="bkBackDays" style="width:auto;padding:8px 12px;font-size:.85rem;margin-bottom:8px">&larr; Other days</button>
-    <div id="bkTimeBtns"></div>
+    <div class="q">What time works best?</div>
+    <div class="qsub" id="bkTimeDay"></div>
+    <div id="bkTimeBtns" style="text-align:center"></div>
+    <button class="dashedbtn" id="bkBackDays" style="margin-top:14px">&larr; Choose a different date</button>
   </div>
-  <div class="err" id="bkTimeErr"></div>
+  <div class="err" id="bkTimeErr" style="text-align:center"></div>
 </div>
 
-<div class="card" id="stepDetails" style="display:none">
-  <h2>Your details</h2>
-  <p class="muted" id="bkChosen"></p>
+<div id="stepDetails" style="display:none">
+  <div class="q">Your details</div>
+  <div class="qsub" id="bkChosen"></div>
   <label for="bkName">Name</label><input id="bkName" autocomplete="name">
   <label for="bkPhone">Mobile phone</label><input id="bkPhone" autocomplete="tel" inputmode="tel">
   <label for="bkEmail">Email</label><input id="bkEmail" autocomplete="email" inputmode="email">
@@ -1137,21 +1177,43 @@ ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px"><sp
   <button class="btn" id="bkBook" style="margin-top:10px">Book it</button>
 </div>
 
-<div class="card" id="stepDone" style="display:none">
+<div id="stepDone" style="display:none">
   <div class="ok-badge">&#10004;</div>
-  <h2 id="doneTitle">You are booked!</h2>
-  <p id="doneMsg"></p>
-  <p class="muted" id="doneManage"></p>
+  <div class="q" id="doneTitle">You are booked!</div>
+  <p id="doneMsg" style="text-align:center"></p>
+  <p class="muted" id="doneManage" style="text-align:center"></p>
 </div>
+
+  </div>
+  <div class="trust">
+    <span class="tchip"><span class="tico">&#9201;</span>2 min</span>
+    <span class="tsep">|</span>
+    <span class="tchip"><span class="tico">&#128737;&#65039;</span>Secure</span>
+    <span class="tsep">|</span>
+    <span class="tchip"><span class="tico">&#10003;</span>Instant</span>
+  </div>
+</div>
+${brand.phone && !preview ? `<div class="underline-note">Questions? Call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a></div>` : ''}
 
 <script>window.__BK=${cfgJson};</script>
 <script>
 (function(){
 'use strict';
-var CFG=window.__BK, S={addr:null, start:null, days:[], t0:Date.now()};
+var CFG=window.__BK, S={addr:null, start:null, days:[], showAllDays:false, t0:Date.now()};
 var $=function(id){return document.getElementById(id)};
 function show(id,on){$(id).style.display=on?'':'none'}
-function step(n){['st1','st2','st3'].forEach(function(s,i){$(s).className=i<n?'on':''})}
+// The step bar left with the 2026-08-21 redesign; kept as a guarded no-op so
+// every existing call site stays harmless.
+function step(n){['st1','st2','st3'].forEach(function(s,i){var el=$(s);if(el)el.className=i<n?'on':''})}
+// Headline with the LAST word in the accent color (the server renders the
+// same split; this keeps preview updates identical).
+function setHeadline(t){
+  var h=$('bkHeadline');if(!h)return;
+  var words=String(t||'Book your free on-site estimate').trim().split(/\s+/);
+  var last=words.length>1?words.pop():'';
+  h.textContent=words.join(' ')+(last?' ':'');
+  if(last){var sp=document.createElement('span');sp.className='accentword';sp.textContent=last;h.appendChild(sp)}
+}
 function api(path,body){return fetch('/api/booking/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
 
 // Disclosure text arrives with the slots payload settings; fallback fetched lazily.
@@ -1228,20 +1290,47 @@ $('bkAddrNext').addEventListener('click',function(){
   }).catch(function(){btn.disabled=false;btn.textContent='See open times';$('bkAddrErr').textContent='Could not reach us. Check your connection and try again.'});
 });
 
+// Day cards (2026-08-21 redesign): weekday / big date / month with an
+// INSTANT pill, three up front, the rest behind the dashed
+// choose-a-different-date button. d.date is the Phoenix YYYY-MM-DD the
+// server grouped by; noon anchors the parse so no viewer timezone can shift
+// the calendar day.
+function dayParts(iso){
+  var dt=new Date(iso+'T12:00:00');
+  return { w: dt.toLocaleDateString('en-US',{weekday:'short'}).toUpperCase(),
+           n: String(dt.getDate()),
+           m: dt.toLocaleDateString('en-US',{month:'short'}) };
+}
+function dayCard(d,i){
+  var b=document.createElement('button');b.className='daycard';b.type='button';
+  var p=dayParts(d.date);
+  b.innerHTML='<span class="daypill">&#10022; INSTANT</span><span class="dw"></span><span class="dn"></span><span class="dm"></span>';
+  b.querySelector('.dw').textContent=p.w;
+  b.querySelector('.dn').textContent=p.n;
+  b.querySelector('.dm').textContent=p.m;
+  b.title=d.slots.length+' open time'+(d.slots.length===1?'':'s');
+  b.addEventListener('click',function(){renderTimes(i)});
+  return b;
+}
 function renderDays(){
   var el=$('bkDays');el.innerHTML='';el.style.display='';$('bkTimes').style.display='none';
-  S.days.forEach(function(d,i){
-    var b=document.createElement('button');b.className='daybtn';
-    b.innerHTML='<span class="n">'+d.slots.length+' open</span>'+d.label;
-    b.addEventListener('click',function(){renderTimes(i)});
-    el.appendChild(b);
-  });
+  var list=S.showAllDays?S.days:S.days.slice(0,3);
+  var grid=document.createElement('div');grid.className='daygrid';
+  list.forEach(function(d){grid.appendChild(dayCard(d,S.days.indexOf(d)))});
+  el.appendChild(grid);
+  if(!S.showAllDays&&S.days.length>3){
+    var more=document.createElement('button');more.className='dashedbtn';more.type='button';
+    more.innerHTML='&#128197;&nbsp;&nbsp;Choose a different date&nbsp;&nbsp;&#8594;';
+    more.addEventListener('click',function(){S.showAllDays=true;renderDays()});
+    el.appendChild(more);
+  }
 }
 function renderTimes(i){
   var d=S.days[i];$('bkDays').style.display='none';$('bkTimes').style.display='';
-  var el=$('bkTimeBtns');el.innerHTML='<div class="muted" style="margin-bottom:6px">'+d.label+'</div>';
+  $('bkTimeDay').textContent=d.label;
+  var el=$('bkTimeBtns');el.innerHTML='';
   d.slots.forEach(function(s){
-    var b=document.createElement('button');b.className='slot';b.textContent=s.label;
+    var b=document.createElement('button');b.className='slot';b.type='button';b.textContent=s.label;
     b.addEventListener('click',function(){
       S.start=s.start;
       $('bkChosen').textContent=d.label+' at '+s.label+' ('+CFG.typeLabel+', about '+CFG.duration+' minutes)';
@@ -1251,7 +1340,7 @@ function renderTimes(i){
     el.appendChild(b);
   });
 }
-$('bkBackDays').addEventListener('click',renderDays);
+$('bkBackDays').addEventListener('click',function(){renderDays()});
 
 function renderQuestions(){
   var host=$('bkQuestions');if(host.dataset.done)return;host.dataset.done='1';
@@ -1324,7 +1413,7 @@ if(CFG.preview){
   window.addEventListener('message',function(e){
     var d=e.data&&e.data.pecBookingPreview;if(!d)return;
     if(Array.isArray(d.questions)){CFG.questions=d.questions;var host=$('bkQuestions');host.innerHTML='';delete host.dataset.done;renderQuestions()}
-    if(typeof d.headline==='string'){$('bkHeadline').textContent=d.headline||'Book your free on-site estimate'}
+    if(typeof d.headline==='string'){setHeadline(d.headline)}
     if(typeof d.intro==='string'){var ip=$('bkIntro');ip.textContent=d.intro;ip.style.display=d.intro?'':'none'}
     if(typeof d.success==='string'){$('doneMsg').textContent=d.success}
     if(typeof d.typeLabel==='string'||typeof d.duration==='number'){$('bkChosen').textContent=(d.typeLabel||CFG.typeLabel)+', about '+(d.duration||CFG.duration)+' minutes.'}
@@ -1473,8 +1562,8 @@ exports.handler = async (event) => {
     // set up). Harmless public: every submit is disabled client-side and the
     // write path stays gated server-side regardless.
     const preview = !!(event.queryStringParameters && event.queryStringParameters.preview) && !!form;
-    if (!open && !preview) return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed }));
-    return htmlResponse(200, pageShell(brand, form.headline || `Book with ${brand.business_name}`, bookingPageInner(form, PEC_MAPS_KEY, { preview }), { embed }));
+    if (!open && !preview) return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed, bare: true }));
+    return htmlResponse(200, pageShell(brand, form.headline || `Book with ${brand.business_name}`, bookingPageInner(form, PEC_MAPS_KEY, { preview, brand }), { embed, bare: true }));
   } catch (err) {
     console.error('pec-booking page failed:', err);
     return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed }));

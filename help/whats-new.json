@@ -1,5 +1,15 @@
 [
   {
+    "id": "booking-page-redesign",
+    "date": "2026-08-21",
+    "title": "The booking page got its new look.",
+    "summary": "The online booking page now matches the design you liked: your logo up top, a bold headline, big tappable day cards with an Instant tag, a dashed Choose a different date button, and a trust strip showing 2 min, Secure, and Instant. Same questions, same rules, same confirmations; just a much better looking page.",
+    "howto": [
+      "Open the booking link from Settings, then Appointments, then Online booking to see it.",
+      "The first three open days show as big cards; Choose a different date reveals the rest."
+    ]
+  },
+  {
     "id": "inactive-reps-hidden",
     "date": "2026-08-21",
     "title": "Inactive salespeople no longer clutter lists.",
