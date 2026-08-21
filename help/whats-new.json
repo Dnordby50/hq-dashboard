@@ -1,5 +1,16 @@
 [
   {
+    "id": "booking-form-builder",
+    "date": "2026-08-20",
+    "title": "Build and edit the booking form visually, and see the booking funnel.",
+    "summary": "Settings now has a Booking form card: add, reorder, and remove questions, choose where each answer goes (customer note, internal note, or nowhere), edit the headline and messages, and set visit types and durations. A live preview beside the editor is the real booking page, so what you see is exactly what customers get. Saves go live instantly with no deploy, and two people editing at once cannot overwrite each other. Metrics also gained an Online booking funnel card showing attempts, booked, out of area, rejected, and errors for the selected window.",
+    "howto": [
+      "Open Settings, then Appointments, and find the Booking form card. Edit questions on the left; the preview on the right updates as you type.",
+      "Each question has a routing choice that says in plain words where the answer lands. Internal answers never reach customer messages.",
+      "Open Metrics and find Online booking funnel under Revenue and wins. Click the card for every attempt, including the out-of-area demand by city."
+    ]
+  },
+  {
     "id": "estimate-ux-batch-0820",
     "date": "2026-08-20",
     "title": "Six estimate fixes: customer search, Polish with AI, and one-click email plus text.",

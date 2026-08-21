@@ -13727,12 +13727,21 @@ async function renderMetrics() {
       // later appointment edits cannot rewrite history). Degrades
       // independently pre-migration.
       supabase.from('estimates').select('id,estimate_number,price,accepted_at,sold_on_site,sold_on_site_override,intake,customer_first_name,customer_last_name,customer_company,customers(name)').eq('status', 'accepted').is('deleted_at', null).not('accepted_at', 'is', null),
+      // Booking funnel (prompt 102 Part B): every submission attempt since
+      // prompt 101 started recording them. Columns are ENUMERATED because
+      // the staff grant deliberately excludes ip_hash (select('*') would be
+      // a Postgres permission error, which is the privacy fence working).
+      // Degrades independently pre-migration. Bounded: booking launched
+      // 2026-08-19, so this is small for a long time; add a range filter if
+      // it ever grows past a few thousand rows.
+      supabase.from('pec_booking_requests').select('id,status,name,phone,email,address_city,address_zip,in_area,requested_start,appointment_id,lead_id,error_text,sms_consent,created_at').order('created_at', { ascending: false }).limit(2000),
+      supabase.from('pec_appointments').select('id,status,start_at,created_at').eq('source', 'booking'),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes,
-    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes, sosEstRes] = res;
+    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes, sosEstRes, bkReqRes, bkApptRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
   // any labor math below; missing keys keep the shipped defaults.
@@ -14283,6 +14292,49 @@ async function renderMetrics() {
     sosByRep[e.rep].total += 1;
     if (e.sold) sosByRep[e.rep].sold += 1;
   }
+
+  // ---- Online booking funnel (prompt 102 Part B) ----------------------------
+  // pec_booking_requests records EVERY attempt including the ones that never
+  // became appointments; this surfaces it, windowed like everything else.
+  // Days are Phoenix (created_at minus the fixed -07:00) so a late-evening
+  // attempt lands on the day Dylan experienced it.
+  const bkPhxDay = (iso) => iso ? new Date(new Date(iso).getTime() - 7 * 3600 * 1000).toISOString().slice(0, 10) : '';
+  const bkFunnelOn = !(bkReqRes && bkReqRes.error);
+  const bkReqs = ((bkReqRes && !bkReqRes.error && bkReqRes.data) || []).map(r => ({ ...r, day: bkPhxDay(r.created_at) }));
+  const bkInWin = bkReqs.filter(r => inWin(r.day));
+  const bkByStatus = { booked: [], out_of_area: [], rejected: [], error: [] };
+  for (const r of bkInWin) (bkByStatus[r.status] || (bkByStatus[r.status] = [])).push(r);
+  const bkBooked = bkByStatus.booked.length;
+  const bkRejByReason = {};
+  for (const r of bkByStatus.rejected) { const k = r.error_text || 'other'; bkRejByReason[k] = (bkRejByReason[k] || 0) + 1; }
+  const bkOoaByCity = {};
+  for (const r of bkByStatus.out_of_area) { const c = String(r.address_city || '').trim() || 'Unknown'; bkOoaByCity[c] = (bkOoaByCity[c] || 0) + 1; }
+  // Reconciliation (the acceptance check): booked request rows must equal
+  // source='booking' appointments CREATED in the same window. A mismatch is
+  // a real prompt-101 write-path bug to chase, never a display issue.
+  const bkApptsWin = ((bkApptRes && !bkApptRes.error && bkApptRes.data) || []).filter(a => inWin(bkPhxDay(a.created_at)));
+  const bkReconciles = bkBooked === bkApptsWin.length;
+  const bkStatusLabel = { booked: 'Booked', out_of_area: 'Out of area', rejected: 'Rejected', error: 'Error' };
+  const bkFunnelDrillId = regDrill(() => ({
+    title: 'Online booking funnel: every booking-page attempt in window',
+    summary: bkInWin.length
+      ? `${countOf(bkInWin.length, 'attempt')}: ${bkBooked} booked, ${bkByStatus.out_of_area.length} out of area, ${bkByStatus.rejected.length} rejected${Object.keys(bkRejByReason).length ? ` (${Object.entries(bkRejByReason).map(([k, v]) => `${v} ${k.replace(/_/g, ' ')}`).join(', ')})` : ''}, ${bkByStatus.error.length} errors. Calendar check: ${bkApptsWin.length} booking appointment${bkApptsWin.length === 1 ? '' : 's'} created in window ${bkReconciles ? 'matches the booked count.' : `does NOT match the ${bkBooked} booked request rows. That is a write-path bug in the booking build, not a display issue; report it.`}${Object.keys(bkOoaByCity).length ? ` Out-of-area demand by city: ${Object.entries(bkOoaByCity).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} (${n})`).join(', ')}, the input to expanding the allowlist.` : ''}`
+      : 'No booking-page attempts in this window.',
+    columns: ['When', 'Name', 'Status', 'Detail', 'City / zip', 'Text consent'],
+    rows: bkInWin.slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).map(r => ({ cells: [
+      invFmtDate(r.day),
+      r.name || '—',
+      bkStatusLabel[r.status] || r.status,
+      r.status === 'rejected' ? (r.error_text || '').replace(/_/g, ' ')
+        : r.status === 'error' ? String(r.error_text || '').slice(0, 60)
+        : r.status === 'booked' && r.requested_start ? `visit ${invFmtDate(bkPhxDay(r.requested_start))}` : '—',
+      [r.address_city, r.address_zip].filter(Boolean).join(' ') || '—',
+      r.sms_consent ? 'Yes' : 'No',
+    ] })),
+    total: [countOf(bkInWin.length, 'attempt'), '', `${bkBooked} booked`, '', '', ''],
+    footnote: 'Recorded since online booking shipped (2026-08-19). Rejected reasons: rate limit, honeypot, too fast, duplicate, slot taken.',
+  }));
+
   const deltaHtml = (cur, prev) => {
     const win = `prior ${winDays} day${winDays === 1 ? '' : 's'}`;
     if (cur == null || prev == null || (prev === 0 && cur === 0)) return '<div class="pec-m-kpi-delta flat">no prior-window data</div>';
@@ -14745,6 +14797,7 @@ async function renderMetrics() {
       ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected), revCollected, 'admin')}
       ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize), null, 'sales')}
       ${sosEnabled ? kpiCard(kpiIds.soldOnSite, 'check', 'Sold on site', 'Accepted estimates signed while the rep was still in the home (appointment window + grace).', `${invPct(sosRate)}${sosInWin.length ? ` <span style="font-size:.6em;font-weight:600;color:var(--muted)">${sosSold.length}/${sosInWin.length}</span>` : ''}`, deltaHtml(sosRate, sosPrevRate), null, 'sales') : ''}
+      ${bkFunnelOn ? kpiCard(bkFunnelDrillId, 'trend', 'Online booking funnel', 'Booking-page attempts in this window: booked, out of area, rejected, errors. The question Routemize could never answer.', `${bkBooked}<span style="font-size:.55em;font-weight:600;color:var(--muted)"> booked / ${bkInWin.length} attempt${bkInWin.length === 1 ? '' : 's'}</span>`, bkReconciles ? '' : '<div class="pec-m-kpi-delta down">booked rows disagree with the calendar, open for detail</div>', null, 'sales') : ''}
     </div>
     <div class="pec-m-group-h" data-metcat="production admin">Production &amp; quality</div>
     <div class="pec-m-kpis" style="margin-bottom:16px">
@@ -21644,18 +21697,6 @@ async function renderSettingsAppointments() {
           <span id="bkAreaStatus" style="font-size:.72rem;color:var(--muted)"></span>
         </div>
 
-        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Form questions (JSON)</div>
-        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">
-          Each question: {"id","label","type","required","routing"} with type short_text / long_text /
-          choice / yes_no (choice adds "options") and routing customer / internal / drop. Routing
-          decides where the answer lands: the customer note rides confirmations the customer reads,
-          internal is reps only, drop discards it. The visual builder ships in prompt 102.</div>
-        <textarea id="bkQuestionsJson" rows="8" style="font-family:ui-monospace,monospace;font-size:.74rem">${esc(JSON.stringify(bkForm.questions || [], null, 2))}</textarea>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-          <button class="pec-btn sm" id="bkQuestionsSave">Save questions</button>
-          <span id="bkQuestionsStatus" style="font-size:.72rem;color:var(--muted)"></span>
-        </div>
-
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Abuse control and copy</div>
         <div class="pec-row-2" style="max-width:460px">
           <div class="pec-field"><label>Bookings per hour per visitor</label>
@@ -21672,6 +21713,46 @@ async function renderSettingsAppointments() {
           Keep accepting Routemize webhooks <span style="color:var(--muted);font-size:.74rem">(switch off once the Routemize account is closed)</span></label>
         <div style="font-size:.7rem;color:var(--muted)" id="bkSetStatus"></div>
       </details>`}
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Booking form</h3>
+      ${!bkMigrated || !bkForm ? '<div class="pec-empty">Run the prompt 101 migration to enable the booking form.</div>' : `
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        What the customer sees at the booking link. Edits go live the moment you save, no deploy.
+        The preview on the right IS the real booking page, so what you see is exactly what ships.
+        Name, phone, email, address, and the text-consent checkbox are built in and always asked.
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(320px,1fr) minmax(300px,1fr);gap:16px" id="bfGrid">
+        <div>
+          <div class="pec-field"><label>Form name (internal)</label><input id="bfName" value="${esc(bkForm.name || '')}"></div>
+          <div class="pec-field"><label>Headline</label><input id="bfHeadline" value="${esc(bkForm.headline || '')}" placeholder="Book your free on-site estimate"></div>
+          <div class="pec-field"><label>Intro text</label><textarea id="bfIntro" rows="2">${esc(bkForm.intro_text || '')}</textarea></div>
+          <div class="pec-field"><label>Success message</label><textarea id="bfSuccess" rows="2">${esc(bkForm.success_message || '')}</textarea></div>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:2px 0 10px;cursor:pointer">
+            <input type="checkbox" id="bfActive" style="width:auto" ${bkForm.active !== false ? 'checked' : ''}>
+            Form active <span style="color:var(--muted);font-size:.74rem">(inactive shows the call-us page even while booking is enabled)</span></label>
+
+          <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:10px 0 4px">Visit types offered</div>
+          <div id="bfTypes"></div>
+
+          <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Questions</div>
+          <div style="border:1px dashed var(--rd-line,var(--border));border-radius:8px;padding:7px 10px;margin-bottom:8px;font-size:.76rem;color:var(--muted)">
+            Built in, always asked: <strong>Name</strong>, <strong>Mobile phone</strong>, <strong>Email</strong>, <strong>Project address</strong>, <strong>Text-consent checkbox</strong>. These cannot be removed.
+          </div>
+          <div id="bfQList"></div>
+          <button class="pec-btn ghost sm" id="bfAddQ" style="margin-top:6px">+ Add question</button>
+          <div class="prod-msg-err" id="bfErr" style="min-height:16px;margin-top:8px"></div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="pec-btn primary" id="bfSave">Save form</button>
+            <span id="bfStatus" style="font-size:.74rem;color:var(--muted)"></span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0 0 6px">Live preview</div>
+          <iframe id="bfPreview" src="/book?embed=1&preview=1" title="Booking form preview" style="width:100%;height:980px;border:1px solid var(--rd-line,var(--border));border-radius:10px;background:#f4f5f7"></iframe>
+        </div>
+      </div>`}
     </div>
 
     <div class="pec-card">
@@ -21880,32 +21961,236 @@ async function renderSettingsAppointments() {
       showToast(`Added ${rows.length} zip${rows.length === 1 ? '' : 's'} to the service area`, { ttl: 3000 });
       renderSettingsAppointments();
     });
+  }
 
-    // Question-set JSON editor: validated before it writes; the public form
-    // renders straight off this column, so a broken save would break the form.
-    $('bkQuestionsSave').addEventListener('click', async () => {
-      const st = $('bkQuestionsStatus');
-      st.textContent = '';
-      let parsed;
-      try { parsed = JSON.parse($('bkQuestionsJson').value); }
-      catch (err) { st.textContent = 'Not valid JSON: ' + err.message; return; }
-      if (!Array.isArray(parsed)) { st.textContent = 'Must be a JSON array of questions.'; return; }
-      const TYPES = ['short_text', 'long_text', 'choice', 'yes_no'];
-      const ROUTES = ['customer', 'internal', 'drop'];
-      const ids = new Set();
-      for (const q of parsed) {
-        if (!q || typeof q !== 'object') { st.textContent = 'Every entry must be an object.'; return; }
-        if (!q.id || ids.has(q.id)) { st.textContent = `Duplicate or missing id: ${q.id || '(none)'}.`; return; }
-        ids.add(q.id);
-        if (!String(q.label || '').trim()) { st.textContent = `Question ${q.id} needs a label.`; return; }
-        if (!TYPES.includes(q.type)) { st.textContent = `Question ${q.id}: type must be one of ${TYPES.join(', ')}.`; return; }
-        if (!ROUTES.includes(q.routing)) { st.textContent = `Question ${q.id}: routing must be one of ${ROUTES.join(', ')}.`; return; }
-        if (q.type === 'choice' && (!Array.isArray(q.options) || q.options.length < 2)) { st.textContent = `Question ${q.id}: choice needs at least two options.`; return; }
-      }
-      const w = await withFreshWriteRetry(() => supabase.from('pec_booking_forms').update({ questions: parsed, updated_at: new Date().toISOString() }).eq('id', bkForm.id), { label: 'booking-questions-save' });
-      if (w && w.error) { st.textContent = 'Save failed: ' + w.error.message; return; }
-      st.textContent = 'Saved. Live on the booking form now.';
+  // ---- Booking form builder (prompt 102 Part A) -----------------------------
+  // Edits pec_booking_forms without touching JSON. The live preview iframe IS
+  // the real /book page in preview mode, fed drafts over postMessage, so the
+  // preview and the customer page share one renderer and cannot drift.
+  if (bkMigrated && bkForm && $('bfQList')) {
+    // 'other' is a private busy block, not something a customer books.
+    const BF_TYPE_DEFS = APPT_TYPES.filter(t => t.key !== 'other');
+    const bf = {
+      questions: JSON.parse(JSON.stringify(Array.isArray(bkForm.questions) ? bkForm.questions : [])),
+      apptTypes: JSON.parse(JSON.stringify(Array.isArray(bkForm.appt_types) && bkForm.appt_types.length
+        ? bkForm.appt_types : [{ key: 'on_site_estimate', label: 'On-site estimate', duration_minutes: 60 }])),
+      updatedAt: bkForm.updated_at,
+    };
+    const ROUTE_EXPLAIN = {
+      customer: 'The answer is added to the customer\'s confirmation and reminder messages.',
+      internal: 'The answer goes to the rep\'s internal notes only; the customer never sees it.',
+      drop: 'The answer is recorded on the booking request but rides no notes.',
+    };
+    const BF_TYPE_LABELS = { short_text: 'Short answer', long_text: 'Paragraph', choice: 'Multiple choice', yes_no: 'Yes / No' };
+    const errEl = $('bfErr'), statusEl = $('bfStatus');
+    const routeNote = (q) => ROUTE_EXPLAIN[q.routing] + (q.maps_to === 'lead_source' ? ' Also sets the lead\'s source.' : '');
+
+    const mintId = (label) => {
+      const base = String(label || 'question').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'question';
+      let id = base, n = 2;
+      while (bf.questions.some(q => q.id === id)) id = `${base}_${n++}`;
+      return id;
+    };
+
+    // Draft -> preview, debounced per keystroke.
+    const previewFrame = $('bfPreview');
+    let pvTmr = null;
+    const postPreview = () => {
+      clearTimeout(pvTmr);
+      pvTmr = setTimeout(() => {
+        try {
+          const t = bf.apptTypes[0] || {};
+          previewFrame.contentWindow.postMessage({ pecBookingPreview: {
+            questions: bf.questions,
+            headline: $('bfHeadline').value.trim(),
+            intro: $('bfIntro').value.trim(),
+            success: $('bfSuccess').value.trim(),
+            typeLabel: t.label || 'On-site estimate',
+            duration: Number(t.duration_minutes) || 60,
+          } }, location.origin);
+        } catch (_) { /* frame not ready; the next edit retries */ }
+      }, 250);
+    };
+    previewFrame.addEventListener('load', postPreview);
+    ['bfHeadline', 'bfIntro', 'bfSuccess'].forEach(id => $(id).addEventListener('input', postPreview));
+
+    const renderTypes = () => {
+      $('bfTypes').innerHTML = BF_TYPE_DEFS.map(t => {
+        const cur = bf.apptTypes.find(x => x.key === t.key);
+        return `<div style="display:flex;gap:10px;align-items:center;padding:3px 0;font-size:.82rem">
+          <label style="margin:0;display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;cursor:pointer;min-width:190px">
+            <input type="checkbox" style="width:auto" data-bf-type="${esc(t.key)}" ${cur ? 'checked' : ''}>${esc(t.label)}</label>
+          <input type="number" min="15" step="15" data-bf-dur="${esc(t.key)}" value="${esc(String((cur && cur.duration_minutes) || 60))}" ${cur ? '' : 'disabled'} style="max-width:90px;font-size:.8rem"> <span style="color:var(--muted);font-size:.72rem">minutes</span>
+        </div>`;
+      }).join('');
+      $('bfTypes').querySelectorAll('[data-bf-type]').forEach(el => el.addEventListener('change', () => {
+        const key = el.dataset.bfType;
+        const def = BF_TYPE_DEFS.find(x => x.key === key);
+        if (el.checked) bf.apptTypes.push({ key, label: def.label, duration_minutes: Number($('bfTypes').querySelector(`[data-bf-dur="${key}"]`).value) || 60 });
+        else bf.apptTypes = bf.apptTypes.filter(x => x.key !== key);
+        renderTypes(); postPreview();
+      }));
+      $('bfTypes').querySelectorAll('[data-bf-dur]').forEach(el => el.addEventListener('change', () => {
+        const cur = bf.apptTypes.find(x => x.key === el.dataset.bfDur);
+        if (cur) cur.duration_minutes = Math.max(15, Number(el.value) || 60);
+        postPreview();
+      }));
+    };
+
+    // Structural changes re-render the list; typing edits mutate state in
+    // place (no re-render, so focus never jumps) and refresh the preview.
+    let dragIdx = null;
+    const renderQ = () => {
+      $('bfQList').innerHTML = bf.questions.map((q, i) => `
+        <div data-bf-q="${i}" draggable="true" style="border:1px solid var(--rd-line,var(--border));border-radius:9px;padding:9px 11px;margin-bottom:8px">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <span title="Drag to reorder" style="cursor:grab;color:var(--muted);user-select:none">&#8942;&#8942;</span>
+            <input data-bfq-label value="${esc(q.label || '')}" placeholder="Question label" style="flex:1;font-size:.84rem;font-weight:600">
+            <button class="pec-btn ghost sm" data-bfq-up title="Move up" ${i === 0 ? 'disabled' : ''}>&#9650;</button>
+            <button class="pec-btn ghost sm" data-bfq-down title="Move down" ${i === bf.questions.length - 1 ? 'disabled' : ''}>&#9660;</button>
+            <button class="pec-btn ghost sm" data-bfq-dupe title="Duplicate">&#10697;</button>
+            <button class="pec-btn ghost sm danger" data-bfq-del title="Delete">&times;</button>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <select data-bfq-type style="max-width:160px;font-size:.78rem">
+              ${Object.entries(BF_TYPE_LABELS).map(([k, l]) => `<option value="${k}"${q.type === k ? ' selected' : ''}>${l}</option>`).join('')}
+            </select>
+            <select data-bfq-route style="max-width:210px;font-size:.78rem">
+              <option value="customer"${q.routing === 'customer' ? ' selected' : ''}>Customer note</option>
+              <option value="internal"${q.routing === 'internal' ? ' selected' : ''}>Internal note (reps only)</option>
+              <option value="drop"${q.routing === 'drop' ? ' selected' : ''}>Not on any note</option>
+            </select>
+            <label style="margin:0;display:flex;align-items:center;gap:5px;font-weight:400;text-transform:none;font-size:.76rem;cursor:pointer">
+              <input type="checkbox" data-bfq-req style="width:auto" ${q.required ? 'checked' : ''}>Required</label>
+          </div>
+          <div data-bfq-route-note style="font-size:.7rem;color:var(--muted);margin-top:4px">${esc(routeNote(q))}</div>
+          <input data-bfq-help value="${esc(q.help || '')}" placeholder="Help text under the field (optional)" style="margin-top:6px;font-size:.76rem">
+          ${q.type === 'choice' ? `
+          <div style="margin-top:6px">
+            ${(q.options || []).map((o, j) => `
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+              <input data-bfq-opt="${j}" value="${esc(o)}" placeholder="Option" style="font-size:.76rem">
+              <button class="pec-btn ghost sm" data-bfq-optup="${j}" ${j === 0 ? 'disabled' : ''}>&#9650;</button>
+              <button class="pec-btn ghost sm" data-bfq-optdown="${j}" ${j === (q.options || []).length - 1 ? 'disabled' : ''}>&#9660;</button>
+              <button class="pec-btn ghost sm danger" data-bfq-optdel="${j}">&times;</button>
+            </div>`).join('')}
+            <button class="pec-btn ghost sm" data-bfq-optadd>+ Add option</button>
+          </div>` : ''}
+        </div>`).join('') || '<div style="font-size:.78rem;color:var(--muted)">No extra questions yet. Add one below.</div>';
+
+      $('bfQList').querySelectorAll('[data-bf-q]').forEach(row => {
+        const i = Number(row.dataset.bfQ);
+        const q = bf.questions[i];
+        row.querySelector('[data-bfq-label]').addEventListener('input', e => { q.label = e.target.value; postPreview(); });
+        row.querySelector('[data-bfq-help]').addEventListener('input', e => { const v = e.target.value.trim(); if (v) q.help = v; else delete q.help; postPreview(); });
+        row.querySelector('[data-bfq-req]').addEventListener('change', e => { q.required = e.target.checked; postPreview(); });
+        row.querySelector('[data-bfq-type]').addEventListener('change', e => {
+          q.type = e.target.value;
+          if (q.type === 'choice' && !Array.isArray(q.options)) q.options = ['Option 1', 'Option 2'];
+          renderQ(); postPreview();
+        });
+        row.querySelector('[data-bfq-route]').addEventListener('change', e => {
+          q.routing = e.target.value;
+          row.querySelector('[data-bfq-route-note]').textContent = routeNote(q);
+          postPreview();
+        });
+        row.querySelector('[data-bfq-up]').addEventListener('click', () => { if (i > 0) { bf.questions.splice(i - 1, 0, bf.questions.splice(i, 1)[0]); renderQ(); postPreview(); } });
+        row.querySelector('[data-bfq-down]').addEventListener('click', () => { if (i < bf.questions.length - 1) { bf.questions.splice(i + 1, 0, bf.questions.splice(i, 1)[0]); renderQ(); postPreview(); } });
+        row.querySelector('[data-bfq-dupe]').addEventListener('click', () => {
+          const copy = JSON.parse(JSON.stringify(q));
+          copy.id = mintId((q.label || 'question') + ' copy');
+          delete copy.maps_to; // one lead-source feeder is enough
+          bf.questions.splice(i + 1, 0, copy);
+          renderQ(); postPreview();
+        });
+        row.querySelector('[data-bfq-del]').addEventListener('click', () => {
+          if (!confirm(`Remove the question "${q.label || q.id}" from the form?`)) return;
+          bf.questions.splice(i, 1); renderQ(); postPreview();
+        });
+        row.querySelectorAll('[data-bfq-opt]').forEach(el => el.addEventListener('input', e => { q.options[Number(el.dataset.bfqOpt)] = e.target.value; postPreview(); }));
+        row.querySelectorAll('[data-bfq-optdel]').forEach(el => el.addEventListener('click', () => { q.options.splice(Number(el.dataset.bfqOptdel), 1); renderQ(); postPreview(); }));
+        row.querySelectorAll('[data-bfq-optup]').forEach(el => el.addEventListener('click', () => { const j = Number(el.dataset.bfqOptup); if (j > 0) { q.options.splice(j - 1, 0, q.options.splice(j, 1)[0]); renderQ(); postPreview(); } }));
+        row.querySelectorAll('[data-bfq-optdown]').forEach(el => el.addEventListener('click', () => { const j = Number(el.dataset.bfqOptdown); if (j < q.options.length - 1) { q.options.splice(j + 1, 0, q.options.splice(j, 1)[0]); renderQ(); postPreview(); } }));
+        const optAdd = row.querySelector('[data-bfq-optadd]');
+        if (optAdd) optAdd.addEventListener('click', () => { q.options = q.options || []; q.options.push(''); renderQ(); postPreview(); });
+        row.addEventListener('dragstart', () => { dragIdx = i; });
+        row.addEventListener('dragover', (e) => e.preventDefault());
+        row.addEventListener('drop', (e) => {
+          e.preventDefault();
+          if (dragIdx == null || dragIdx === i) return;
+          bf.questions.splice(i, 0, bf.questions.splice(dragIdx, 1)[0]);
+          dragIdx = null; renderQ(); postPreview();
+        });
+      });
+    };
+
+    $('bfAddQ').addEventListener('click', () => {
+      bf.questions.push({ id: mintId('new question'), label: '', type: 'short_text', required: false, routing: 'internal' });
+      renderQ(); postPreview();
+      const rows = $('bfQList').querySelectorAll('[data-bf-q]');
+      if (rows.length) rows[rows.length - 1].querySelector('[data-bfq-label]').focus();
     });
+
+    $('bfSave').addEventListener('click', async () => {
+      errEl.textContent = ''; statusEl.textContent = '';
+      // Validation (A6). The structural fields are not rows here, so they
+      // are undeletable by construction, not by a guard that could regress.
+      for (const q of bf.questions) {
+        if (!String(q.label || '').trim()) { errEl.textContent = 'Every question needs a label.'; return; }
+        if (q.type === 'choice') {
+          q.options = (q.options || []).map(o => String(o).trim()).filter(Boolean);
+          if (q.options.length < 2) { errEl.textContent = `"${q.label}" needs at least two options.`; return; }
+        }
+      }
+      const seenIds = new Set();
+      for (const q of bf.questions) { if (!q.id || seenIds.has(q.id)) q.id = mintId(q.label); seenIds.add(q.id); }
+      const pointless = bf.questions.find(q => q.required && q.routing === 'drop');
+      if (pointless && !confirm(`"${pointless.label}" is required but its answer rides no note. That is legal but probably pointless. Save anyway?`)) return;
+      if (!bf.apptTypes.length) { errEl.textContent = 'Offer at least one visit type.'; return; }
+      const active = $('bfActive').checked;
+      if (active) {
+        // A4: an ACTIVE form with an empty service area would classify every
+        // visitor out-of-area. Counted LIVE at save, never from stale state.
+        const ar = await supabase.from('pec_booking_service_areas').select('id', { count: 'exact', head: true }).eq('form_id', bkForm.id).eq('active', true);
+        if (!ar.error && !ar.count) { errEl.textContent = 'An active form needs at least one active service-area zip or city (Online booking card, under Advanced). Add the area first or untick Form active.'; return; }
+      }
+      const btn = $('bfSave');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        // Whole-array write with the optimistic-concurrency guard (A7,
+        // prompt-79 updated_at convention): the update matches only while
+        // updated_at is still what THIS tab loaded. Zero rows back means
+        // another tab saved first and nothing of theirs was written over.
+        const upd = await withFreshWriteRetry(() => supabase.from('pec_booking_forms')
+          .update({
+            name: $('bfName').value.trim() || bkForm.name,
+            headline: $('bfHeadline').value.trim() || null,
+            intro_text: $('bfIntro').value.trim() || null,
+            success_message: $('bfSuccess').value.trim() || null,
+            active,
+            appt_types: bf.apptTypes,
+            questions: bf.questions,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', bkForm.id).eq('updated_at', bf.updatedAt)
+          .select('updated_at'), { label: 'booking-form-save' });
+        if (upd.error) throw upd.error;
+        if (!upd.data || !upd.data.length) {
+          errEl.textContent = 'Someone else saved this form after you opened it. Reload to pick up their version; nothing was overwritten.';
+          return;
+        }
+        bf.updatedAt = upd.data[0].updated_at;
+        statusEl.textContent = 'Saved. Live on the booking page now.';
+        setTimeout(() => { if (statusEl.textContent.indexOf('Saved') === 0) statusEl.textContent = ''; }, 4000);
+      } catch (err) {
+        errEl.textContent = 'Save failed: ' + (err.message || err);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Save form';
+      }
+    });
+
+    renderTypes();
+    renderQ();
   }
 
   // Connect: mint the consent URL through the authenticated start endpoint,

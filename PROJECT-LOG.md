@@ -1,3 +1,27 @@
+## [2026-08-20 MST] Prompt 102: the visual booking form builder and the booking funnel. Run early by Dylan's explicit call; FTP (Part C) skipped by his explicit call.
+
+By: Claude Code
+
+Changed: index.html (the Settings "Booking form" card + wiring, the JSON questions editor REMOVED, the Metrics "Online booking funnel" card + drill), netlify/functions/pec-booking.cjs (preview mode), features.json, help/whats-new.json. No schema, no settings, no migration (102 rides entirely on prompt 101's storage).
+
+**Two deviations from the spec, both Dylan's decisions today, asked and answered before starting.** (1) The spec says run only after prompt 101 is live with a few real bookings; booking is still dark (Cowork's zip-seeding handoff has not landed: booking_enabled false, zero service areas, zero requests). Dylan chose to build now so the builder is ready at go-live; the engine and write path are untouched, so nothing here depends on live traffic. (2) Part C (the FTP second brand at /book/ftp) is skipped; the spec itself required confirming FTP wants self-booking, and Dylan said not now. FTP remains a pec_booking_forms row plus service-area rows away, no refactor.
+
+**Part A, the builder.** The "Booking form" card on Settings > Appointments edits pec_booking_forms without JSON: question list with drag AND arrow reorder, add / duplicate / delete, per-question label, type (short answer / paragraph / multiple choice / yes-no), required, help text, reorderable choice options, and THE control that matters most, routing, a select whose one-line explanation says in plain words where the answer lands, because a wrong routing sends an internal answer into a customer's confirmation text. Form-level: name, headline, intro, success message, active toggle, and visit types with durations. WHY the structural fields cannot be deleted: name, phone, email, address, and the consent checkbox are page BUILT-INS, not rows in the questions array, so the builder cannot delete them by construction rather than by a guard that could regress; a dashed note lists them so nobody hunts for them. Validation on save: labels required, choice needs two options, duplicate ids re-minted, required+drop warns (legal but pointless, the spec's words), at least one visit type, and an ACTIVE form demands at least one active service-area row counted LIVE at save (an empty allowlist under an active form would classify the whole world out-of-area). The JSON editor from prompt 101 is REMOVED, not kept alongside: a second editor on the same column would bypass every guarantee the builder enforces.
+
+**A7, the two-tab guard.** Every save writes the whole questions array with .eq('updated_at', <the value this tab loaded>) and reads back the row count: zero rows means another tab saved first, the user gets an honest conflict message, and nothing was written over anything. The prompt-79 updated_at convention, applied as optimistic concurrency.
+
+**A5, the preview that cannot drift.** The live preview is an iframe of /book?embed=1&preview=1, the REAL public page: same template, same client question renderer. Preview mode renders even while booking is dark (exactly when the builder is being configured), shows every step stacked, disables every submit (the write path stays server-gated regardless), and re-renders from postMessage drafts the builder sends 250ms-debounced on every edit. The spec offered "extract the renderer into a shared module" as the fallback; driving the actual page over postMessage is the stronger version of the same guarantee, since not even a build step separates preview from production.
+
+**Part B, the funnel.** Metrics (Sales, Revenue & wins row) gained "Online booking funnel": pec_booking_requests windowed by the existing metrics window control, showing booked / attempts on the card and a full drill with per-status counts, rejected split by reason (rate limit, honeypot, too fast, duplicate, slot taken), out-of-area demand grouped by city (the input to expanding the allowlist, the exact question nobody could answer about Routemize), and per-row consent. The acceptance-criteria reconciliation is IN the card: booked request rows are compared against source='booking' appointments created in the same window, and a mismatch prints a red "booked rows disagree with the calendar" delta plus a drill sentence saying it is a write-path bug to report, never a display issue. Columns on the requests read are enumerated because the staff grant excludes ip_hash by design; select('*') is a permission error there.
+
+**Verified:** all inline index.html scripts parse, pec-booking.cjs parses, full npm suite green (27 files, including the 60 booking write-path tests, unchanged because the write path is untouched per the do-not-touch list).
+
+Files touched: index.html, netlify/functions/pec-booking.cjs, features.json, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: booking go-live still waits on the Cowork handoff (zips, Routes key, test booking). When it lands, the builder and funnel are already live: acceptance criterion 1 (edit a question, save, see it on the live form with the answer in notes and never customer_notes) becomes checkable that day, and the funnel's booked count should reconcile from the first real booking.
+
+---
+
 ## [2026-08-20 MST] Six estimate fixes from Dylan: customer search on New Estimate, hours/material/sqft on one-off lines, Polish with AI is back, contact info on the documents, a send modal that fits, and Email + Text as the real default
 
 By: Claude Code

@@ -1061,19 +1061,28 @@ function closedInner(brand) {
 // The booking page: a 3-step client flow (address -> time -> details) that
 // talks to /api/booking/*. Server renders the shell + config; the browser
 // does the stepping. Mobile first: most of these arrive from a phone.
-function bookingPageInner(form, mapsKey) {
+function bookingPageInner(form, mapsKey, opts = {}) {
   const t = formApptType(form);
+  // Preview (prompt 102): the builder's live preview IS this page in an
+  // iframe (?embed=1&preview=1), so preview and reality cannot drift: same
+  // template, same client renderer. Preview renders even while booking is
+  // dark, shows every step stacked, disables every submit, and re-renders
+  // from postMessage drafts the builder sends on each edit.
+  const preview = opts.preview === true;
   const cfgJson = JSON.stringify({
     slug: form.slug,
     questions: Array.isArray(form.questions) ? form.questions : [],
     typeLabel: t.label,
     duration: t.duration,
-    mapsKey: mapsKey || '',
+    mapsKey: preview ? '' : (mapsKey || ''),
+    preview,
+    successMessage: form.success_message || 'You are booked!',
   }).replace(/</g, '\\u003c');
   return `
+${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px"><span class="muted" style="font-size:.78rem">Preview. Nothing here submits; edits in the builder appear live.</span></div>' : ''}
 <div class="card">
-  <h1>${esc(form.headline || 'Book your free on-site estimate')}</h1>
-  ${form.intro_text ? `<p class="muted">${esc(form.intro_text)}</p>` : ''}
+  <h1 id="bkHeadline">${esc(form.headline || 'Book your free on-site estimate')}</h1>
+  <p class="muted" id="bkIntro"${form.intro_text ? '' : ' style="display:none"'}>${esc(form.intro_text || '')}</p>
   <div class="steps"><span class="on" id="st1"></span><span id="st2"></span><span id="st3"></span></div>
 </div>
 
@@ -1300,6 +1309,27 @@ $('ooSend').addEventListener('click',function(){
     $('doneMsg').textContent=j.message||'';
   }).catch(function(){btn.disabled=false;btn.textContent='Request a call';$('ooErr').textContent='Could not reach us. Try again.'});
 });
+
+// ---- Preview mode (prompt 102): the Settings builder drives this page ----
+// Every step renders at once, every submit is dead, and the builder's
+// postMessage drafts re-render the SAME question renderer the live page
+// uses, which is the whole point: preview equals reality by construction.
+if(CFG.preview){
+  show('stepAddr',true);show('stepOut',false);show('stepTime',true);show('stepDetails',true);show('stepDone',true);
+  $('bkDays').innerHTML='<p class="muted">Open times render here from the real calendar once booking is live.</p>';
+  $('bkChosen').textContent=CFG.typeLabel+', about '+CFG.duration+' minutes.';
+  renderQuestions();
+  $('doneMsg').textContent=CFG.successMessage||'';
+  ['bkAddrNext','bkBook','ooSend'].forEach(function(id){var b=$(id);if(b)b.disabled=true});
+  window.addEventListener('message',function(e){
+    var d=e.data&&e.data.pecBookingPreview;if(!d)return;
+    if(Array.isArray(d.questions)){CFG.questions=d.questions;var host=$('bkQuestions');host.innerHTML='';delete host.dataset.done;renderQuestions()}
+    if(typeof d.headline==='string'){$('bkHeadline').textContent=d.headline||'Book your free on-site estimate'}
+    if(typeof d.intro==='string'){var ip=$('bkIntro');ip.textContent=d.intro;ip.style.display=d.intro?'':'none'}
+    if(typeof d.success==='string'){$('doneMsg').textContent=d.success}
+    if(typeof d.typeLabel==='string'||typeof d.duration==='number'){$('bkChosen').textContent=(d.typeLabel||CFG.typeLabel)+', about '+(d.duration||CFG.duration)+' minutes.'}
+  });
+}
 })();
 </script>`;
 }
@@ -1438,8 +1468,13 @@ exports.handler = async (event) => {
     const area = form ? await loadServiceArea(sb, form.id) : [];
     const open = form && form.active !== false
       && String(settings.booking_enabled || 'false') === 'true' && area.length > 0;
-    if (!open) return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed }));
-    return htmlResponse(200, pageShell(brand, form.headline || `Book with ${brand.business_name}`, bookingPageInner(form, PEC_MAPS_KEY), { embed }));
+    // Preview (prompt 102): the Settings builder's iframe renders the form
+    // even while booking is dark (that is exactly when the builder is being
+    // set up). Harmless public: every submit is disabled client-side and the
+    // write path stays gated server-side regardless.
+    const preview = !!(event.queryStringParameters && event.queryStringParameters.preview) && !!form;
+    if (!open && !preview) return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed }));
+    return htmlResponse(200, pageShell(brand, form.headline || `Book with ${brand.business_name}`, bookingPageInner(form, PEC_MAPS_KEY, { preview }), { embed }));
   } catch (err) {
     console.error('pec-booking page failed:', err);
     return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed }));
