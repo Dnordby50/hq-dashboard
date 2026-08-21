@@ -1,3 +1,53 @@
+## [2026-08-21 MST] Online booking is LIVE. 7 service-area zips seeded, home base set, and the full book / confirm / reschedule / cancel chain verified end to end on a real booking. Routes key and the public link swap are still Dylan's.
+
+By: Cowork
+
+Changed: no code. Settings: `booking_home_base_address` = "1030 Sandretto Dr Suite K, Prescott, AZ 86305", `booking_enabled` = true (which auto-filled `booking_url` = https://prescottepoxy.netlify.app/book). Data: 7 rows in pec_booking_service_areas, plus one test booking (appointment 93c219a1, since canceled) and the rows it generated. PROJECT-LOG.md.
+
+**Task 1, service area: 7 zips, seeded through the app's own "Paste a zip list" path** (not a direct insert, so form binding and dedupe ran): 86301, 86303, 86305, 86314, 86315, 86323, 86327. All active, all bound to the booking form; `select count(*) from pec_booking_service_areas where active` = 7, matching the list length.
+
+Dylan approved this list after Cowork derived it from HIS OWN job history rather than guessing: 91 customer records collapse to exactly those seven zips (86303 x17, 86305 x15, 86301 x10, 86315 x6, 86314 x4, 86327 x4, 86323 x3). Dewey, Mayer, Paulden, Cottonwood and Sedona are absent from the history entirely and were deliberately NOT added. Adding more is a Settings edit, no deploy.
+
+Mechanical note for future sessions: that button uses a native `prompt()`, which freezes browser automation. Stub `window.prompt` to return the value and let the real handler run.
+
+**Task 3, home base: set and verified** in the settings table.
+
+**Task 2, Google Routes key: NOT DONE, and deliberately not done by Cowork.** Creating an API key in Dylan's Google Cloud account and pasting it into Netlify means minting a credential and handling a secret in plain text. Cowork declined and handed Dylan the exact steps (enable Routes API, key restricted to Routes API only, NO referrer restriction because it is called server-side, add as GOOGLE_ROUTES_API_KEY, redeploy). **Until it lands the flat 30-minute buffer applies, which is safe but does not space visits by real drive time.** The handoff itself says this can trail go-live, and it did.
+
+**Task 4a, go live: DONE.** One honest deviation from Dylan's stated preference, flagged to him before acting: he asked to test BEFORE going live, and that is not mechanically possible. The public page gates on `booking_enabled === 'true' AND service areas > 0` (pec-booking.cjs:1440) with no staff preview bypass, so the only way to exercise it is to flip it on first. He agreed to flip, test, and leave it live if it passed. Exposure was minutes on a URL that nothing linked to yet.
+
+**Task 4b, the end-to-end test: PASS on every check but one, and that one has a benign explanation.**
+
+Booked at /book as a customer would: address 1030 Sandretto Dr Suite K, Prescott 86305 (in-area, real), Dylan Nordby, (928) 499-7984, dnordby50@gmail.com, consent box ticked, honeypot left empty.
+
+- **ONE appointment, source 'booking':** id `93c219a1-b308-41c0-acaf-fecb4eb18c69`, "On-site estimate for Dylan Nordby", Thursday September 17 3:30 PM, 60 minutes, assigned to Dylan. `select count(*) from pec_appointments where source='booking'` = 1. PASS
+- **Bell rang:** pec_notifications type `appointment_booked`, "Online booking: On-site estimate for Dylan Nordby (Thursday, September 17 at 3:30...)". PASS
+- **Consent captured:** `leads.sms_consent` = true. PASS
+- **Lead stage: NOT 'estimate_scheduled', and correctly so.** The booking folded onto Dylan's pre-existing "Dylan Nordb" lead, which was already at stage `presented`. `_pec-appt.cjs:284` advances only `new` and `contacted`; "anything at or past estimate_sent keeps its stage". Walking a presented lead BACKWARD to estimate_scheduled would be the bug. **What this means honestly: the stage advance is unverified for a genuinely new customer**, because the test identity was an existing lead. The next real booking from a stranger is the actual proof.
+- **Google event:** created on the TopCoat calendar as `rqejbv49j0d9ce27dnjlug80sg`, correct address and a TopCoat deep link in the description. PASS
+- **Confirmation reached the customer:** SMS (kind appointment, status sent) AND email ("Your appointment with Prescott Epoxy Company is booked"), both within 6 seconds of the booking. The SMS carries the manage link verbatim: "Need to change it? Reschedule or cancel here: https://prescottepoxy.netlify.app/book/manage/70314cca...". PASS
+- **pec_booking_requests:** one row, status `booked`. PASS
+- **Reschedule via the manage link:** moved to Thursday August 27 at 9:30 AM. Database start_at 2026-08-27 16:30Z, and the SAME Google event id moved to 9:30-10:30 AM Phoenix (updated 16:26:04Z), so it moved rather than duplicating. A second SMS went out naming the new time. PASS
+- **Cancel via the manage link:** appointment status `canceled`, `google_event_id` cleared, and the Google calendar returns NO events for August 27, so the event was really deleted. A third SMS confirmed the cancellation and pointed back at /book. The canceled row is left as the record, not hard-deleted. PASS
+
+**Two findings worth Dylan's attention.**
+
+1. **"Roughly how many square feet?" is a REQUIRED question.** The first submit was blocked with "Please fill in: Roughly how many square feet?." while the section above it reads "(optional)". A customer who does not know their square footage cannot book online at all; they have to guess. That is a form-config choice, editable in the new Booking form card with no deploy. Worth deciding on purpose rather than by default, because it sits directly in the conversion path.
+2. **The reschedule and cancel actions use native `window.confirm`,** which froze the browser-automation channel mid-test and cost a tab. Not a customer-facing problem (a real person just clicks OK), but any future automated verification of this flow must stub `window.confirm` first.
+
+Minor observation, not a defect: after the cancel, the pec_booking_requests row still reads `booked`. That is defensible (it WAS booked; cancellation is a separate event) but anyone reading the new Online booking funnel card in Metrics should know a canceled booking still counts in the booked column.
+
+**Task 5, the public link swap: NOT DONE, by Dylan's choice.** He is doing both himself. Cowork handed him the embed snippet (`<iframe src="https://prescottepoxy.netlify.app/book?embed=1" style="width:100%;border:0;min-height:760px" loading="lazy" title="Book your free estimate"></iframe>`) and the plain URL for the Google Business Profile booking button. The Routemize webhook config was NOT touched; the intake stays on until the subscription lapses, at which point Dylan unticks "Keep accepting Routemize webhooks" on the same Settings card.
+
+Files touched: PROJECT-LOG.md.
+
+Next steps: one week from go-live, Claude Code owes this log a count of consent-true booking leads.
+
+Handoff to Dylan:
+1. Online booking is live at https://prescottepoxy.netlify.app/book and the whole chain works, including the customer's reschedule and cancel links.
+2. Yours to finish: the Routes API key (steps above), and swapping the website plus Google Business Profile links off Routemize.
+3. Decide whether square footage should really block a booking.
+4. Still open from earlier this week and unrelated to this: the Follow-ups rank engine writes zero rows from both callers, so that queue is serving generic copy.
 ## [2026-08-21 MST] Angi Leads -> Zapier -> pec-lead-intake: step 2 built, zap NOT published, blocked on Angi firing one payload
 
 By: Cowork
