@@ -1,5 +1,15 @@
 [
   {
+    "id": "portal-restyle-license",
+    "date": "2026-08-21",
+    "title": "The customer portal matches the new look, and the ROC license shows.",
+    "summary": "The customer portal now wears the same design as the booking page: your logo centered up top, a bold welcome, soft rounded cards, and the same font. Both the booking page and the portal now show Licensed, Bonded and Insured with ROC353243 at the bottom of every screen.",
+    "howto": [
+      "Open any customer's portal link (the View customer portal button on a customer or job) to see the new look.",
+      "The license line appears at the bottom of the booking page and every portal screen automatically."
+    ]
+  },
+  {
     "id": "booking-page-redesign",
     "date": "2026-08-21",
     "title": "The booking page got its new look.",

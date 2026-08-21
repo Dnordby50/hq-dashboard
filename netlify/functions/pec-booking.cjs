@@ -985,10 +985,10 @@ async function processSlots(deps, body) {
 async function loadBookingBrand(db) {
   const dflt = {
     business_name: 'Prescott Epoxy Company', logo_url: null,
-    primary_color: '#14181C', accent_color: '#D8531C', phone: '',
+    primary_color: '#14181C', accent_color: '#D8531C', phone: '', license_number: '',
   };
   try {
-    const rows = await db('GET', '/pec_brand_identity?brand=eq.prescott-epoxy&select=business_name,logo_url,primary_color,accent_color,phone&limit=1');
+    const rows = await db('GET', '/pec_brand_identity?brand=eq.prescott-epoxy&select=business_name,logo_url,primary_color,accent_color,phone,license_number&limit=1');
     if (Array.isArray(rows) && rows[0]) {
       const b = { ...dflt, ...rows[0] };
       // Same fallback the estimate page uses: the identity row's logo_url is
@@ -1085,7 +1085,8 @@ function closedInner(brand) {
   return `<div class="bigcard"><div class="inner">
   ${brand.logo_url ? `<img class="bklogo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}">` : ''}
   <h1>Online booking is <span class="accentword">almost ready</span></h1>
-<p class="qsub">We are putting the finishing touches on online scheduling.${brand.phone ? ` In the meantime, call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a> and we will get you on the calendar right away.` : ' Please call us and we will get you on the calendar right away.'}</p></div></div>`;
+<p class="qsub">We are putting the finishing touches on online scheduling.${brand.phone ? ` In the meantime, call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a> and we will get you on the calendar right away.` : ' Please call us and we will get you on the calendar right away.'}</p></div></div>
+${brand.license_number ? `<div class="underline-note">Licensed, Bonded &amp; Insured &middot; ${esc(brand.license_number)}</div>` : ''}`;
 }
 
 // The booking page: a 3-step client flow (address -> time -> details) that
@@ -1193,7 +1194,7 @@ ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px;marg
     <span class="tchip"><span class="tico">&#10003;</span>Instant</span>
   </div>
 </div>
-${brand.phone && !preview ? `<div class="underline-note">Questions? Call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a></div>` : ''}
+${!preview && (brand.phone || brand.license_number) ? `<div class="underline-note">${brand.phone ? `Questions? Call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a>` : ''}${brand.phone && brand.license_number ? ' &middot; ' : ''}${brand.license_number ? `Licensed, Bonded &amp; Insured &middot; ${esc(brand.license_number)}` : ''}</div>` : ''}
 
 <script>window.__BK=${cfgJson};</script>
 <script>

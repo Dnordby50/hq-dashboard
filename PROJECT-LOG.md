@@ -1,3 +1,19 @@
+## [2026-08-21 MST] Customer portal restyled to the /book design language; ROC353243 on the booking page and every portal screen
+
+By: Claude Code
+
+Changed: index.html (portal-mode CSS, portal header/footers, Poppins injected in portal mode only), netlify/functions/pec-booking.cjs (license line under the card + on the closed page; brand select gains license_number). No schema, no settings.
+
+Portal: same design system as the redesigned booking page: Poppins (the font link is injected by the mode resolver ONLY in ?portal mode, so the staff dashboard never loads it), #f5f5f7 background, 20px-radius floating cards with the soft shadow, rounded accent buttons and 12px-radius inputs, and a centered hero: logo (or the FTP wordmark), then "Welcome, <accent>name</accent>" in the accent-last-word style of /book. All three portal screens (job list, job detail, referral form) end with the license footer.
+
+License: pec_brand_identity.license_number is 'ROC353243' (verified live). The booking page reads it from the brand row and renders "Licensed, Bonded & Insured, ROC353243" in the under-card note beside the phone line, on the live page, the embed, and the closed page. The PORTAL runs anonymous and cannot read pec_brand_identity under RLS, so its footer carries the constant with a comment naming that row as the source of truth (portalFootHtml); FTP portals show the business line only since FTP has no license on file.
+
+Files touched: index.html, netlify/functions/pec-booking.cjs, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: none.
+
+---
+
 ## [2026-08-21 MST] Booking page redesigned to the Routemize look Dylan sent
 
 By: Claude Code

@@ -723,26 +723,35 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-lightbox-nav.next{right:20px}
 .pec-lightbox-count{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:#fff;font-size:.85rem;background:rgba(0,0,0,.45);padding:4px 12px;border-radius:999px;z-index:2}
 
-/* Customer portal — full-bleed, light-theme override of the dark dashboard palette */
+/* Customer portal — full-bleed, light-theme override of the dark dashboard
+   palette. 2026-08-21: restyled to the /book page's design language (Poppins,
+   soft gray bg, big-radius floating cards, centered hero); the Poppins link
+   is injected by the mode resolver so the dashboard never loads it. */
 body.pec-portal-mode{
-  --bg:#eef0f3;--s1:#ffffff;--s2:#f5f6f8;--s3:#fafbfc;
-  --border:#e6e8ec;--border-light:#d1d5db;
-  --text:#0f1420;--muted:#6b7280;--dim:#9aa1ad;
+  --bg:#f5f5f7;--s1:#ffffff;--s2:#f7f7f8;--s3:#fafbfc;
+  --border:#ececef;--border-light:#d8dade;
+  --text:#14181C;--muted:#8a919c;--dim:#9aa1ad;
   --accent:#D8531C;
   background:var(--bg);color:var(--text);
+  font-family:'Poppins',-apple-system,'Segoe UI',Arial,sans-serif;
 }
 body.pec-portal-mode.brand-ftp{--accent:#ff6b1a}
 body.pec-portal-mode #rdShell,body.pec-portal-mode .header,body.pec-portal-mode .tab-nav,body.pec-portal-mode .tab-content,body.pec-portal-mode #authGate{display:none !important}
-body.pec-portal-mode .pec-btn.primary{color:#fff}
+body.pec-portal-mode .pec-card{background:#fff;border:1px solid var(--border);border-radius:20px;box-shadow:0 8px 30px rgba(20,24,31,.07);padding:22px}
+body.pec-portal-mode .pec-btn{border-radius:12px;font-family:inherit;font-weight:600}
+body.pec-portal-mode .pec-btn.primary{color:#fff;background:var(--accent);border-color:var(--accent)}
 body.pec-portal-mode .pec-btn.primary:disabled{opacity:.5;cursor:not-allowed}
 body.pec-portal-mode .pec-swatch.selected{box-shadow:0 0 0 2px var(--accent) inset}
-body.pec-portal-mode input,body.pec-portal-mode textarea,body.pec-portal-mode select{background:#fff;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-family:inherit;font-size:.85rem}
+body.pec-portal-mode input,body.pec-portal-mode textarea,body.pec-portal-mode select{background:#fff;color:var(--text);border:1.5px solid var(--border);border-radius:12px;padding:10px 12px;font-family:inherit;font-size:.9rem}
 body.pec-portal-mode input:focus,body.pec-portal-mode textarea:focus,body.pec-portal-mode select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(216,83,28,.18)}
-#customerPortalRoot{max-width:820px;margin:0 auto;padding:24px 20px;color:var(--text)}
-#customerPortalRoot .pec-portal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px}
-#customerPortalRoot .pec-portal-brand{font-family:var(--sans);font-weight:800;font-size:1.3rem;color:var(--rd-ink,#0f1420)}
-#customerPortalRoot .pec-portal-logo{height:42px;width:auto;display:block}
-#customerPortalRoot .pec-portal-name{color:var(--muted);font-size:.85rem}
+#customerPortalRoot{max-width:640px;margin:0 auto;padding:28px 16px 40px;color:var(--text)}
+#customerPortalRoot .pec-portal-header{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;margin-bottom:22px}
+#customerPortalRoot .pec-portal-brand{font-weight:700;font-size:1.5rem;color:var(--text);letter-spacing:-.5px}
+#customerPortalRoot .pec-portal-logo{max-height:80px;width:auto;display:block;margin:0 auto}
+#customerPortalRoot .pec-portal-name{font-size:1.5rem;font-weight:700;color:var(--text);letter-spacing:-.5px}
+#customerPortalRoot .pec-portal-name .accentword{color:var(--accent);opacity:.85}
+#customerPortalRoot .pec-portal-foot{text-align:center;color:var(--muted);font-size:.8rem;margin-top:26px;line-height:1.7}
+#customerPortalRoot .pec-portal-foot a{color:var(--accent)}
 </style>
 
 <!-- ============================================================
@@ -2284,7 +2293,15 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
   (function () {
     try {
       var qs = new URLSearchParams(location.search);
-      if (qs.has('portal')) document.body.classList.add('pec-portal-mode');
+      if (qs.has('portal')) {
+        document.body.classList.add('pec-portal-mode');
+        // Poppins only in portal mode (the /book design language); the staff
+        // dashboard keeps its own fonts and never pays this request.
+        var f = document.createElement('link');
+        f.rel = 'stylesheet';
+        f.href = 'https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap';
+        document.head.appendChild(f);
+      }
     } catch (e) {}
   })();
 </script>
@@ -42462,6 +42479,17 @@ async function renderSchemaDrift() {
 // ============================================================
 // Customer portal (mode ?portal={token})
 // ============================================================
+// Footer on every portal screen (2026-08-21, Dylan): the license line. The
+// ROC number mirrors pec_brand_identity.license_number ('ROC353243'); the
+// portal runs anonymous (no brand-identity read under RLS), so the constant
+// lives here with that row as its source of truth. FTP has no license on
+// file, so its portal shows the business line only.
+function portalFootHtml(company) {
+  return company === 'finishing-touch'
+    ? '<div class="pec-portal-foot">Finishing Touch Painting</div>'
+    : '<div class="pec-portal-foot">Prescott Epoxy Company &middot; Licensed, Bonded &amp; Insured &middot; ROC353243</div>';
+}
+
 async function renderCustomerPortal(token) {
   const root = $('customerPortalRoot');
   root.style.display = '';
@@ -42492,12 +42520,10 @@ async function renderCustomerPortal(token) {
 
   root.innerHTML = `
     <div class="pec-portal-header">
-      <div>
-        ${customer.company === 'finishing-touch'
-          ? `<div class="pec-portal-brand">${esc(brand)}</div>`
-          : `<img class="pec-portal-logo" src="assets/pec-logo.png" alt="Prescott Epoxy Company">`}
-        <div class="pec-portal-name">Welcome, ${esc(customer.name)}</div>
-      </div>
+      ${customer.company === 'finishing-touch'
+        ? `<div class="pec-portal-brand">${esc(brand)}</div>`
+        : `<img class="pec-portal-logo" src="assets/pec-logo.png" alt="Prescott Epoxy Company">`}
+      <div class="pec-portal-name">Welcome, <span class="accentword">${esc(customer.name)}</span></div>
       <a href="#referral" class="pec-btn">Refer a friend ($${esc(referral_reward_amount)})</a>
     </div>
     ${(jobs || []).map(j => `
@@ -42511,6 +42537,7 @@ async function renderCustomerPortal(token) {
         </div>
       </div>
     `).join('') || '<div class="pec-empty">No jobs yet — your account manager will add one soon.</div>'}
+    ${portalFootHtml(customer.company)}
   `;
   root.querySelectorAll('[data-open-job]').forEach(c =>
     c.addEventListener('click', () => { location.hash = '#job/' + c.dataset.openJob; })
@@ -42671,6 +42698,7 @@ async function portalJobDetail(token, jobId, bundle) {
         <div>${'★'.repeat(job.review.rating)}${'☆'.repeat(5-job.review.rating)}</div>
         <div style="color:var(--muted);font-size:.85rem;margin-top:6px">${esc(job.review.feedback || '')}</div>
       </div>` : ''}
+    ${portalFootHtml(bundle.customer && bundle.customer.company)}
   `;
 
   // Color picker + signature canvas (only if not confirmed)
@@ -42825,6 +42853,7 @@ async function portalReferralForm(token, customer, reward) {
         <div style="margin-top:10px"><button type="submit" class="pec-btn primary">Submit referral</button></div>
       </form>
     </div>
+    ${portalFootHtml(customer.company)}
   `;
   root.querySelector('a[href="#"]').addEventListener('click', e => { e.preventDefault(); location.hash = ''; renderCustomerPortal(token); });
   document.getElementById('pecPortalRef').addEventListener('submit', async e => {
