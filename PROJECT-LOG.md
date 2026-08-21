@@ -1,3 +1,46 @@
+## [2026-08-21 MST] Signature visibility fixed (Susan Nasser report): the record was always complete, three surfaces just did not show it
+
+By: Claude Code
+
+Changed: index.html (dashboard estimate signature block, portal "Your signed estimate" card), NEW migration 2026-09-13_portal_estimate_signature.sql (get_portal_data, APPLIED TO PROD after a rolled-back rehearsal), help/whats-new.json.
+
+**Dylan's report:** EST-102064 (Susan Nasser) says signed, but the signature is visible nowhere, including the customer portal.
+
+**Diagnosis, from the data first.** Recording was NEVER broken: estimates.signature for EST-102064 holds the complete e-sign record (typed name "Susan Nasser", signed_at 2026-08-17, IP, user agent, the frozen $5,250 total and payment schedule), and signed_at/signed_name are stamped. The e-signature is a TYPED NAME by design (the /e/ page's sign box), not a drawn image, so "seeing the signature" means seeing that record. Three surfaces, three different answers:
+1. The public /e/ page was already correct (verified live: "Accepted and signed by Susan Nasser" banner + the cursive Signature card).
+2. The dashboard estimate page showed only a small green "Signed by ... 4 days ago" chip, no signature, no audit facts. THE ROOT CAUSE of "I can't see it anywhere" internally.
+3. The customer portal was blind by a legacy mismatch (index.html:42637): its signature display reads jobs.signature_data, the OLD draw-on-canvas confirm flow. The estimate accept path signs on the public page and writes estimates.signature, never jobs.signature_data, so an estimate-signed customer's portal showed nothing. Susan's job row: signature_data NULL, exactly as the code paths predict.
+
+**Fixes.**
+- Dashboard: the green chip grew into the full record: cursive signed name, exact timestamp, IP, "signed on the customer link", and a "View the signed copy the customer sees" link to /e/<token>. Reads est.signature (already loaded via select('*')), zero new queries.
+- Portal: get_portal_data now returns 'estimate_signature' per job (the newest accepted+signed linked estimate: number, signed name, signed_at, public_token), and the job page renders a "Your signed estimate" card with the cursive name and a link to the signed document. Exposure review in the migration header: everything exposed is the customer's own contract and the very /e/ link the accept flow already sent them.
+- RULE 14: get_portal_data is SECURITY DEFINER, so the change rehearsed in a rolled-back transaction on prod first (assertion: Susan's token returns her signature block, name and estimate number exact), then applied, then live-verified returning "Susan Nasser".
+
+**Not changed on purpose:** the portal's own "Sign your project" confirm flow (colors + drawn signature) still exists and still reads jobs.signature_data for jobs confirmed that way; the new card sits above it, so a signed-estimate customer sees their contract signature whether or not they have done the colors confirmation.
+
+Files touched: index.html, supabase/migrations/2026-09-13_portal_estimate_signature.sql, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: none.
+
+---
+
+## [2026-08-21 MST] Inactive sales team members hidden from working lists (Aron), kept in the database behind Inactive disclosures
+
+By: Claude Code
+
+Changed: index.html only. No schema, no settings, no data: active flags were already there, the UI just ignored them in most lists.
+
+Dylan's ask: Aron Bronson is inactive and should not visibly show up, in Settings or elsewhere, while staying in the database (or behind an archived dropdown). What changed, surface by surface:
+- Settings > General > Sales Team: the table shows active members; inactive fold into a collapsed "Inactive members (N)" disclosure below it, still editable there (Edit reactivates).
+- Settings > Appointments > Google Calendar sync and SalesAsk rep emails: same split, same disclosure; a lingering Google connection on an inactive member can still be disconnected without reactivating them.
+- Appointments calendar salesperson filter and the appointment form's Salesperson dropdown: active members only, with ONE exception each: the currently selected/assigned inactive member still lists (labeled inactive), so an old appointment or a stale filter is never silently reassigned or blanked by opening the form. The estimator's salesperson picker and the job-page salesperson editor already filtered to active (prompt 47/55) and are untouched, as are Metrics/Commission attribution reads, which need inactive NAMES for history and display no roster.
+
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: none.
+
+---
+
 ## [2026-08-21 MST] Online booking is LIVE. 7 service-area zips seeded, home base set, and the full book / confirm / reschedule / cancel chain verified end to end on a real booking. Routes key and the public link swap are still Dylan's.
 
 By: Cowork

@@ -1,5 +1,25 @@
 [
   {
+    "id": "inactive-reps-hidden",
+    "date": "2026-08-21",
+    "title": "Inactive salespeople no longer clutter lists.",
+    "summary": "Inactive sales team members stay in the system but no longer appear in the Sales Team list, the appointment salesperson picker, the calendar filter, or the Google and SalesAsk cards. Each list has an Inactive members section you can expand when needed, and anything already assigned to an inactive person keeps working.",
+    "howto": [
+      "Settings, then General, then Sales Team: active members show as before; expand Inactive members below the table to see or reactivate anyone.",
+      "Appointment dropdowns only offer active people; an old appointment assigned to an inactive person still shows them until you change it."
+    ]
+  },
+  {
+    "id": "signature-visibility",
+    "date": "2026-08-21",
+    "title": "Customer signatures are now visible everywhere they should be.",
+    "summary": "When a customer signs an estimate, the signature was recorded but hard to see. Now the estimate page shows the full signature record (the signed name, exact time, and where it was signed, with a link to the signed copy the customer sees), and the customer portal shows a Your signed estimate card with a link to the signed document. Nothing was lost before; it just was not displayed.",
+    "howto": [
+      "Open an accepted estimate. The green Signed box now shows the signature, the exact time, and a link to view the signed copy.",
+      "The customer's portal now shows their signed estimate on the job page, with a link to the full signed document."
+    ]
+  },
+  {
     "id": "estimate-touch-card-position",
     "date": "2026-08-21",
     "title": "Log a touch moved up on the estimate page.",

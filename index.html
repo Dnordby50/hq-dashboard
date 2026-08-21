@@ -21502,7 +21502,13 @@ async function renderSettingsAppointments() {
         unticked calendars are never read or written. Imported events are time blocks: they never
         text a customer or move a lead.
       </div>
-      ${members.length ? members.map(m => `
+      ${(() => {
+        // Inactive members stay in the database but off the visible list
+        // (2026-08-21, Dylan re Aron): active rows render as before, and
+        // anyone inactive folds into a collapsed disclosure below, still
+        // fully workable there (a lingering Google connection can be
+        // disconnected without reactivating the member).
+        const gcalMemberHtml = (m) => `
         <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--rd-line,var(--border))">
           <span class="dot" style="width:9px;height:9px;border-radius:50%;background:${esc(apptMemberColor(members, m.id))};flex:none"></span>
           <strong style="flex:1">${esc(m.name)}${m.active === false ? ' <span style="color:var(--muted);font-weight:400">(inactive)</span>' : ''}</strong>
@@ -21538,7 +21544,13 @@ async function renderSettingsAppointments() {
             </div>`;
           }).join('')
           : '<div style="font-size:.76rem;color:var(--muted)">Click Refresh list to load the calendars on this account.</div>'}
-        </div>` : ''}`).join('') : '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>'}
+        </div>` : ''}`;
+        const act = members.filter(m => m.active !== false);
+        const inact = members.filter(m => m.active === false);
+        if (!members.length) return '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>';
+        return act.map(gcalMemberHtml).join('')
+          + (inact.length ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.76rem;color:var(--muted)">Inactive members (${inact.length})</summary>${inact.map(gcalMemberHtml).join('')}</details>` : '');
+      })()}
       ${gcMigrated ? `
       <div style="margin-top:12px;border-top:1px solid var(--rd-line,var(--border));padding-top:10px">
         <div class="pec-row-2" style="max-width:460px">
@@ -21599,13 +21611,21 @@ async function renderSettingsAppointments() {
         above the first number, amber at or above the second, red below. Green must be higher than amber.
       </div>
       <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin:10px 0 2px">Rep SalesAsk emails</div>
-      ${members.map(m => `
+      ${(() => {
+        // Inactive members fold behind a disclosure (2026-08-21, Dylan);
+        // their rows stay editable there and nothing leaves the database.
+        const saMemberHtml = (m) => `
         <div style="display:flex;align-items:center;gap:12px;padding:7px 0;border-bottom:1px solid var(--rd-line,var(--border))">
           <strong style="flex:1">${esc(m.name)}${m.active === false ? ' <span style="color:var(--muted);font-weight:400">(inactive)</span>' : ''}</strong>
           <input type="email" data-sa-email="${esc(m.id)}" value="${esc(m.salesask_email || '')}"
             placeholder="${esc(personEmailByMember[m.id] || m.google_email || 'salesask login email')}"
             style="max-width:260px;font-size:.8rem">
-        </div>`).join('')}
+        </div>`;
+        const act = members.filter(m => m.active !== false);
+        const inact = members.filter(m => m.active === false);
+        return act.map(saMemberHtml).join('')
+          + (inact.length ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.76rem;color:var(--muted)">Inactive members (${inact.length})</summary>${inact.map(saMemberHtml).join('')}</details>` : '');
+      })()}
       <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="saStatus"></div>`}
     </div>
 
@@ -24518,19 +24538,20 @@ async function renderSettings() {
           </div>
           <button class="pec-btn primary sm" id="pecSalesAddBtn">+ Add member</button>
         </div>
-        ${salesOpen ? `
-          <table class="pec-table">
-            <thead><tr><th>Name</th><th>Commission %</th><th>Login</th><th>Active</th><th>Notes</th><th></th></tr></thead>
-            <tbody>
-              ${state.salesTeam.map(s => {
-                // Login mapping (prompt 47): which auth login this member is.
-                // Drives the estimator's current-user salesperson default. The
-                // column may predate its migration; undefined reads as unmapped.
-                const login = s.auth_user_id ? (state.adminUsers || []).find(u => u.auth_user_id === s.auth_user_id) : null;
-                const loginTxt = s.auth_user_id
-                  ? esc(login ? (login.email || login.name || 'linked') : 'linked')
-                  : '<span style="color:#b45309" title="This member gets no current-user default in the estimator until an admin links their login (Edit).">Not linked</span>';
-                return `
+        ${salesOpen ? (() => {
+          // Inactive members off the visible roster, behind a disclosure
+          // (2026-08-21, Dylan re Aron): rows stay in the database and stay
+          // editable (Edit still reactivates); they just stop cluttering the
+          // working list.
+          const salesRowHtml = (s) => {
+            // Login mapping (prompt 47): which auth login this member is.
+            // Drives the estimator's current-user salesperson default. The
+            // column may predate its migration; undefined reads as unmapped.
+            const login = s.auth_user_id ? (state.adminUsers || []).find(u => u.auth_user_id === s.auth_user_id) : null;
+            const loginTxt = s.auth_user_id
+              ? esc(login ? (login.email || login.name || 'linked') : 'linked')
+              : '<span style="color:#b45309" title="This member gets no current-user default in the estimator until an admin links their login (Edit).">Not linked</span>';
+            return `
                 <tr data-sales-id="${esc(s.id)}">
                   <td><strong>${esc(s.name)}</strong></td>
                   <td>${s.commission_pct != null ? esc(Number(s.commission_pct)) + '%' : '0%'}</td>
@@ -24539,10 +24560,24 @@ async function renderSettings() {
                   <td>${esc(s.notes || '')}</td>
                   <td><button class="pec-btn sm ghost" data-edit-sales="${esc(s.id)}">Edit</button></td>
                 </tr>`;
-              }).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No sales team members yet.</td></tr>'}
+          };
+          const act = state.salesTeam.filter(s => s.active !== false);
+          const inact = state.salesTeam.filter(s => s.active === false);
+          return `
+          <table class="pec-table">
+            <thead><tr><th>Name</th><th>Commission %</th><th>Login</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+              ${act.map(salesRowHtml).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No active sales team members. Add one, or reopen someone under Inactive below.</td></tr>'}
             </tbody>
           </table>
-        ` : ''}
+          ${inact.length ? `
+          <details style="margin-top:8px">
+            <summary style="cursor:pointer;font-size:.76rem;color:var(--muted)">Inactive members (${inact.length})</summary>
+            <table class="pec-table" style="margin-top:6px">
+              <tbody>${inact.map(salesRowHtml).join('')}</tbody>
+            </table>
+          </details>` : ''}`;
+        })() : ''}
       </div>`;
     })()}
 
@@ -28231,8 +28266,12 @@ async function renderAppointments() {
 
   const typeOpts = ['<option value="">All types</option>']
     .concat(APPT_TYPES.map(t => `<option value="${esc(t.key)}"${f.type === t.key ? ' selected' : ''}>${esc(t.label)}</option>`)).join('');
+  // Inactive members stay out of the filter (2026-08-21, Dylan); one shows
+  // only while it IS the current selection, so a stale filter never silently
+  // changes what the calendar displays.
   const memberOpts = ['<option value="">All Users</option>']
-    .concat(members.map(m => `<option value="${esc(m.id)}"${f.member === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`)).join('');
+    .concat(members.filter(m => m.active !== false || f.member === m.id)
+      .map(m => `<option value="${esc(m.id)}"${f.member === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`)).join('');
   const legend = [
     ...activeMembers.map(m => `<span><span class="dot" style="background:${esc(apptMemberColor(members, m.id))}"></span>${esc(m.name)}</span>`),
     ...APPT_TYPES.map(t => `<span><span class="dot" style="background:${esc(t.accent)};border-radius:2px"></span>${esc(t.label)}</span>`),
@@ -28626,7 +28665,7 @@ async function openAppointmentForm(existing, prefill = {}) {
       <div class="pec-field"><label>Type</label>
         <select id="afType">${APPT_TYPES.map(t => `<option value="${esc(t.key)}"${curType === t.key ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
       <div class="pec-field"><label>Salesperson</label>
-        <select id="afMember"><option value="">Unassigned</option>${members.map(m =>
+        <select id="afMember"><option value="">Unassigned</option>${members.filter(m => m.active !== false || curMember === m.id).map(m =>
           `<option value="${esc(m.id)}"${curMember === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`).join('')}</select></div>
     </div>
     <div class="pec-field"><label>Customer</label><div id="afCustWrap"></div></div>
@@ -33468,7 +33507,21 @@ async function renderEstimateDetail(estimateId) {
             <div style="color:var(--muted);font-size:.82rem;line-height:1.5">Not sent yet. The public link stays private (it 404s) until you send the estimate.</div>
           ` : `
             <div style="font-size:.82rem;margin-bottom:4px">Sent ${esc(fmtRelativeTime(est.sent_at))} <span style="color:var(--muted)" title="${esc(new Date(est.sent_at).toLocaleString())}">(${esc(new Date(est.sent_at).toLocaleDateString())})</span></div>
-            ${est.signed_at ? `<div style="background:rgba(22,163,74,.12);border:1px solid rgba(22,163,74,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Signed by ${esc(est.signed_name || 'customer')}</strong> ${esc(fmtRelativeTime(est.signed_at))}${est.job_id ? ' · <a href="#" id="estOpenJob" style="color:var(--rd-accent,var(--accent))">Open job</a>' : ''}</div>` : ''}
+            ${est.signed_at ? (() => {
+              // The full signature record, visible internally (2026-08-21,
+              // Dylan re Susan Nasser: "once a customer signs, we should be
+              // able to see it"). The e-sign is a typed name; estimates.
+              // signature carries the audit facts (IP, device, frozen total)
+              // the accept path stored.
+              const sig = (est.signature && typeof est.signature === 'object') ? est.signature : {};
+              const exact = new Date(est.signed_at).toLocaleString();
+              return `<div style="background:rgba(22,163,74,.12);border:1px solid rgba(22,163,74,.4);border-radius:8px;padding:10px 12px;font-size:.82rem;margin-top:8px">
+                <strong>Signed by ${esc(est.signed_name || 'customer')}</strong> ${esc(fmtRelativeTime(est.signed_at))}${est.job_id ? ' · <a href="#" id="estOpenJob" style="color:var(--rd-accent,var(--accent))">Open job</a>' : ''}
+                <div style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:24px;border-bottom:1.5px solid rgba(22,163,74,.5);max-width:300px;padding:2px 4px;margin-top:6px">${esc(est.signed_name || '')}</div>
+                <div style="color:var(--muted);font-size:.7rem;margin-top:5px">${esc(exact)}${sig.ip ? ` · IP ${esc(sig.ip)}` : ''}${sig.via === 'public_estimate_page' ? ' · signed on the customer link' : ''}</div>
+                ${est.public_token ? `<a href="/e/${esc(est.public_token)}" target="_blank" rel="noopener" style="font-size:.76rem;color:var(--rd-accent,var(--accent))">View the signed copy the customer sees ↗</a>` : ''}
+              </div>`;
+            })() : ''}
             ${est.status === 'accepted' ? '<div id="estSoldOnSiteBlock" style="border:1px solid var(--line,rgba(100,116,139,.35));border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px;display:none"></div>' : ''}
             ${est.status === 'change_requested' && est.change_request_note ? `<div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Changes requested:</strong> <span style="white-space:pre-wrap">${esc(est.change_request_note)}</span><div style="color:var(--muted);font-size:.72rem;margin-top:4px">Edit the estimate, then re-send. Same number, same link, new sent date.</div></div>` : ''}
             ${est.status === 'rejected' ? `<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Declined</strong>${est.rejected_at ? ' ' + esc(fmtRelativeTime(est.rejected_at)) : ''}${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}</div>` : ''}
@@ -42563,6 +42616,14 @@ async function portalJobDetail(token, jobId, bundle) {
         <div class="pec-gallery">
           ${job.photos.map(p => `<div class="pec-gallery-item"><img src="${esc(p.url)}" alt=""></div>`).join('')}
         </div>
+      </div>` : ''}
+
+    ${job.estimate_signature && job.estimate_signature.signed_name ? `
+      <div class="pec-card">
+        <h3>Your signed estimate</h3>
+        <div style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:26px;border-bottom:1.5px solid #94a3b8;max-width:320px;padding:2px 6px">${esc(job.estimate_signature.signed_name)}</div>
+        <div style="color:var(--muted);font-size:.82rem;margin-top:8px">${job.estimate_signature.estimate_number ? `Estimate EST-${esc(String(job.estimate_signature.estimate_number))} signed` : 'Signed'} by ${esc(job.estimate_signature.signed_name)}${job.estimate_signature.signed_at ? ` on ${fmtDate(job.estimate_signature.signed_at)}` : ''}</div>
+        ${job.estimate_signature.public_token ? `<a class="pec-btn ghost" style="margin-top:10px;display:inline-block" href="/e/${esc(job.estimate_signature.public_token)}" target="_blank" rel="noopener">View your signed estimate</a>` : ''}
       </div>` : ''}
 
     ${!job.confirmed ? `
