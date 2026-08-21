@@ -1,3 +1,21 @@
+## [2026-08-21 MST] Angi webhook is NOT self-serve: correcting today's earlier handoff, and the crmintegrations request drafted
+
+By: Cowork
+
+Changed: nothing but this entry. Correction to the entry below it.
+
+**The earlier entry's handoff step 1 was wrong** and is superseded here. It said "paste the hook URL into Angi's lead-forwarding settings". There are no such settings. Recording the correction rather than editing the old entry, since the log is append-only and a stranded wrong handoff is the exact failure mode already burned into this project.
+
+**What was actually verified in the live Angi portal** (office.angi.com, account h/157711794, Prescott Epoxy Company LLC): My business > Integrations offers six CRM cards and nothing else (ServiceTitan, Housecall Pro, Buildxact, Jobber, Contractor+, JobNimbus). No Zapier card, no webhook option, no custom URL field anywhere on the page. Separately, the Zapier app catalog has NO official Angi app (discover_zapier_actions on "Angi" returns 0 results), which confirms Catch Hook was the right and only design.
+
+**Angi's real process,** per their own help doc (intercom.help/angi article 11404595): email crmintegrations@angi.com with the Company ID, account email, webhook URL, authentication type, data format, and CRM type, and Angi's team adds the feed to the account. Live chat Mon-Fri 8AM-9PM Eastern is the faster path for the same request. 157711794 appears in the portal URL path and is very likely the Company ID, but it was never seen labeled as such, so it is worth confirming with Angi rather than asserting.
+
+**Email was drafted, NOT sent.** Dylan first chose to have Cowork send it through the Gmail connector. Before sending, a full-mailbox search found ZERO emails from angi.com and exactly one from a homeadvisor.com domain (a 2025 homeowner review code), which is not what an active Angi Pro mailbox looks like. Sending from dnordby50@gmail.com would have meant Angi could not match the requester to the account, and their confirmation plus any test lead notice would land in an inbox nobody watches. Flagged, not sent. Dylan then confirmed the Angi account is under dylan@prescottepoxy.com and asked for the text to paste himself, which is the correct path anyway.
+
+Files touched: PROJECT-LOG.md.
+
+Next steps: Dylan sends the drafted request from dylan@prescottepoxy.com (or runs it through Angi live chat). Once Angi confirms the feed and one real lead arrives, the remaining work is unchanged from the entry below: Test trigger to capture Angi's field names, map the Data rows including source_ref, paste PEC_WEBHOOK_SECRET into the blank x-webhook-secret header, test, publish.
+
 ## [2026-08-21 MST] Customer portal restyled to the /book design language; ROC353243 on the booking page and every portal screen
 
 By: Claude Code
