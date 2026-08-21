@@ -33504,6 +33504,11 @@ async function renderEstimateDetail(estimateId) {
             container renders nothing when no recording exists (one muted line
             when a past visit went unrecorded). */''}
         <div id="estSalesAskCard"></div>
+        ${/* Touches & notes moved up here (2026-08-21, Dylan): after an
+            estimate goes out this is the box the rep works from (log the
+            follow-up call, reset the clock), so it sits right above the
+            CompanyCam photos instead of dead last on the page. */''}
+        ${pecTouchNotesCardHtml('pecEstTouchCard')}
         ${/* Prompt 83: CompanyCam photos while pricing; ticked photos ship on
             the proposal. Self-mounting, renders nothing when the proxy errors
             or the feature is off. */''}
@@ -33516,7 +33521,6 @@ async function renderEstimateDetail(estimateId) {
           </div>`).join('') : '<div class="pec-empty">No activity yet.</div>'}
         </div>
         ${estimateCommsCardHtml()}
-        ${pecTouchNotesCardHtml('pecEstTouchCard')}
       </div>
     </div>
   `;

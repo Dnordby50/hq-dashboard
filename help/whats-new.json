@@ -1,5 +1,15 @@
 [
   {
+    "id": "estimate-touch-card-position",
+    "date": "2026-08-21",
+    "title": "Log a touch moved up on the estimate page.",
+    "summary": "The Touches and notes box now sits right above the CompanyCam photos on an estimate instead of at the bottom of the page, so logging a follow-up call after an estimate goes out no longer means scrolling past everything.",
+    "howto": [
+      "Open any estimate. Touches and notes is now just above the CompanyCam photos.",
+      "Log a touch there after each follow-up call or text; it resets the follow-up clock like before."
+    ]
+  },
+  {
     "id": "booking-form-builder",
     "date": "2026-08-20",
     "title": "Build and edit the booking form visually, and see the booking funnel.",

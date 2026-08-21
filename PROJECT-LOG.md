@@ -1,3 +1,17 @@
+## [2026-08-21 MST] Estimate page: the Touches & notes (Log a touch) card moved to sit right above the CompanyCam photos
+
+By: Claude Code
+
+Changed: index.html (renderEstimateDetail card order only), help/whats-new.json. No schema, no settings, no behavior change: same card, same mount, same data.
+
+Dylan's ask: after an estimate is sent, the Log a touch box is the thing he works from (log the follow-up call, reset the prompt-98 clock), and it sat DEAD LAST on the page, below Activity and Communications. It now renders directly above the CompanyCam card. The card still renders pre-send too (logging a touch before sending is legitimate), so nothing was gated, only reordered. The mount call is unchanged; only the container's position in the template moved, verified to appear exactly once.
+
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: none.
+
+---
+
 ## [2026-08-20 MST] Prompt 102: the visual booking form builder and the booking funnel. Run early by Dylan's explicit call; FTP (Part C) skipped by his explicit call.
 
 By: Claude Code
