@@ -60,7 +60,6 @@ const {
 } = require('./_pec-appt.cjs');
 const { sameHumanOr, normPhone, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
-const { parseSmsConsent } = require('./pec-lead-intake.cjs');
 const {
   quietHours, sendQuoSmsReal, sendResendEmailReal,
   getSmsSender, getEmailSender, dripEmailHtml, getBrandAccent,
@@ -294,7 +293,7 @@ function routeAnswers(questions, answers) {
 // Create the lead a direct booker never became (the createRoutemizeLead
 // mirror, source 'booking'). Customer first so the lead is born linked
 // (prompt 89); never nurture-enrolled; scored via the pec-lead-ai kick at
-// the call site. Consent is explicit-only through parseSmsConsent, with the
+// the call site. Consent is implied by the inquiry (policy 2026-08-21), with the
 // exact disclosure stored on the lead event AND the booking request row.
 async function createBookingLead(db, f) {
   let customerId = null;
@@ -309,7 +308,9 @@ async function createBookingLead(db, f) {
   } catch (e) {
     console.warn('pec-booking: customer resolve failed (non-fatal):', e && e.message);
   }
-  const consent = f.smsConsent === true;
+  // Policy 2026-08-21 (Dylan): booking IS consent; the disclosure the page
+  // showed is stored as the record. STOP opts out.
+  const consent = true;
   const rows = await db('POST', '/leads', {
     brand: 'PEC',
     customer_id: customerId,
@@ -322,8 +323,8 @@ async function createBookingLead(db, f) {
     address: f.address, city: f.city, state: f.state, zip: f.zip,
     stage: 'new',
     sms_consent: consent,
-    sms_consent_source: consent ? 'online booking form' : null,
-    sms_consent_at: consent ? new Date().toISOString() : null,
+    sms_consent_source: 'online booking form (implied consent policy 2026-08-21)',
+    sms_consent_at: new Date().toISOString(),
   }, true);
   const lead = Array.isArray(rows) && rows[0];
   if (!lead) throw new Error('lead insert returned no row');
@@ -507,7 +508,10 @@ async function processBook(deps, body, meta = {}) {
   const ipHash = meta.ipHash || null;
   const userAgent = meta.userAgent || null;
   const disclosure = cleanStr(settings.booking_sms_disclosure);
-  const smsConsent = parseSmsConsent(body.sms_consent);
+  // Policy 2026-08-21 (Dylan): submitting a booking or callback request IS
+  // consent to be texted; the page shows the disclosure as a notice instead
+  // of a checkbox and STOP opts out. parseSmsConsent no longer gates.
+  const smsConsent = true;
 
   const baseRow = {
     form_id: form ? form.id : null, name, phone: phone10 || phoneRaw, email,
@@ -755,7 +759,10 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
     state: cleanStr(body.state) || 'AZ', zip: cleanStr(body.zip),
   };
   const project = cleanStr(body.project);
-  const smsConsent = parseSmsConsent(body.sms_consent);
+  // Policy 2026-08-21 (Dylan): submitting a booking or callback request IS
+  // consent to be texted; the page shows the disclosure as a notice instead
+  // of a checkbox and STOP opts out. parseSmsConsent no longer gates.
+  const smsConsent = true;
   const disclosure = cleanStr(settings.booking_sms_disclosure);
 
   try {
@@ -1147,7 +1154,7 @@ ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px;marg
   <label for="ooPhone">Phone</label><input id="ooPhone" autocomplete="tel" inputmode="tel">
   <label for="ooEmail">Email</label><input id="ooEmail" autocomplete="email" inputmode="email">
   <label for="ooProject">Tell us about the project</label><textarea id="ooProject" rows="3"></textarea>
-  <div class="consent"><input type="checkbox" id="ooConsent"><span id="ooConsentText"></span></div>
+  <div class="consent"><span id="ooConsentText"></span></div>
   <div class="err" id="ooErr"></div>
   <button class="btn" id="ooSend" style="margin-top:10px">Request a call</button>
 </div>
@@ -1173,7 +1180,7 @@ ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px;marg
   <label for="bkEmail">Email</label><input id="bkEmail" autocomplete="email" inputmode="email">
   <div id="bkQuestions"></div>
   <div class="hpwrap" aria-hidden="true"><label>Website</label><input id="bkWebsite" tabindex="-1" autocomplete="off"></div>
-  <div class="consent"><input type="checkbox" id="bkConsent"><span id="bkConsentText"></span></div>
+  <div class="consent"><span id="bkConsentText"></span></div>
   <div class="err" id="bkErr"></div>
   <button class="btn" id="bkBook" style="margin-top:10px">Book it</button>
 </div>
@@ -1370,7 +1377,7 @@ $('bkBook').addEventListener('click',function(){
     form:CFG.slug,start:S.start,
     name:$('bkName').value.trim(),phone:$('bkPhone').value.trim(),email:$('bkEmail').value.trim(),
     address1:S.addr.address1,city:S.addr.city,zip:S.addr.zip,place_id:S.addr.place_id,
-    answers:answers,sms_consent:$('bkConsent').checked?'true':'',
+    answers:answers,sms_consent:'true',
     website:$('bkWebsite').value,fill_ms:Date.now()-S.t0
   }).then(function(j){
     btn.disabled=false;btn.textContent='Book it';
@@ -1390,7 +1397,7 @@ $('ooSend').addEventListener('click',function(){
   api('lead',{
     form:CFG.slug,name:$('ooName').value.trim(),phone:$('ooPhone').value.trim(),email:$('ooEmail').value.trim(),
     address1:S.addr.address1,city:S.addr.city,zip:S.addr.zip,project:$('ooProject').value.trim(),
-    sms_consent:$('ooConsent').checked?'true':'',website:$('bkWebsite')?$('bkWebsite').value:'',fill_ms:Date.now()-S.t0
+    sms_consent:'true',website:$('bkWebsite')?$('bkWebsite').value:'',fill_ms:Date.now()-S.t0
   }).then(function(j){
     btn.disabled=false;btn.textContent='Request a call';
     if(!j.ok){$('ooErr').textContent=j.error||'Something went wrong.';return}

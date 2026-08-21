@@ -1,3 +1,23 @@
+## [2026-08-21 MST] Implied SMS consent platform-wide, the drip approval gate really off (with a flush for the stuck seven), and a Send log on the Drips tab
+
+By: Claude Code
+
+Changed: index.html (Drips Send log card + filter, gate-toggle cancel toast + new confirm copy), netlify/functions/_pec-drip.cjs (gate-off pending flush), pec-lead-intake.cjs / pec-appt-intake.cjs / pec-booking.cjs (implied-consent writers; booking checkboxes became passive notices), NEW migration 2026-09-14_implied_sms_consent.sql (APPLIED TO PROD), two updated fixture tests, features.json, help/whats-new.json. Plus two prod settings writes: drip_approval_required -> 'false' (Dylan's stated intent, see diagnosis), booking_sms_disclosure reworded for notice-not-checkbox.
+
+**1. Implied SMS consent (Dylan's explicit policy, his words: "Assume everyone who submits a request for a lead has consented to SMS throughout the platform. If they reply stop, then they will be opted out.").** Implementation: leads.sms_consent now DEFAULTS true (covers the estimator and manual-add paths that omit the column); the three explicit writers (web-form intake, Routemize intake's created leads, the booking form) stamp true with sms_consent_source 'implied by inquiry (policy 2026-08-21)' so the record says WHY consent exists; the booking page's TCPA checkbox became a passive disclosure notice (the exact text still stored on the lead event and the request row, and the settings copy reworded to match); the 23 live not-opted-out leads at false were backfilled the same way (now 24/24 consented, 0 opted out). STOP is untouched and remains the single opt-out: the Quo webhook flips leads.opted_out and every send path (drips, reminders, blasts) already checks it. FOR THE RECORD: implied consent is a weaker TCPA posture than a checked box; this is the owner's documented business decision, the shown-disclosure text is still stored verbatim per booking, and the send paths still honor opt-out absolutely.
+
+**2. "I turned Drip Approvals off but they are still gated," diagnosed with the settings and ledger, not guessed.** Three separate findings: (a) drip_sending_enabled WAS 'true' (that toggle saved) but drip_approval_required still read 'true': the approvals-off toggle never landed, and the likely culprit is its confirm() dialog, whose dismissal canceled the flip SILENTLY. Fixed twice: the setting is now 'false', and canceling that confirm now toasts "Approvals left ON. Nothing changed." so it can never silently no-op again. (b) Seven pending rows (six Review-request texts, one Lead follow-up email for Mattie Magonigal) were holding their enrollments, by prompt 42's deliberate design, "regardless of the gate setting". Dylan's instruction reverses that design for the gate-off case ONLY: the runner now flushes leftover pending rows through resolvePendingStep, the SAME path a human approve takes (kill-switches re-checked at send time, quiet-hours deferral, claim-first advance), so the seven go out on the next 15-minute tick and nothing like them can pile up again. With the gate ON, the mid-review hold stands exactly as before, and the fixture suite now proves BOTH behaviors. The review-campaign enrollment guard (needs one approved send ever) is already satisfied: a review send was approved on 2026-08-06. (c) Estimate and Invoice campaigns are STILL IN DRY-RUN MODE, a per-campaign control Dylan did not mention touching; their 47 dry_run rows write review copy and never send. Left as-is deliberately; flagged to Dylan in chat since flipping invoice payment reminders live is a business call, not a bug fix.
+
+**3. The Send log (Dylan: "a log of every drip that gets sent out under the drip tab").** The Drips tab's "Recent drip activity" card became the Send log: 250 most recent ledger rows (up from 25), default-filtered to SENT ONLY with an All-activity toggle (dry runs, skips, failures, awaiting-approval), campaign named on every row, recipient, step, channel, timestamp (sent_at when present), and the full message text one tap away. The same ledger the lead pages read; no new tables.
+
+**Verified:** full npm suite green after updating the two tests that asserted the OLD policies (appt-intake's "consent never inferred" and drip-approval's "gate off never auto-sends a pending item"), both rewritten to assert the new documented behavior; all index.html scripts parse.
+
+Files touched: see Changed.
+
+Next steps: Dylan decides whether Estimate follow-up and Invoice payment reminder campaigns leave dry-run (the Mode toggle on each campaign card in Drips); nothing sends from them until he flips it.
+
+---
+
 ## [2026-08-21 MST] Angi webhook is NOT self-serve: correcting today's earlier handoff, and the crmintegrations request drafted
 
 By: Cowork

@@ -638,7 +638,12 @@ async function createRoutemizeLead(db, args) {
     phone: args.phone10 || null,
     address: args.address, city: args.city, state: args.state, zip: args.zip,
     stage: 'new',
-    sms_consent: false, // TCPA: consent is never inferred from a booking
+    // Policy 2026-08-21 (Dylan, reversing the earlier never-inferred
+    // stance): booking an estimate IS consent to be texted about it; STOP
+    // opts out and every send path checks opted_out.
+    sms_consent: true,
+    sms_consent_source: 'implied by inquiry (policy 2026-08-21)',
+    sms_consent_at: new Date().toISOString(),
   };
   let rows;
   try {

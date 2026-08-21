@@ -324,7 +324,8 @@ const CREATED = {
     ok(cust.lead_source === 'google' && cust.company === 'prescott-epoxy', 'customer carries lead_source and PEC company');
     ok(appt.customer_id === cust.id, 'appointment linked to the customer too');
     ok(lead.routemize_contact_id === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001' && lead.source_ref === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001', 'contact.contactId stored on the created lead');
-    ok(lead.sms_consent === false, 'consent never inferred from a booking');
+    ok(lead.sms_consent === true && /implied by inquiry/.test(lead.sms_consent_source || ''),
+      'consent implied by the booking (policy 2026-08-21; STOP is the opt-out)');
     ok(lead.stage === 'estimate_scheduled', 'created at new, then advanced by apptBookingLeadEffects like an in-app booking');
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'created' && e.payload.via === 'routemize_booking'), "created lead_event written with via 'routemize_booking'");
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'stage_change'), 'stage_change event from the booking effects');

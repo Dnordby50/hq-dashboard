@@ -1,5 +1,25 @@
 [
   {
+    "id": "implied-sms-consent",
+    "date": "2026-08-21",
+    "title": "Texting is on for every lead automatically.",
+    "summary": "Anyone who submits a request, books online, or gets added as a lead is now treated as having agreed to receive texts, so follow-ups and reminders reach everyone by text and email from day one. Replying STOP still opts anyone out instantly, everywhere. The booking page shows the texting notice instead of a checkbox, and all existing leads were switched on.",
+    "howto": [
+      "Nothing to do: new and existing leads are text-enabled automatically.",
+      "A customer who replies STOP is opted out immediately and no drip, reminder, or blast will text them again."
+    ]
+  },
+  {
+    "id": "drips-ungated-sendlog",
+    "date": "2026-08-21",
+    "title": "Drips send fully automatically now, with a Send log to watch them.",
+    "summary": "With approvals off, drips no longer wait for a review, and the messages that were already stuck waiting go out automatically on the next run. The Drips tab now has a Send log showing every message that actually went out, with the campaign, recipient, channel, time, and full text; switch to All activity to see dry runs, skips, and failures too. Also fixed: canceling the approvals confirmation popup now tells you nothing changed instead of staying silent.",
+    "howto": [
+      "Open Drips on the left. The Send log card at the bottom lists every sent message; tap a row's summary to read the full text.",
+      "Use the All activity button on that card to see dry runs, skips, and failures as well."
+    ]
+  },
+  {
     "id": "portal-restyle-license",
     "date": "2026-08-21",
     "title": "The customer portal matches the new look, and the ROC license shows.",

@@ -20591,7 +20591,10 @@ async function renderSettingsDrips() {
   });
   $('setDripGate').addEventListener('click', async () => {
     const to = gateOn ? 'false' : 'true';
-    if (to === 'false' && !confirm('Turn approvals OFF?\n\nLive drip campaigns will send fully automatically from now on, with no human review. Anything already waiting in Drip Approvals still needs a decision there.')) return;
+    // Cancel gets a toast (2026-08-21): a dismissed confirm used to no-op
+    // silently, which is how Dylan believed approvals were off while the
+    // setting still read true.
+    if (to === 'false' && !confirm('Turn approvals OFF?\n\nLive drip campaigns will send fully automatically from now on, with no human review, and anything already waiting in Drip Approvals sends automatically on the next run (within about 15 minutes, quiet hours respected).')) { showToast('Approvals left ON. Nothing changed.', { ttl: 3500 }); return; }
     const btn = $('setDripGate'); btn.disabled = true;
     try { await saveSetting('drip_approval_required', to); } catch (err) { showToast('Could not update the approval gate: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     renderSettings();
@@ -29767,7 +29770,7 @@ async function renderDrips() {
       supabase.from('pec_drip_campaigns').select('*').order('created_at'),
       supabase.from('pec_drip_steps').select('*').order('step_index'),
       supabase.from('pec_drip_enrollments').select('campaign_id,status'),
-      supabase.from('pec_drip_sends').select('*, leads(full_name)').order('created_at', { ascending: false }).limit(25),
+      supabase.from('pec_drip_sends').select('*, leads(full_name)').order('created_at', { ascending: false }).limit(250),
       supabase.from('pec_blasts').select('*').order('created_at', { ascending: false }).limit(12),
     ]), { label: 'renderDrips' });
   } catch (e) { res = [{ error: e }, { error: e }, {}, {}, {}, {}]; }
@@ -29868,21 +29871,46 @@ async function renderDrips() {
       </div>
 
       <div class="pec-card">
-        <h3>Recent drip activity</h3>
-        ${sends.length ? `<div class="pec-scroll-x"><table class="pec-table" style="font-size:.78rem">
-          <thead><tr><th>When</th><th>Lead</th><th>Step</th><th>Channel</th><th>Status</th><th>Message</th></tr></thead>
-          <tbody>${sends.map(s => `
+        ${(() => {
+          // Send log (2026-08-21, Dylan): the definitive record of every drip
+          // that actually went out, right here on the Drips tab. Default
+          // filter is SENT ONLY; All activity keeps the old mixed view
+          // (dry runs, skips, failures) one click away. Campaign named per
+          // row so the log reads without cross-referencing.
+          const filter = state.dripLogFilter || 'sent';
+          const campName = (id) => { const c = campaigns.find(x => x.id === id); return c ? c.name : ''; };
+          const rows = filter === 'sent' ? sends.filter(s => s.status === 'sent') : sends;
+          const sentCount = sends.filter(s => s.status === 'sent').length;
+          return `
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <h3 style="margin:0">Send log</h3>
+          <span style="color:var(--muted);font-size:.72rem">${sentCount} sent in the last ${sends.length} activity rows</span>
+          <span style="margin-left:auto;display:inline-flex;gap:6px">
+            <button type="button" class="pec-btn sm ${filter === 'sent' ? 'primary' : 'ghost'}" data-driplog-filter="sent">Sent only</button>
+            <button type="button" class="pec-btn sm ${filter === 'all' ? 'primary' : 'ghost'}" data-driplog-filter="all">All activity</button>
+          </span>
+        </div>
+        ${rows.length ? `<div class="pec-scroll-x"><table class="pec-table" style="font-size:.78rem">
+          <thead><tr><th>When</th><th>Recipient</th><th>Campaign</th><th>Step</th><th>Channel</th><th>Status</th><th>Message</th></tr></thead>
+          <tbody>${rows.map(s => `
             <tr class="nohover">
-              <td title="${esc(new Date(s.created_at).toLocaleString())}">${esc(fmtRelativeTime(s.created_at))}</td>
-              <td>${esc((s.leads && s.leads.full_name) || '(deleted)')}</td>
+              <td title="${esc(new Date(s.sent_at || s.created_at).toLocaleString())}">${esc(fmtRelativeTime(s.sent_at || s.created_at))}</td>
+              <td>${esc((s.leads && s.leads.full_name) || (s.subject_type && s.subject_type !== 'lead' ? titleCaseValue(s.subject_type) : '(deleted)'))}</td>
+              <td style="font-size:.72rem;color:var(--muted)">${esc(campName(s.campaign_id) || (s.blast_id ? 'Blast' : ''))}</td>
               <td>${s.step_index + 1}</td>
               <td>${esc(s.channel)}</td>
               <td>${chip(s.status === 'dry_run' ? 'dry run' : s.status === 'pending' ? 'awaiting approval' : s.status, SEND_STATUS_COLOR[s.status] || '#64748b')}${s.error_message ? `<div style="color:var(--rd-danger,#ef4444);font-size:.68rem">${esc(s.error_message)}</div>` : ''}</td>
               <td style="max-width:420px">${s.body ? `<details><summary style="cursor:pointer">${esc(s.subject || String(s.body).slice(0, 60) + (String(s.body).length > 60 ? '…' : ''))}</summary><div style="white-space:pre-wrap;font-size:.75rem;color:var(--muted);margin-top:4px">${esc(s.body)}</div></details>` : ''}</td>
             </tr>`).join('')}</tbody>
-        </table></div>` : '<div class="pec-empty">No drip activity yet. It appears here (and on each lead page) as the runner ticks.</div>'}
+        </table></div>` : `<div class="pec-empty">${filter === 'sent' ? 'Nothing sent yet. Sent messages appear here the moment the runner delivers them.' : 'No drip activity yet. It appears here (and on each lead page) as the runner ticks.'}</div>`}`;
+        })()}
       </div>
     </div>`;
+
+  root.querySelectorAll('[data-driplog-filter]').forEach(b => b.addEventListener('click', () => {
+    state.dripLogFilter = b.dataset.driplogFilter;
+    renderDrips();
+  }));
 
   // Master switch: settings upsert on key (the same client pattern the
   // Settings view uses). Turning ON asks for confirmation; OFF never does

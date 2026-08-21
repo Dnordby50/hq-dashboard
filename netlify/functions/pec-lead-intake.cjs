@@ -244,12 +244,14 @@ exports.handler = async (event) => {
       campaign: cleanStr(body.campaign) || cleanStr(body.utm_campaign),
       ad_meta: Object.keys(adMeta).length ? adMeta : null,
       notes,
-      // Prompt 73 Part E3: accept the checkbox spellings Zapier actually
-      // sends (exact allowlist in parseSmsConsent), never an arbitrary
-      // truthy value. Still explicit-only: absent stays false.
-      sms_consent: parseSmsConsent(body.sms_consent),
-      sms_consent_source: parseSmsConsent(body.sms_consent) ? `${source} form` : null,
-      sms_consent_at: parseSmsConsent(body.sms_consent) ? new Date().toISOString() : null,
+      // Policy 2026-08-21 (Dylan): submitting an inquiry IS consent to be
+      // texted about it; STOP opts out (the Quo webhook flips opted_out,
+      // which every send path checks). An explicit checkbox, when the form
+      // sends one, is still recorded as the stronger source; absent or
+      // unchecked now reads implied instead of false.
+      sms_consent: true,
+      sms_consent_source: parseSmsConsent(body.sms_consent) ? `${source} form` : 'implied by inquiry (policy 2026-08-21)',
+      sms_consent_at: new Date().toISOString(),
     }, true);
     const lead = created[0];
 

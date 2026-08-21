@@ -56,14 +56,28 @@ const pendings = (fx) => fx.db.pec_drip_sends.filter(r => r.status === 'pending'
   }
 
   // -------------------------------------------------------------------------
-  console.log('gate OFF but a leftover pending row exists: the step stays held');
+  console.log('gate OFF with a leftover pending row: the runner FLUSHES it through the approve path (2026-08-21, Dylan: approvals off means off)');
   {
     const fx = makeDb(gatedTables());
     fx.db.settings.find(r => r.key === 'drip_approval_required').value = 'false';
     fx.db.pec_drip_sends.push({ id: 'oldpend', enrollment_id: 'enr1', campaign_id: 'camp1', lead_id: 'lead1', step_index: 0, channel: 'sms', status: 'pending', body: 'held draft' });
     const { deps, providers } = stubDeps(fx);
     const s = await runDrips(deps);
-    ok(s.pending_held === 1 && providers.sms.length === 0 && fx.db.pec_drip_enrollments[0].next_step_index === 0, 'flipping the gate off never auto-sends an item a human was reviewing');
+    const row = fx.db.pec_drip_sends.find(r => r.id === 'oldpend');
+    ok(s.pending_flushed === 1 && providers.sms.length === 1 && row.status === 'sent'
+      && fx.db.pec_drip_enrollments[0].next_step_index === 1,
+      'gate off: the leftover pending row sends via resolvePendingStep and the enrollment advances');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('gate ON with a pending row: the prompt-42 hold still stands');
+  {
+    const fx = makeDb(gatedTables());
+    fx.db.pec_drip_sends.push({ id: 'oldpend2', enrollment_id: 'enr1', campaign_id: 'camp1', lead_id: 'lead1', step_index: 0, channel: 'sms', status: 'pending', body: 'held draft' });
+    const { deps, providers } = stubDeps(fx);
+    const s = await runDrips(deps);
+    ok(s.pending_held === 1 && providers.sms.length === 0 && fx.db.pec_drip_enrollments[0].next_step_index === 0,
+      'gate on: a step a human is mid-review on is never auto-sent');
   }
 
   // -------------------------------------------------------------------------

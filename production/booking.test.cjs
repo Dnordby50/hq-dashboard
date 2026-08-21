@@ -175,8 +175,8 @@ const goodBody = (over = {}) => ({
       'book: internal answer in notes, NEVER in customer_notes');
     ok(/Big|Two car garage/.test(appt.customer_notes || ''), 'book: customer answer rides customer_notes');
     const lead = fx.db.leads[0];
-    ok(!!lead && lead.sms_consent === true && lead.sms_consent_source === 'online booking form',
-      'book: created lead carries explicit consent');
+    ok(!!lead && lead.sms_consent === true && /online booking form/.test(lead.sms_consent_source || ''),
+      'book: created lead carries consent (implied-by-inquiry policy 2026-08-21)');
     ok(lead.source === 'Google', 'book: how-did-you-hear maps to the managed lead source');
     ok(lead.stage === 'estimate_scheduled', 'book: stage advanced to estimate_scheduled');
     ok(fx.db.customers.length === 1 && lead.customer_id === fx.db.customers[0].id, 'book: lead born linked to its customer');
@@ -203,14 +203,14 @@ const goodBody = (over = {}) => ({
       'duplicate: rejected row recorded');
   }
 
-  // ---- Consent unchecked is a valid booking --------------------------------
+  // ---- Implied consent (policy 2026-08-21): every booking consents ---------
   {
     const fx = makeDb(baseTables());
     const { deps } = makeDeps(fx);
     const out = await processBook(deps, goodBody({ sms_consent: '' }), { ipHash: 'ip2' });
-    ok(out.status === 200 && fx.db.leads[0] && fx.db.leads[0].sms_consent === false
-      && fx.db.leads[0].sms_consent_at == null,
-      'consent: unchecked books fine and stays email-only');
+    ok(out.status === 200 && fx.db.leads[0] && fx.db.leads[0].sms_consent === true
+      && !!fx.db.leads[0].sms_consent_at,
+      'consent: implied by the booking itself, whatever the client sent (STOP is the opt-out)');
   }
 
   // ---- Existing lead: consent upgrade, source fill-if-blank, no new lead ---

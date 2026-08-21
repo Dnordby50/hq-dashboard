@@ -1299,7 +1299,29 @@ async function runDrips(deps) {
       if (gateHold) {
         const held = await sb('GET',
           `/pec_drip_sends?enrollment_id=eq.${encodeURIComponent(enr.id)}&step_index=eq.${enr.next_step_index}&status=eq.pending&select=id&limit=1`);
-        if (Array.isArray(held) && held.length) { summary.pending_held++; continue; }
+        if (Array.isArray(held) && held.length) {
+          // 2026-08-21 (Dylan): with the approval gate OFF, a leftover
+          // pending row no longer holds its enrollment forever. The runner
+          // resolves it through the SAME approve path a reviewer would use
+          // (resolvePendingStep: kill-switches re-checked at send time,
+          // quiet-hours deferral, claim-first advance), so "approvals off"
+          // finally means what it says. With the gate ON, the prompt-42
+          // hold stands unchanged: an item a human is mid-review on is
+          // never auto-sent by flipping anything.
+          if (!cfg.approvalRequired) {
+            try {
+              await resolvePendingStep(
+                { sb, now, sendSms: deps.sendSms, sendEmail: deps.sendEmail },
+                { enrollmentId: enr.id, stepIndex: enr.next_step_index, action: 'approve' });
+              summary.pending_flushed = (summary.pending_flushed || 0) + 1;
+            } catch (e) {
+              console.error('pec-drip: pending flush failed (held, retries next tick):', String(e && e.message || e));
+            }
+          } else {
+            summary.pending_held++;
+          }
+          continue;
+        }
       }
       const gatePending = gateHold && cfg.approvalRequired && !autoStep;
 
