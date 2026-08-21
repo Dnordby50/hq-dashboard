@@ -1,3 +1,34 @@
+## [2026-08-21 MST] Angi Leads -> Zapier -> pec-lead-intake: step 2 built, zap NOT published, blocked on Angi firing one payload
+
+By: Cowork
+
+Changed: nothing in the repo except this entry. All work was in the Zapier editor (zap 377216775, still Draft) plus read-only verification against prod.
+
+**Where the zap was.** Dylan had step 1 done (Webhooks by Zapier / Catch Hook, URL https://hooks.zapier.com/hooks/catch/15433455/4tabmex/) and step 2 empty. Angi only offers a webhook push, so Catch Hook is the right and only trigger.
+
+**The blocker, found by running Test trigger:** "No request found". Angi has never posted to that hook, so Zapier holds zero sample data and therefore knows none of Angi's field names. The Data mapping in step 2 cannot be written without them. Hand-typing guessed Angi keys would produce a zap that publishes clean, returns 200, and silently drops phone numbers, so it was not done. Nothing was skipped past the test.
+
+**What WAS built (step 2, Webhooks by Zapier / POST):** URL https://prescottepoxy.netlify.app/.netlify/functions/pec-lead-intake, Payload Type Json, Wrap Request In Array No, Unflatten No (our body is flat; unflatten only invites surprise nesting on a key containing a double underscore), one static Data row `source` = `angi`, and Headers key `x-webhook-secret` with the VALUE DELIBERATELY BLANK. Cowork does not enter credentials; Dylan pastes PEC_WEBHOOK_SECRET himself. The zap remains Draft and cannot fire.
+
+**Verified against prod, not assumed:**
+- pec-lead-intake is deployed and gated: an unauthenticated POST returns 401 "Invalid webhook secret" (nothing was written; the probe was rejected at the gate). Caveat recorded honestly: badSecret returns true both for a wrong secret AND for an unset PEC_WEBHOOK_SECRET, so this 401 does NOT prove the env var is set. The DripJobs webhooks share that secret and work, which is strong but indirect evidence.
+- pec_lead_sources already contains an Angi row with aliases ['angi'], so `source: angi` resolves through resolveLeadSourceName to the right badge with no cleanup migration.
+- pec-lead-intake.cjs's own header comment already names Angi as an intended source, and states that adding a source is meant to be a Zapier change rather than a code change. No code change is warranted here.
+
+**Two decisions from Dylan today:**
+1. Let the day-0 instant touch fire on Angi leads. Angi shares each lead with three or four contractors, so being first to reply is the whole advantage. Angi passes no TCPA consent field, so parseSmsConsent leaves sms_consent false and these stay email-only in practice, which is the correct posture.
+2. Angi is PEC-only. pec-lead-intake hardcodes brand 'PEC', so nothing needs to change. Flagged for the future: if FTP is ever advertised on Angi, every one of those painting leads lands mislabeled PEC, and THAT is a code change (accept a brand field), not a Zapier change.
+
+Files touched: PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+1. Paste https://hooks.zapier.com/hooks/catch/15433455/4tabmex/ into Angi's lead-forwarding / webhook settings, then send one test lead.
+2. Back in the zap, step 1 > Test trigger, so Zapier captures Angi's real field names.
+3. Step 2 > Configure > Data: map Angi's fields onto full_name (or first_name + last_name), phone, email, address, city, state, zip, notes, and source_ref (Angi's own lead id, which is the endpoint's idempotency key and matters because Angi retries).
+4. Paste PEC_WEBHOOK_SECRET into the blank x-webhook-secret header value.
+5. Test the action. A 200 with success:true means the lead landed; check the Leads pipeline and Sync Health (endpoint 'lead-intake') to confirm, then Publish.
+
 ## [2026-08-21 MST] Estimate page: the Touches & notes (Log a touch) card moved to sit right above the CompanyCam photos
 
 By: Claude Code
