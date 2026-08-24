@@ -21551,6 +21551,10 @@ async function renderSettingsPricing() {
           <div class="pec-field"><label>Duplicate window (hours)</label>
             <input type="number" min="0" step="1" data-pr-set="pricing_duplicate_window_hours" value="${esc(prSettings.pricing_duplicate_window_hours || '24')}"></div>
         </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Lead follow-up</div>
+        <div class="pec-field" style="max-width:300px"><label>Instant reply delay (minutes)</label>
+          <input type="number" min="0" step="1" data-pr-set="pricing_instant_touch_delay_minutes" value="${esc(prSettings.pricing_instant_touch_delay_minutes || '10')}"></div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:-4px;max-width:520px">The thanks-for-reaching-out text waits this long, so it does not land while the visitor is still picking a booking slot. Booking inside the window cancels it (the booking confirmation covers them). 0 sends immediately. The drip runner ticks every 15 minutes, so the actual arrival is delay to delay plus 15.</div>
         <div style="font-size:.7rem;color:var(--muted)" id="prSetStatus"></div>
       </details>`}
     </div>

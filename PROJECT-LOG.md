@@ -1,3 +1,19 @@
+## [2026-08-24 MST] Instant Pricing: the thanks-for-reaching-out text now waits 10 minutes (Dylan's call on open item 1)
+
+By: Claude Code
+
+Changed: NEW migration 2026-09-16_pricing_instant_touch_delay.sql (APPLIED TO PROD, one settings seed), netlify/functions/pec-pricing.cjs, index.html (one Advanced field on Settings > Instant Pricing), production/pricing.test.cjs (+6 checks), features.json, SCHEMA.md.
+
+Dylan resolved the entry-below's open item 1: "delay the instant thanks for reaching out by 10 minutes." Implementation is scheduling, not a timer: captureLead now enrolls the lead with a FUTURE `now` (enrollLead's existing third argument, so next_send_at lands delay minutes out) and skips the inline sendInstantTouch entirely; the 15-minute drip runner delivers the day-0 touch once due. Three consequences worth knowing: (1) real-world arrival is delay to delay+15 minutes, which the Settings helper text says out loud; (2) the runner path respects quiet hours, which the inline instant touch deliberately bypassed, so a 9pm quote now texts in the morning; (3) if the visitor books inside the window, apptBookingLeadEffects pauses the enrollment and the text NEVER sends, the booking confirmation covers them, which is exactly the collision Dylan wanted gone. The knob is pricing_instant_touch_delay_minutes (seeded '10', behind Advanced, 0 restores inline-immediate). Webform intake (pec-lead-intake) is untouched: those leads are not mid-booking, immediate is right there.
+
+Verified: pricing fixture suite now 56 checks green, including one proving the enrollment lands ~10 minutes out with nothing sent inline, and one proving delay 0 schedules due-now.
+
+Files touched: see Changed.
+
+Next steps: none beyond the handoff in the entry below.
+
+---
+
 ## [2026-08-24 MST] Instant Pricing is built: the /pricing funnel replaces Price Guide AI, ships dark until Dylan adds photos and flips it on
 
 By: Claude Code

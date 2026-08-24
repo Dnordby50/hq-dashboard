@@ -77,6 +77,7 @@ const SETTING_KEYS = [
   'pricing_max_sqft', 'pricing_rate_limit_per_hour',
   'pricing_min_fill_seconds', 'pricing_duplicate_window_hours',
   'pricing_out_of_area_copy', 'pricing_call_us_copy',
+  'pricing_instant_touch_delay_minutes',
   'booking_enabled', 'booking_sms_disclosure',
 ];
 
@@ -226,12 +227,23 @@ async function captureLead(db, f, hooks = {}) {
 
     await ai(lead.id);
 
-    const enrolled = await enrollLead(db, lead.id);
+    // The day-0 instant reply is DELAYED for pricing leads (Dylan,
+    // 2026-08-24): the funnel flows straight into booking, and an immediate
+    // text landed while the visitor was still picking a slot. Enrolling with
+    // a future `now` pushes next_send_at out by the delay and we skip the
+    // inline send; the 15-minute drip runner delivers it once due (real-world
+    // delay is delay-to-delay+15, and quiet hours apply, which the inline
+    // path bypassed). Booking inside the window pauses the enrollment via
+    // apptBookingLeadEffects, so a booked visitor never gets it: the booking
+    // confirmation covers them. Delay 0 restores the inline immediate send.
+    const delayMin = Math.max(0, Number(f.instantDelayMinutes) || 0);
+    const enrolled = await enrollLead(db, lead.id, new Date(Date.now() + delayMin * 60000));
     if (!enrolled.enrolled && enrolled.reason === 'error') {
       console.warn('pec-pricing: drip enroll failed (non-fatal):', enrolled.error);
     }
     let instant = { sent: [], skipped: [], reason: 'not_enrolled' };
-    if (enrolled.enrolled) instant = await sendInstantTouch(db, lead.id);
+    if (enrolled.enrolled && delayMin > 0) instant.reason = `scheduled in ${delayMin} min`;
+    else if (enrolled.enrolled) instant = await sendInstantTouch(db, lead.id);
     else if (enrolled.reason) instant.reason = `not_enrolled_${enrolled.reason}`;
 
     await notifyLeadSlack(lead, projectLine, instant);
@@ -450,6 +462,7 @@ async function processQuote(deps, body, meta) {
     typeName: type.name, sqft: sqftNum,
     priceLow: range ? range.low : null, priceHigh: range ? range.high : null,
     inArea, disclosure,
+    instantDelayMinutes: numSetting(settings, 'pricing_instant_touch_delay_minutes', 10),
   }, { kickLeadAi: deps.kickLeadAi });
 
   const status = type.priceable === false ? 'call_us' : (inArea ? 'priced' : 'out_of_area');

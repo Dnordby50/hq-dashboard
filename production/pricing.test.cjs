@@ -33,6 +33,7 @@ function baseTables(over = {}) {
       { key: 'pricing_call_us_copy', value: 'CALL US COPY' },
       { key: 'booking_enabled', value: 'true' },
       { key: 'booking_sms_disclosure', value: 'TEST DISCLOSURE' },
+      { key: 'pricing_instant_touch_delay_minutes', value: '10' },
     ],
     pec_pricing_project_types: [
       { id: TYPE_FLAKE, brand: 'PEC', name: 'Standard Flake', description: 'Flake floor', image_path: null, rate_low: 5.25, rate_high: 7.00, min_price: null, priceable: true, sort_order: 1, active: true },
@@ -192,6 +193,40 @@ const META = { ipHash: 'hash1', userAgent: 'test-ua' };
     ok(fx.db.lead_events.some(e => e.lead_id === 'lead-9' && e.event_type === 'note' && String(e.payload.text || '').includes('instant pricing')), 'dedupe: note on the existing lead');
     ok(spies.scored.length === 0, 'dedupe: AI not re-billed');
     ok(fx.db.pec_pricing_requests[0].lead_id === 'lead-9', 'dedupe: audit row links the existing lead');
+  }
+
+  // ---- Instant-reply delay: enrollment scheduled out, no inline send -------
+  {
+    const CAMPAIGN = [{ id: 'camp1', kind: 'lead', status: 'active', created_at: '2026-08-01T00:00:00Z' }];
+    const STEP0 = [{ id: 'step0', campaign_id: 'camp1', active: true, step_index: 0, day_offset: 0, auto_send: true }];
+    const fx = makeDb(baseTables({ pec_drip_campaigns: CAMPAIGN, pec_drip_steps: STEP0 }));
+    const { deps } = makeDeps(fx);
+    const before = Date.now();
+    const out = await processQuote(deps, goodBody(), META);
+    ok(out.status === 200 && out.body.ok === true, 'delay: quote still answered');
+    const enr = fx.db.pec_drip_enrollments[0];
+    ok(!!enr && enr.status === 'active', 'delay: lead enrolled');
+    const sendAt = enr ? new Date(enr.next_send_at).getTime() : 0;
+    ok(sendAt >= before + 9.5 * 60000 && sendAt <= Date.now() + 10.5 * 60000, 'delay: day-0 send scheduled ~10 minutes out');
+    ok(fx.db.pec_drip_sends.length === 0, 'delay: nothing sent inline');
+  }
+  {
+    // Delay 0 restores the inline-immediate path: the enrollment is due NOW
+    // and sendInstantTouch runs (it bails on the missing instant-touch
+    // settings here, which is fine; due-now scheduling is the claim).
+    const t = baseTables({
+      pec_drip_campaigns: [{ id: 'camp1', kind: 'lead', status: 'active', created_at: '2026-08-01T00:00:00Z' }],
+      pec_drip_steps: [{ id: 'step0', campaign_id: 'camp1', active: true, step_index: 0, day_offset: 0, auto_send: true }],
+    });
+    t.settings.find(s => s.key === 'pricing_instant_touch_delay_minutes').value = '0';
+    const fx = makeDb(t);
+    const { deps } = makeDeps(fx);
+    const before = Date.now();
+    const out = await processQuote(deps, goodBody(), META);
+    ok(out.status === 200, 'delay 0: quote answered');
+    const enr = fx.db.pec_drip_enrollments[0];
+    const sendAt = enr ? new Date(enr.next_send_at).getTime() : 0;
+    ok(!!enr && sendAt <= before + 60000, 'delay 0: day-0 send due immediately');
   }
 
   // ---- Validation ----------------------------------------------------------

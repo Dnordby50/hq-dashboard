@@ -3365,6 +3365,18 @@
           "name": "pricing_call_us_copy"
         }
       ]
+    },
+    {
+      "file": "2026-09-16_pricing_instant_touch_delay.sql",
+      "date": "2026-09-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "pricing_instant_touch_delay_minutes"
+        }
+      ]
     }
   ],
   "knownTables": [
