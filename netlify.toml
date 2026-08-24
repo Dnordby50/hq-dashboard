@@ -270,6 +270,28 @@
   status = 200
   force = true
 
+# TopCoat Instant Pricing (replaces Price Guide AI). /pricing is the hosted
+# public funnel (?embed=1 for the website iframe); /api/pricing/* are its
+# JSON actions (quote, booked, config). Same rawUrl path-parsing convention
+# as pec-booking, so no :splat interpolation.
+[[redirects]]
+  from = "/pricing"
+  to = "/.netlify/functions/pec-pricing"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/pricing/*"
+  to = "/.netlify/functions/pec-pricing"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/pricing/*"
+  to = "/.netlify/functions/pec-pricing"
+  status = 200
+  force = true
+
 # Public hosted invoice page. /pay/<token> rewrites to the function with the
 # token in the query string (event.queryStringParameters.token).
 [[redirects]]
