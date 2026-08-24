@@ -3103,6 +3103,268 @@
           "name": "followup_digest_time"
         }
       ]
+    },
+    {
+      "file": "2026-09-11_prompt101_topcoat_booking.sql",
+      "date": "2026-09-11",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.booking_manage_token"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.booking_request_id"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_booking_forms"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_booking_service_areas"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_booking_requests"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_drive_time_cache"
+        },
+        {
+          "kind": "index",
+          "name": "pec_appointments_booking_manage_token_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_booking_service_areas_form_zip_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_booking_requests_created_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_booking_requests_ip_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_booking_requests_status_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_drive_time_cache_pair_idx"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_url"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_working_hours"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_slot_granularity_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_min_notice_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_horizon_days"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_buffer_min_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_buffer_max_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_buffer_default_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_drive_time_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_routes_max_origins_per_request"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_routes_timeout_ms"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_drive_cache_ttl_days"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_home_base_address"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_rate_limit_per_hour"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_min_fill_seconds"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_duplicate_window_hours"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_sms_disclosure"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_manage_link_text"
+        },
+        {
+          "kind": "setting",
+          "name": "routemize_intake_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_booking_out_of_area"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_booking_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-12_estimate_ux_fixes.sql",
+      "date": "2026-09-12",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimate_line_items.est_hours"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_line_items.sqft"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_line_polish_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-13_portal_estimate_signature.sql",
+      "date": "2026-09-13",
+      "hasHeader": true,
+      "none": "CREATE OR REPLACE of function get_portal_data (no table/column/index/setting changes)",
+      "artifacts": []
+    },
+    {
+      "file": "2026-09-14_implied_sms_consent.sql",
+      "date": "2026-09-14",
+      "hasHeader": true,
+      "none": "column default change + data backfill on public.leads (no new table/column/index/setting)",
+      "artifacts": []
+    },
+    {
+      "file": "2026-09-15_instant_pricing.sql",
+      "date": "2026-09-15",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_pricing_project_types"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_pricing_requests"
+        },
+        {
+          "kind": "index",
+          "name": "pec_pricing_project_types_brand_name_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_pricing_requests_created_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_pricing_requests_ip_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_pricing_requests_status_idx"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_url"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_headline"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_intro_text"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_reveal_copy"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_round_to"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_min_sqft"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_max_sqft"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_rate_limit_per_hour"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_min_fill_seconds"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_duplicate_window_hours"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_out_of_area_copy"
+        },
+        {
+          "kind": "setting",
+          "name": "pricing_call_us_copy"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3126,6 +3388,9 @@
     "pec_appointments",
     "pec_blasts",
     "pec_bonus_payouts",
+    "pec_booking_forms",
+    "pec_booking_requests",
+    "pec_booking_service_areas",
     "pec_brand_identity",
     "pec_call_log",
     "pec_change_order_batches",
@@ -3136,6 +3401,7 @@
     "pec_drip_enrollments",
     "pec_drip_sends",
     "pec_drip_steps",
+    "pec_drive_time_cache",
     "pec_email_log",
     "pec_email_senders",
     "pec_email_templates",
@@ -3149,6 +3415,8 @@
     "pec_payments",
     "pec_portal_views",
     "pec_presentation_sections",
+    "pec_pricing_project_types",
+    "pec_pricing_requests",
     "pec_prod_addons",
     "pec_prod_area_tints",
     "pec_prod_areas",

@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-24 (Claude Code, Instant Pricing) after applying `2026-09-15_instant_pricing.sql` live via MCP: two new tables `pec_pricing_project_types` (the public /pricing price book: manual $/sqft low/high per project type, photo path in the new public `pec-pricing` Storage bucket, `priceable` false = call-us type, optional soft link to pec_prod_system_types; staff-ALL RLS, touch trigger owns updated_at) and `pec_pricing_requests` (every quote attempt: status priced/out_of_area/call_us/rejected/error, rate + price snapshots of exactly what the visitor saw, lead/customer links, `booked_appointment_id` when the same-visit booking landed; staff SELECT with the booking-style column grant that EXCLUDES `ip_hash`, so staff reads must name columns and select=* errors by design). New storage bucket `pec-pricing` (public read, staff write, 5 MB, image mimes). One `pec_lead_sources` row 'Instant Pricing' (alias instant_pricing). Thirteen `pricing_*` settings keys (Settings > Instant Pricing): `pricing_enabled` ('false', ships dark) and `pricing_url` ('', auto-fills on first enable) front-of-card; `pricing_headline`, `pricing_intro_text`, `pricing_reveal_copy`, `pricing_round_to` ('50'), `pricing_min_sqft` ('50'), `pricing_max_sqft` ('20000'), `pricing_rate_limit_per_hour` ('10'), `pricing_min_fill_seconds` ('2'), `pricing_duplicate_window_hours` ('24'), `pricing_out_of_area_copy`, `pricing_call_us_copy` behind Advanced. Settings 198 rows live. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 98) after applying `2026-09-10_prompt98_followup_queue.sql` live via MCP: two new tables `pec_customer_notes` (the customer note / logged-touch store; staff read+insert, admin-only edit/delete, cascade off customers, no FK on lead_id) and `pec_followup_ranks` (nightly AI ordering of the follow-up queue, one row per DUE sent estimate, unique on subject_type+subject_id, staff read / service-role write; see each table's section), plus `estimates.followup_snoozed_until` (timestamptz) and `estimates.followup_snooze_reason` (text) for the queue's snooze exit. Nine settings keys (Settings > Follow-ups): `followup_enabled` ('true') and `followup_overdue_days_estimate_sent` ('3') front-of-card; `followup_cold_days` ('21'), `followup_snooze_max_days` ('60'), `followup_ai_rank_enabled` ('true'), `followup_ai_rank_limit` ('60'), `followup_slack_digest_enabled` ('true'), `followup_digest_top_n` ('10'), `followup_digest_time` ('07:30' Phoenix) behind Advanced. Settings 153 rows to 162. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 97) after applying `2026-09-09_prompt97_lead_scoring_live.sql` live via MCP: one new column `leads.scored_at` (timestamptz, nullable; stamped by EVERY scoring run through the shared core `_pec-lead-score.cjs`, i.e. the pec-lead-ai endpoint, the intake kicks, and the nightly pec-lead-score-runner; the staleness column the runner orders by and the badge tooltip reads. `ai_analyzed_at` keeps its existing meaning and is stamped alongside it; rows scored before this migration have `scored_at` null until their next scoring run). Four settings keys (Settings > Drips > Lead scoring): `lead_score_nightly_enabled` ('true'; missing row = on) and `lead_score_batch_cap` ('50') front-of-card; `lead_score_stages` ('new,contacted,estimate_scheduled,presented,estimate_sent'; lost/accepted stripped server-side) and `lead_score_model` ('' = code default) behind Advanced. Settings 149 rows to 153. Only those sections changed.
 Refreshed 2026-08-18 (Claude Code, prompt 96) after applying `2026-09-08_prompt96_google_multi_calendar.sql` live via MCP: new `pec_sales_member_google_calendars` table (one row per member x Google calendar; per-calendar `sync_token` because Google sync tokens are per-calendar, `access_role` as of the last calendarList refresh, `sync_enabled` toggle, `last_synced_at`/`last_error` diagnostics; UNIQUE (member_id, calendar_id); RLS on, ZERO policies = default-deny service-role only, same posture as the token vault) plus the definer view `pec_member_google_calendars_v` (all columns EXCEPT sync_token, SELECT granted to authenticated: the Settings toggle list and the appointment modal's provenance read through it; writes go through pec-google-calendars.cjs). `pec_appointments.google_recurring_event_id` (text; Google's recurringEventId when the row is an expanded instance, the push patches the instance only) and `pec_appointments.google_readonly_reason` (text; non-null = TopCoat must not write the event back: calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit, computed at pull time, the UI renders read-only straight off it). Six settings keys: `google_pull_window_days_past` ('30'), `google_pull_window_days_future` ('180') front-of-card; `google_pull_max_pages_per_calendar` ('6'), `google_imported_default_appt_type` ('other'), `google_pull_include_all_day` ('true'), `google_pull_include_declined` ('false') behind Advanced on Settings > Appointments. Seeded one row per connected member for the existing TopCoat calendar (sync_enabled true; the multi-calendar pull loop skips it, it is the push target). Settings 143 rows to 149. Only those sections changed.
@@ -1282,6 +1283,68 @@ RLS: enabled · rows: 0
 
 PK: id
 Note: prompt 64 presentation literature, ONE content store for TWO consumers: the dashboard's full-screen Present mode and the public estimate page both render every ACTIVE row for the estimate's brand in sort_order (no per-estimate storage). CHECKs: brand in ('prescott-epoxy','finishing-touch') (the long pec_brand_identity keys; estimates.brand short forms PEC/FTP are mapped at read time), kind in ('why_us','process','gallery','financing','warranty') (warranty added 2026-08-16, prompt 93: a DOCUMENT kind, pinned after the estimate terms card and excluded from the floating literature; frozen onto estimates.warranty_snapshot at send). `images` is a jsonb array of paths inside the public `pec-presentation` Storage bucket (resized to 1600 px JPEG client-side on upload). body is the mdToSafeHtml markdown subset, customer-facing (no em dashes). Reviews are NOT stored here; the gallery kind pulls them live from `reviews` using the presentation_reviews_count / presentation_reviews_min_rating settings.
+
+### pec_pricing_project_types
+RLS: enabled · rows: 5
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| brand | text | no | 'PEC' |
+| name | text | no |  |
+| description | text | yes |  |
+| image_path | text | yes |  |
+| rate_low | numeric(8,2) | yes |  |
+| rate_high | numeric(8,2) | yes |  |
+| min_price | numeric(10,2) | yes |  |
+| priceable | boolean | no | true |
+| sort_order | integer | yes |  |
+| active | boolean | no | true |
+| system_type_id | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: system_type_id → pec_prod_system_types.id (on delete set null)
+Note: the Instant Pricing price book (2026-08-24, replacing the Price Guide AI subscription). One row per project type the public /pricing page offers: MANUAL $/sqft low/high range (Dylan's locked decision: never the estimator engine, so the website cannot leak internal margin math), `min_price` optional job floor that lifts small quotes, `priceable` false = a "call us" type showing no range and routing straight to booking. `image_path` is a path inside the public `pec-pricing` Storage bucket (resized to 1600 px JPEG client-side on upload; display via getPublicUrl). Unique (brand, name); CHECK priceable=false OR both rates present with low<=high; updated_at is trigger-owned (pec_prod_touch_updated_at) and guards the Settings editor's optimistic-concurrency save. Seeded with four comps-backed types (rates bracketing real completed-job medians) plus the call-us catch-all. Edited in Settings > Instant Pricing; read publicly through pec-pricing.cjs (service role).
+
+### pec_pricing_requests
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| brand | text | no | 'PEC' |
+| status | text | no |  |
+| project_type_id | uuid | yes |  |
+| project_type_name | text | yes |  |
+| sqft | numeric | yes |  |
+| rate_low | numeric(8,2) | yes |  |
+| rate_high | numeric(8,2) | yes |  |
+| price_low | numeric(10,2) | yes |  |
+| price_high | numeric(10,2) | yes |  |
+| name | text | yes |  |
+| phone | text | yes |  |
+| email | text | yes |  |
+| address_line1 | text | yes |  |
+| address_city | text | yes |  |
+| address_state | text | yes |  |
+| address_zip | text | yes |  |
+| place_id | text | yes |  |
+| in_area | boolean | yes |  |
+| lead_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
+| booked_appointment_id | uuid | yes |  |
+| sms_consent | boolean | no | false |
+| sms_consent_disclosure | text | yes |  |
+| ip_hash | text | yes |  |
+| user_agent | text | yes |  |
+| error_text | text | yes |  |
+| created_at | timestamptz | no | now() |
+
+PK: id
+FK: project_type_id → pec_pricing_project_types.id; booked_appointment_id → pec_appointments.id (on delete set null)
+Note: every Instant Pricing quote attempt (the pec_booking_requests posture: the audit trail, the rate-limit source, and the funnel card's data). status CHECK: priced / out_of_area / call_us / rejected / error; `error_text` doubles as the reject reason (honeypot / too_fast / rate_limit / duplicate). Rates AND computed prices are SNAPSHOTTED so the row records exactly what the visitor saw even after Dylan edits the price book; `project_type_name` is denormalized for the same reason. "Booked" is `booked_appointment_id` not null on a priced/call_us row (written by the server-verified /api/pricing/booked callback; the status never mutates). Deliberately SEPARATE from pec_booking_requests, whose status CHECK and Metrics reconciliation would be corrupted by pricing rows. `ip_hash` is a salted hash and is NEVER granted to the browser: the authenticated grant enumerates every column except it, so staff reads must NAME columns (select=* is a Postgres permission error, the fence working as designed).
 
 ### pec_prod_addons
 RLS: enabled · rows: 6

@@ -1,5 +1,16 @@
 [
   {
+    "id": "instant-pricing",
+    "date": "2026-08-24",
+    "title": "Give website visitors an instant ballpark price.",
+    "summary": "The new pricing page at /pricing shows visitors a price range for their project the moment they leave their contact info, then lets them book their free on-site estimate in the same visit. Every quote becomes a lead in TopCoat with the full new-lead treatment (alerts, AI score, instant reply, drip). It replaces the Price Guide AI subscription and matches the booking page design.",
+    "howto": [
+      "Open Settings, then Instant Pricing. Add a photo to each project type and review the suggested price ranges (they are based on your real completed jobs).",
+      "Flip the Instant pricing enabled switch, then use Copy embed code to paste the page into the website where Price Guide AI was.",
+      "Watch the Instant Pricing funnel card in Metrics (Sales) to see quotes, bookings, and out-of-area demand."
+    ]
+  },
+  {
     "id": "implied-sms-consent",
     "date": "2026-08-21",
     "title": "Texting is on for every lead automatically.",

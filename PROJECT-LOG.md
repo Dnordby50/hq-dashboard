@@ -1,3 +1,38 @@
+## [2026-08-24 MST] Instant Pricing is built: the /pricing funnel replaces Price Guide AI, ships dark until Dylan adds photos and flips it on
+
+By: Claude Code
+
+Changed: NEW migration 2026-09-15_instant_pricing.sql (APPLIED TO PROD), NEW netlify/functions/pec-pricing.cjs, NEW netlify/functions/_pec-lead-notify.cjs (extraction), NEW production/pricing-range.cjs + pricing-range.test.cjs + pricing.test.cjs, netlify.toml (three /pricing rewrites), index.html (Settings > Instant Pricing page, project-type editor modal, Metrics funnel card), pec-lead-intake.cjs (uses the extracted notify module, behavior identical), package.json (two test targets), features.json, help/whats-new.json, SCHEMA.md.
+
+**What it is.** Dylan pays for Price Guide AI, the instant-pricing widget on the website. This build replaces it with TopCoat's own funnel at /pricing, in the exact /book design language (same Poppins, tokens, big rounded card, accent last-word headline, trust strip): project-type photo grid, sqft + address, then contact info, THEN the ballpark range, then straight into the real booking engine so an in-area visitor books their on-site estimate in the same visit. Contact capture deliberately comes before the price: the lead is created at the contact step, so a visitor who bails at the reveal is still captured.
+
+**Decisions Dylan locked in planning (2026-08-24):** manual $/sqft low/high ranges per project type, never the estimator engine (full control, no margin leak, and it works for types the engine cannot price); seamless continuation into booking; full webform lead treatment (dedupe, customer-first create, AI score, drip enroll + instant touch, Slack + bell); PEC only, schema brand-ready.
+
+**How the pieces fit (the parts worth remembering):**
+- The price book is pec_pricing_project_types (name, description, photo in the new public pec-pricing bucket, rate_low/high, optional min_price floor, priceable flag). Seeded with four comps-backed types whose ranges bracket the real completed-job medians (Standard Flake 5.25 to 7.00 around the 6.15 median over 45 jobs, etc.) plus a call-us catch-all. WHY manual seeds and not all 11 system types: only four have enough completed jobs to back a publishable rate.
+- The booking continuation is CLIENT-SIDE reuse of the live /api/booking/* endpoints, zero server coupling. WHY this works for free: processBook's resolveContact finds the just-created pricing lead by phone/email, links the appointment to it, advances the stage, and pauses nurture, exactly the booked-leads-do-not-drip behavior we wanted. Booking's own abuse checks, advisory-locked write, and audit rows apply unchanged, so the booking funnel card stays truthful.
+- pec_pricing_requests audits every attempt with the rate AND computed price snapshotted (rate edits never rewrite history), the same ip_hash column-grant fence as booking (staff reads must name columns), and booked_appointment_id stamped only by the server-verified /api/pricing/booked callback (the appointment must be source=booking AND belong to the same lead; never client-trusted).
+- Abuse kit mirrors booking: honeypot answers with a fake success computed from REAL rates (the bot learns nothing, the row records the truth), min fill time, per-ip hourly limit, and a 24h duplicate window that re-answers with the SAME stored range (idempotency beats rate freshness; no second lead, no funnel inflation).
+- GET /api/pricing/config is the machine-readable price book, the future hook for Google instant-pricing surfaces, which is why rates live in tables and not code.
+- notifyLeadSlack/notifyLeadBell moved verbatim from pec-lead-intake.cjs into _pec-lead-notify.cjs so both intakes share one implementation.
+
+**Verified:** full npm suite green including 50 new pricing fixture checks (honeypot, too-fast, rate limit, duplicate window returns the stored range, out-of-area still captures the lead and shows the price, call-us types, same-human dedupe reuses the lead without re-billing the AI, booked callback rejects a mismatched lead) and 23 range-math checks; all index.html script blocks parse; migration applied to prod and seeds verified live (5 types, 13 settings, ip_hash absent from the authenticated grant).
+
+**Open items, flagged not fixed:** (1) the day-0 instant text can arrive while the visitor is still picking a slot; if that annoys, the cheap fix is skipping instant touch when booking is open and in-area. (2) Duplicate-window re-quotes intentionally return the stored price even if rates changed inside the window. (3) The confirm step renders the booking form's required questions with funnel prefills; eyeball it against the live form once real traffic flows.
+
+Files touched: see Changed.
+
+Next steps: Dylan's handoff below. Ships dark (pricing_enabled false) until he flips it.
+
+## Handoff to Dylan
+
+1. In Settings > Instant Pricing, open each project type and add a photo (your best finished floor of that kind; it resizes automatically). Review the seeded ranges and set a minimum job price if you want one (the field suggests 1500).
+2. Flip "Instant pricing enabled". Open the page and run one real quote end to end with your own phone to see the lead land, the texts fire, and the booking continuation work.
+3. Click "Copy embed code" and paste it into the website where the Price Guide AI widget is. Then cancel the Price Guide AI subscription.
+4. Watch the "Instant Pricing funnel" card in Metrics (Sales).
+
+---
+
 ## [2026-08-21 MST] Implied SMS consent platform-wide, the drip approval gate really off (with a flush for the stuck seven), and a Send log on the Drips tab
 
 By: Claude Code
