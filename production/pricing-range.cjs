@@ -13,9 +13,28 @@ function num(v) {
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
-// computePriceRange({ sqft, rateLow, rateHigh, minPrice, roundTo, minSqft, maxSqft })
-//   -> { ok: true, low, high } | { ok: false, error }
+// Size brackets: [{ up_to_sqft, low, high }, ...]. Malformed rows are
+// dropped (a broken Settings save degrades to the rate fallback, never to a
+// throw on the public page); survivors sort by up_to_sqft.
+function normTiers(raw) {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr
+    .map(t => t && { up_to_sqft: num(t.up_to_sqft), low: num(t.low), high: num(t.high) })
+    .filter(t => t && t.up_to_sqft > 0 && t.low != null && t.high != null && t.low >= 0 && t.high >= t.low)
+    .sort((a, b) => a.up_to_sqft - b.up_to_sqft);
+}
+
+// computePriceRange({ sqft, tiers, rateLow, rateHigh, minPrice, roundTo, minSqft, maxSqft })
+//   -> { ok: true, low, high, tiered? } | { ok: false, error }
 // error values: 'BAD_SQFT' | 'SQFT_TOO_SMALL' | 'SQFT_TOO_LARGE' | 'BAD_RATES'
+//   | 'BEYOND_TIERS'
+//
+// Brackets WIN over the rate math: the sqft picks the first bracket it fits
+// (boundary inclusive) and returns that exact typed range, untouched by
+// rounding and min_price (the admin typed the number they want shown).
+// Past the last bracket the per-sqft rates take over; with no rates set the
+// caller gets BEYOND_TIERS and flips the quote to the call-us flow, never a
+// made-up extrapolation.
 function computePriceRange(opts) {
   const o = opts || {};
   const sqft = num(o.sqft);
@@ -29,6 +48,14 @@ function computePriceRange(opts) {
   if (sqft == null || sqft <= 0) return { ok: false, error: 'BAD_SQFT' };
   if (minSqft != null && sqft < minSqft) return { ok: false, error: 'SQFT_TOO_SMALL' };
   if (maxSqft != null && sqft > maxSqft) return { ok: false, error: 'SQFT_TOO_LARGE' };
+
+  const tiers = normTiers(o.tiers);
+  if (tiers.length) {
+    const t = tiers.find(t => sqft <= t.up_to_sqft);
+    if (t) return { ok: true, low: t.low, high: t.high, tiered: true };
+    if (rateLow == null || rateHigh == null) return { ok: false, error: 'BEYOND_TIERS' };
+  }
+
   if (rateLow == null || rateHigh == null || rateLow < 0 || rateHigh < rateLow) {
     return { ok: false, error: 'BAD_RATES' };
   }
@@ -58,4 +85,4 @@ function renderRevealCopy(template, low, high) {
     .replaceAll('{high}', fmtMoney(high));
 }
 
-module.exports = { computePriceRange, fmtMoney, renderRevealCopy };
+module.exports = { computePriceRange, normTiers, fmtMoney, renderRevealCopy };

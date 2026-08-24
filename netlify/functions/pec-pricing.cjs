@@ -56,7 +56,7 @@ const { notifyLeadSlack, notifyLeadBell } = require('./_pec-lead-notify.cjs');
 // construction. (If pec-booking ever grows require-time side effects, extract
 // checkArea to production/ instead.)
 const { checkArea } = require('./pec-booking.cjs');
-const { computePriceRange, fmtMoney, renderRevealCopy } = require('../../production/pricing-range.cjs');
+const { computePriceRange, normTiers, fmtMoney, renderRevealCopy } = require('../../production/pricing-range.cjs');
 
 const ENDPOINT = 'pricing';
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
@@ -103,7 +103,7 @@ const DEFAULT_CALL_US = 'This one deserves a custom price. Book your free on-sit
 
 async function loadProjectTypes(db, brand) {
   const rows = await db('GET',
-    `/pec_pricing_project_types?brand=eq.${encodeURIComponent(brand || 'PEC')}&active=eq.true&select=id,name,description,image_path,rate_low,rate_high,min_price,priceable,sort_order&order=sort_order.asc.nullslast,name.asc`);
+    `/pec_pricing_project_types?brand=eq.${encodeURIComponent(brand || 'PEC')}&active=eq.true&select=id,name,description,image_path,rate_low,rate_high,min_price,priceable,tiers,sort_order&order=sort_order.asc.nullslast,name.asc`);
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -322,17 +322,23 @@ async function processQuote(deps, body, meta) {
   const areaCheck = booking.area.length ? checkArea(booking.area, zip, city) : { inArea: true };
   const inArea = areaCheck.inArea;
 
-  // The range: computed for priceable types, absent for call-us types.
+  // The range: computed for priceable types, absent for call-us types. Size
+  // brackets (tiers) win over the rate math; a sqft past the last bracket
+  // with no fallback rates flips THIS quote to the call-us flow (a too-big
+  // job gets "we price it in person", never a made-up extrapolation).
   const roundTo = numSetting(settings, 'pricing_round_to', 50);
+  let isCallUs = type.priceable === false;
   let range = null;
-  if (type.priceable !== false) {
+  if (!isCallUs) {
     range = computePriceRange({
-      sqft: sqftRaw, rateLow: type.rate_low, rateHigh: type.rate_high,
+      sqft: sqftRaw, tiers: type.tiers,
+      rateLow: type.rate_low, rateHigh: type.rate_high,
       minPrice: type.min_price, roundTo,
       minSqft: numSetting(settings, 'pricing_min_sqft', 50),
       maxSqft: numSetting(settings, 'pricing_max_sqft', 20000),
     });
-    if (!range.ok) {
+    if (!range.ok && range.error === 'BEYOND_TIERS') { isCallUs = true; range = null; }
+    else if (!range.ok) {
       const msg = range.error === 'SQFT_TOO_SMALL' || range.error === 'SQFT_TOO_LARGE'
         ? 'That square footage is outside what we can price online. Give us a call and we will price it for you.'
         : (range.error === 'BAD_SQFT'
@@ -348,8 +354,8 @@ async function processQuote(deps, body, meta) {
     project_type_id: type.id,
     project_type_name: type.name,
     sqft: sqftNum,
-    rate_low: type.priceable !== false ? type.rate_low : null,
-    rate_high: type.priceable !== false ? type.rate_high : null,
+    rate_low: !isCallUs && !(range && range.tiered) ? type.rate_low : null,
+    rate_high: !isCallUs && !(range && range.tiered) ? type.rate_high : null,
     price_low: range ? range.low : null,
     price_high: range ? range.high : null,
     name, phone: phone10 || phoneRaw, email,
@@ -368,12 +374,12 @@ async function processQuote(deps, body, meta) {
   const okBody = (requestId, deduped) => ({
     ok: true,
     request_id: requestId || null,
-    priceable: type.priceable !== false,
+    priceable: !isCallUs,
     price_low: range ? range.low : null,
     price_high: range ? range.high : null,
     price_low_label: range ? fmtMoney(range.low) : null,
     price_high_label: range ? fmtMoney(range.high) : null,
-    copy: type.priceable !== false ? revealCopy : callUsCopy,
+    copy: !isCallUs ? revealCopy : callUsCopy,
     in_area: inArea,
     out_of_area_copy: outOfAreaCopy,
     booking: { open: booking.open && inArea },
@@ -465,7 +471,7 @@ async function processQuote(deps, body, meta) {
     instantDelayMinutes: numSetting(settings, 'pricing_instant_touch_delay_minutes', 10),
   }, { kickLeadAi: deps.kickLeadAi });
 
-  const status = type.priceable === false ? 'call_us' : (inArea ? 'priced' : 'out_of_area');
+  const status = isCallUs ? 'call_us' : (inArea ? 'priced' : 'out_of_area');
   const row = await writeRequestRow(db, {
     ...baseRow, status, lead_id: lead.lead_id, customer_id: lead.customer_id,
   });
@@ -546,9 +552,10 @@ async function processConfig(deps) {
         id: t.id, name: t.name, description: t.description || null,
         image_url: typeImageUrl(t.image_path),
         priceable: t.priceable !== false,
-        rate_low: t.priceable !== false ? Number(t.rate_low) : null,
-        rate_high: t.priceable !== false ? Number(t.rate_high) : null,
+        rate_low: t.priceable !== false && t.rate_low != null ? Number(t.rate_low) : null,
+        rate_high: t.priceable !== false && t.rate_high != null ? Number(t.rate_high) : null,
         min_price: t.min_price != null ? Number(t.min_price) : null,
+        tiers: t.priceable !== false ? normTiers(t.tiers) : [],
       })),
     },
   };

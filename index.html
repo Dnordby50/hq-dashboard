@@ -21487,7 +21487,10 @@ async function renderSettingsPricing() {
       <div style="flex:1;min-width:200px">
         <div style="font-weight:700">${esc(t.name)} ${t.active ? '' : '<span style="font-size:.7rem;font-weight:800;color:var(--muted)">(OFF)</span>'}</div>
         <div style="color:var(--muted);font-size:.74rem;margin-top:2px">
-          ${t.priceable === false ? 'Call us (no online range)' : `${fmtRate(t.rate_low)} to ${fmtRate(t.rate_high)} per sqft${t.min_price != null ? ` · $${Number(t.min_price).toLocaleString()} minimum` : ''}`}</div>
+          ${t.priceable === false ? 'Call us (no online range)'
+            : (Array.isArray(t.tiers) && t.tiers.length
+              ? `${t.tiers.length} size bracket${t.tiers.length === 1 ? '' : 's'}${t.rate_low != null ? ` · ${fmtRate(t.rate_low)} to ${fmtRate(t.rate_high)} per sqft past the last` : ' · call us past the last'}`
+              : `${fmtRate(t.rate_low)} to ${fmtRate(t.rate_high)} per sqft${t.min_price != null ? ` · $${Number(t.min_price).toLocaleString()} minimum` : ''}`)}</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button type="button" class="pec-btn sm ${t.active ? 'ghost' : 'primary'}" data-prt-toggle="${esc(t.id)}">${t.active ? 'Turn off' : 'Turn on'}</button>
@@ -21675,10 +21678,16 @@ async function renderSettingsPricing() {
 // succeeds; the save is guarded on updated_at so two tabs cannot silently
 // clobber each other (the touch trigger owns updated_at).
 function openPricingTypeModal(existing, allTypes) {
-  const t = existing || { name: '', description: '', image_path: null, rate_low: null, rate_high: null, min_price: null, priceable: true, active: true };
+  const t = existing || { name: '', description: '', image_path: null, rate_low: null, rate_high: null, min_price: null, priceable: true, active: true, tiers: [] };
   let pendingFile = null;
+  // Working copy of the size brackets; rows edit in place, sorted on Save.
+  const tierRows = (Array.isArray(t.tiers) ? t.tiers : []).map(x => ({
+    up_to_sqft: x && x.up_to_sqft != null ? String(x.up_to_sqft) : '',
+    low: x && x.low != null ? String(x.low) : '',
+    high: x && x.high != null ? String(x.high) : '',
+  }));
   const wrap = openModal(`
-    <div style="max-width:560px;width:min(560px,92vw)">
+    <div style="width:100%">
       <h3 style="margin:0 0 14px">${existing ? 'Edit project type' : 'New project type'}</h3>
       <div class="pec-field"><label>Name (shown to the visitor)</label>
         <input id="ptName" maxlength="80" value="${esc(t.name || '')}" placeholder="e.g. Standard Flake"></div>
@@ -21691,7 +21700,12 @@ function openPricingTypeModal(existing, allTypes) {
       </div>
       <label style="display:flex;gap:8px;align-items:center;font-size:.86rem;margin:10px 0"><input type="checkbox" id="ptPriceable" ${t.priceable !== false ? 'checked' : ''}> Show a price range online</label>
       <div id="ptRates" style="${t.priceable !== false ? '' : 'display:none'}">
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:10px 0 4px">Size brackets (optional)</div>
+        <div style="color:var(--muted);font-size:.68rem;margin-bottom:6px">Your own range per size. The visitor's sqft picks the first bracket it fits and shows exactly what you typed here. Leave empty to price everything from the per-sqft rates below.</div>
+        <div id="ptTiers"></div>
+        <button type="button" class="pec-btn ghost sm" id="ptTierAdd" style="margin:4px 0 10px">+ Add bracket</button>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 4px">Per-sqft rates${tierRows.length ? ' (used past the last bracket)' : ''}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">
           <div class="pec-field"><label>Low ($/sqft)</label>
             <input type="number" id="ptLow" min="0" step="0.05" value="${t.rate_low != null ? esc(String(t.rate_low)) : ''}"></div>
           <div class="pec-field"><label>High ($/sqft)</label>
@@ -21699,7 +21713,7 @@ function openPricingTypeModal(existing, allTypes) {
           <div class="pec-field"><label>Minimum job ($, optional)</label>
             <input type="number" id="ptMin" min="0" step="50" value="${t.min_price != null ? esc(String(t.min_price)) : ''}" placeholder="e.g. 1500"></div>
         </div>
-        <span style="color:var(--muted);font-size:.68rem">The visitor sees sqft times this range, rounded. The minimum lifts small jobs to a floor worth rolling a truck for.</span>
+        <span style="color:var(--muted);font-size:.68rem">The visitor sees sqft times this range, rounded. The minimum lifts small jobs to a floor worth rolling a truck for. With brackets set, these rates only cover sizes past the last bracket; leave them empty and oversize projects get your call-us copy instead.</span>
       </div>
       <div id="ptCallUs" style="${t.priceable !== false ? 'display:none' : ''};color:var(--muted);font-size:.76rem;margin:4px 0">No range shows for this type; the visitor sees your call-us copy and goes straight to booking the on-site visit.</div>
       <label style="display:flex;gap:8px;align-items:center;font-size:.86rem;margin:10px 0 16px"><input type="checkbox" id="ptActive" ${t.active ? 'checked' : ''}> Active (shows on the pricing page)</label>
@@ -21738,6 +21752,30 @@ function openPricingTypeModal(existing, allTypes) {
     q('#ptCallUs').style.display = on ? 'none' : '';
   });
 
+  // Bracket rows edit the working copy in place; sorting happens on Save so
+  // rows never jump around mid-typing.
+  const renderTiers = () => {
+    const host = q('#ptTiers');
+    host.innerHTML = tierRows.map((r, i) => `
+      <div style="display:flex;gap:8px;align-items:center;padding:3px 0;flex-wrap:wrap" data-pt-tier="${i}">
+        <label style="margin:0;font-weight:400;text-transform:none;font-size:.78rem;display:flex;align-items:center;gap:5px">Up to
+          <input type="number" min="1" step="10" data-ptt-up value="${esc(r.up_to_sqft)}" placeholder="600" style="width:88px;padding:7px 9px"> sqft:</label>
+        <input type="number" min="0" step="50" data-ptt-low value="${esc(r.low)}" placeholder="$ low" style="width:100px;padding:7px 9px">
+        <span style="color:var(--muted);font-size:.78rem">to</span>
+        <input type="number" min="0" step="50" data-ptt-high value="${esc(r.high)}" placeholder="$ high" style="width:100px;padding:7px 9px">
+        <button type="button" class="pec-btn ghost sm danger" data-ptt-del title="Remove bracket">✕</button>
+      </div>`).join('') || '<div style="color:var(--muted);font-size:.72rem;padding:2px 0">No brackets yet.</div>';
+    host.querySelectorAll('[data-pt-tier]').forEach(row => {
+      const i = Number(row.dataset.ptTier);
+      row.querySelector('[data-ptt-up]').addEventListener('input', e => { tierRows[i].up_to_sqft = e.target.value; });
+      row.querySelector('[data-ptt-low]').addEventListener('input', e => { tierRows[i].low = e.target.value; });
+      row.querySelector('[data-ptt-high]').addEventListener('input', e => { tierRows[i].high = e.target.value; });
+      row.querySelector('[data-ptt-del]').addEventListener('click', () => { tierRows.splice(i, 1); renderTiers(); });
+    });
+  };
+  renderTiers();
+  q('#ptTierAdd').addEventListener('click', () => { tierRows.push({ up_to_sqft: '', low: '', high: '' }); renderTiers(); });
+
   q('#ptCancel').addEventListener('click', () => {
     if (pendingFile) { try { URL.revokeObjectURL(pendingFile._url); } catch (_) {} }
     pecCloseModalWrap(wrap);
@@ -21751,9 +21789,32 @@ function openPricingTypeModal(existing, allTypes) {
     const low = q('#ptLow').value === '' ? null : Number(q('#ptLow').value);
     const high = q('#ptHigh').value === '' ? null : Number(q('#ptHigh').value);
     const minP = q('#ptMin').value === '' ? null : Number(q('#ptMin').value);
+    // Brackets: fully-empty rows are dropped; a partial row is an error, not
+    // a guess. Sorted by size; duplicate boundaries are ambiguous, so blocked.
+    const tiers = [];
     if (priceable) {
-      if (low == null || high == null || !isFinite(low) || !isFinite(high) || low < 0 || high < low) {
-        showToast('A priced type needs a low and high rate, with low at or below high.', { ttl: 5000 }); return;
+      for (const r of tierRows) {
+        if (r.up_to_sqft === '' && r.low === '' && r.high === '') continue;
+        const up = Number(r.up_to_sqft), tl = Number(r.low), th = Number(r.high);
+        if (r.up_to_sqft === '' || r.low === '' || r.high === '' || !isFinite(up) || !isFinite(tl) || !isFinite(th) || up <= 0 || tl < 0 || th < tl) {
+          showToast('Each bracket needs a sqft size and a low-to-high dollar range (low at or below high).', { ttl: 5000 }); return;
+        }
+        tiers.push({ up_to_sqft: up, low: tl, high: th });
+      }
+      tiers.sort((a, b) => a.up_to_sqft - b.up_to_sqft);
+      for (let i = 1; i < tiers.length; i++) {
+        if (tiers[i].up_to_sqft === tiers[i - 1].up_to_sqft) {
+          showToast('Two brackets have the same sqft size. Make each boundary unique.', { ttl: 5000 }); return;
+        }
+      }
+    }
+    const hasRates = low != null || high != null;
+    if (priceable) {
+      if (hasRates && (low == null || high == null || !isFinite(low) || !isFinite(high) || low < 0 || high < low)) {
+        showToast('The per-sqft rates need both a low and a high, with low at or below high (or leave both empty when brackets cover everything).', { ttl: 6000 }); return;
+      }
+      if (!hasRates && !tiers.length) {
+        showToast('A priced type needs either size brackets or a low and high per-sqft rate.', { ttl: 5000 }); return;
       }
     }
     btn.disabled = true; btn.textContent = 'Saving…';
@@ -21771,9 +21832,10 @@ function openPricingTypeModal(existing, allTypes) {
         description: (q('#ptDesc').value || '').trim() || null,
         image_path: uploadedPath || t.image_path || null,
         priceable,
-        rate_low: priceable ? low : null,
-        rate_high: priceable ? high : null,
+        rate_low: priceable && hasRates ? low : null,
+        rate_high: priceable && hasRates ? high : null,
         min_price: priceable ? minP : null,
+        tiers: priceable ? tiers : [],
         active: q('#ptActive').checked,
       };
       if (existing) {

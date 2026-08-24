@@ -3377,6 +3377,18 @@
           "name": "pricing_instant_touch_delay_minutes"
         }
       ]
+    },
+    {
+      "file": "2026-09-17_pricing_sqft_tiers.sql",
+      "date": "2026-09-17",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_pricing_project_types.tiers"
+        }
+      ]
     }
   ],
   "knownTables": [

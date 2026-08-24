@@ -180,6 +180,31 @@ const META = { ipHash: 'hash1', userAgent: 'test-ua' };
     ok(fx.db.leads.length === 1, 'call us: lead created');
   }
 
+  // ---- Size brackets: typed ranges win; oversize flips to call-us ----------
+  {
+    const TYPE_TIERED = '55555555-5555-5555-5555-555555555555';
+    const tables = baseTables();
+    tables.pec_pricing_project_types.push({
+      id: TYPE_TIERED, brand: 'PEC', name: 'Bracketed Flake', description: null, image_path: null,
+      rate_low: null, rate_high: null, min_price: null, priceable: true, sort_order: 3, active: true,
+      tiers: [{ up_to_sqft: 600, low: 2500, high: 3500 }, { up_to_sqft: 1200, low: 4400, high: 6200 }],
+    });
+    const fx = makeDb(tables);
+    const { deps } = makeDeps(fx);
+    const out = await processQuote(deps, goodBody({ project_type_id: TYPE_TIERED, sqft: '450' }), META);
+    ok(out.status === 200 && out.body.price_low === 2500 && out.body.price_high === 3500, 'tiers: bracket range returned as typed');
+    const row = fx.db.pec_pricing_requests[0];
+    ok(row && row.status === 'priced' && row.price_low === 2500 && row.rate_low === null, 'tiers: audit snapshots bracket price, no rate');
+
+    const fx2 = makeDb(tables);
+    const d2 = makeDeps(fx2);
+    const out2 = await processQuote(d2.deps, goodBody({ project_type_id: TYPE_TIERED, sqft: '5000', phone: '(928) 555-9999', email: 'big@example.com' }), META);
+    ok(out2.status === 200 && out2.body.priceable === false && out2.body.price_low === null, 'tiers: past last bracket with no rates flips to call-us');
+    ok(out2.body.copy === 'CALL US COPY', 'tiers: oversize gets the call-us copy');
+    ok(fx2.db.pec_pricing_requests.some(r => r.status === 'call_us'), 'tiers: oversize audit status call_us');
+    ok(fx2.db.leads.length === 1, 'tiers: oversize still captures the lead');
+  }
+
   // ---- Same-human dedupe: repeat inquirer lands on the existing lead -------
   {
     const recent = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();

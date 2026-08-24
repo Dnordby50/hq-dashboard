@@ -60,6 +60,35 @@ eq(computePriceRange({ sqft: 400, rateHigh: 7 }), { ok: false, error: 'BAD_RATES
 eq(computePriceRange({ sqft: 400, rateLow: 7, rateHigh: 5 }), { ok: false, error: 'BAD_RATES' }, 'inverted rates');
 eq(computePriceRange({ sqft: 400, rateLow: -1, rateHigh: 5 }), { ok: false, error: 'BAD_RATES' }, 'negative rate');
 
+// Size brackets win over rates; boundary is inclusive; values pass through
+// untouched by rounding and min_price (the admin typed them).
+const TIERS = [
+  { up_to_sqft: 600, low: 2500, high: 3500 },
+  { up_to_sqft: 1200, low: 4400, high: 6200 },
+];
+eq(computePriceRange({ sqft: 450, tiers: TIERS, rateLow: 5.25, rateHigh: 7, roundTo: 50 }),
+  { ok: true, low: 2500, high: 3500, tiered: true }, 'tiers: first bracket wins');
+eq(computePriceRange({ sqft: 600, tiers: TIERS, rateLow: 5.25, rateHigh: 7, roundTo: 50 }),
+  { ok: true, low: 2500, high: 3500, tiered: true }, 'tiers: boundary inclusive');
+eq(computePriceRange({ sqft: 601, tiers: TIERS, rateLow: 5.25, rateHigh: 7, roundTo: 50 }),
+  { ok: true, low: 4400, high: 6200, tiered: true }, 'tiers: next bracket past boundary');
+eq(computePriceRange({ sqft: 450, tiers: TIERS, minPrice: 3000, roundTo: 50 }),
+  { ok: true, low: 2500, high: 3500, tiered: true }, 'tiers: min_price and rounding do not touch bracket values');
+// Past the last bracket: rates take over; without rates, BEYOND_TIERS.
+eq(computePriceRange({ sqft: 2000, tiers: TIERS, rateLow: 5, rateHigh: 7, roundTo: 50 }),
+  { ok: true, low: 10000, high: 14000 }, 'tiers: rate fallback past last bracket');
+eq(computePriceRange({ sqft: 2000, tiers: TIERS }),
+  { ok: false, error: 'BEYOND_TIERS' }, 'tiers: no rates past last bracket -> BEYOND_TIERS');
+// Malformed rows are dropped, out-of-order input sorts itself.
+eq(computePriceRange({ sqft: 450, tiers: [{ up_to_sqft: 1200, low: 4400, high: 6200 }, { bad: true }, { up_to_sqft: 600, low: 2500, high: 3500 }, { up_to_sqft: 300, low: 5, high: 1 }] }),
+  { ok: true, low: 2500, high: 3500, tiered: true }, 'tiers: junk dropped, sorted by up_to');
+// Empty/absent tiers change nothing about the rate path.
+eq(computePriceRange({ sqft: 400, tiers: [], rateLow: 5, rateHigh: 7 }),
+  { ok: true, low: 2000, high: 2800 }, 'tiers: empty array is inert');
+// Sqft page bounds still apply before any bracket logic.
+eq(computePriceRange({ sqft: 30, tiers: TIERS, minSqft: 50 }),
+  { ok: false, error: 'SQFT_TOO_SMALL' }, 'tiers: page bounds still gate');
+
 // Money formatting: whole dollars, grouped, rounds.
 eq(fmtMoney(5250), '$5,250', 'fmtMoney groups');
 eq(fmtMoney(999.6), '$1,000', 'fmtMoney rounds');

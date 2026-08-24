@@ -1,3 +1,23 @@
+## [2026-08-24 MST] Instant Pricing: size-bracket pricing and the type modal fits again
+
+By: Claude Code
+
+Changed: NEW migration 2026-09-17_pricing_sqft_tiers.sql (APPLIED TO PROD), production/pricing-range.cjs (+9 test checks), netlify/functions/pec-pricing.cjs, index.html (type modal: fit fix + bracket editor; type list shows bracket counts), production/pricing.test.cjs (+6 checks), features.json, SCHEMA.md.
+
+**Two Dylan reports, both from trying the Settings page:**
+
+**1. "The modal is not fitting."** Root cause was self-inflicted: openPricingTypeModal's inner div forced max-width 560px inside .pec-modal's 520px container, so the right edge clipped. The inner div is now width:100% (the modal container already scrolls at max-height 92vh) and the rate grid switched from a rigid three-column to auto-fit, so it wraps instead of squeezing on narrow screens.
+
+**2. "Ability to add my own price ranges depending on sq footage entered."** New per-type SIZE BRACKETS: pec_pricing_project_types.tiers (jsonb, [{up_to_sqft, low, high}]). Semantics, decided for least surprise: brackets WIN over the per-sqft rate math; the visitor's sqft picks the first bracket it fits (boundary inclusive) and shows EXACTLY the typed range, untouched by rounding and min_price (Dylan typed the number he wants shown). The per-sqft rates become the fallback for sizes past the last bracket, and they are now OPTIONAL when brackets exist: past the last bracket with no rates, the quote flips to the call-us flow (a 5,000 sqft job gets "we price it in person", never a made-up extrapolation). The rates CHECK constraint was relaxed to rates-or-brackets. The modal grew a bracket editor (add/remove rows, sorted on Save, partial rows are an error not a guess, duplicate boundaries blocked), the type list shows the bracket count, and /api/pricing/config now carries tiers so the machine-readable price book stays complete.
+
+Verified: pricing-range suite 32 checks and pricing endpoint suite 62 checks, all green (bracket boundary inclusivity, junk-row dropping, rate fallback, the oversize call-us flip with the lead still captured, audit rows snapshotting bracket prices with null rates); all index.html script blocks parse; migration applied to prod.
+
+Files touched: see Changed.
+
+Next steps: none new; the go-live handoff two entries down stands. Brackets are optional, so the seeded per-sqft ranges keep working untouched until Dylan adds brackets to a type.
+
+---
+
 ## [2026-08-24 MST] Instant Pricing: the thanks-for-reaching-out text now waits 10 minutes (Dylan's call on open item 1)
 
 By: Claude Code
