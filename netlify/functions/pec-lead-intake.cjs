@@ -40,6 +40,9 @@ const { enrollLead, sendInstantTouch, SITE_URL } = require('./_pec-drip.cjs');
 // intake and the Routemize appointment intake share ONE dedupe rule.
 const { normPhone, findRecentLiveLead, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
+// Office alerts (Slack + bell) moved to _pec-lead-notify.cjs so the Instant
+// Pricing funnel shares them; behavior unchanged.
+const { notifyLeadSlack, notifyLeadBell } = require('./_pec-lead-notify.cjs');
 
 const ENDPOINT = 'lead-intake';
 
@@ -57,54 +60,6 @@ function parseSmsConsent(v) {
   if (v === true || v === 1) return true;
   if (typeof v === 'string') return CONSENT_TRUE.has(v.trim().toLowerCase());
   return false;
-}
-
-// Prompt 73 Part E1: Slack alert for every new online lead. New channel via
-// SLACK_LEADS_WEBHOOK, falling back to SLACK_OFFICE_WEBHOOK, clean logged
-// no-op when neither is set (the pec-notify-costing-sendback pattern).
-// Fire-and-forget contract: nothing here can fail the intake response.
-async function notifyLeadSlack(lead, projectNotes, instant) {
-  const hook = process.env.SLACK_LEADS_WEBHOOK || process.env.SLACK_OFFICE_WEBHOOK;
-  if (!hook) {
-    console.log('pec-lead-intake: no Slack webhook set (SLACK_LEADS_WEBHOOK / SLACK_OFFICE_WEBHOOK); lead alert skipped');
-    return;
-  }
-  const instantLine = instant && Array.isArray(instant.sent) && instant.sent.length
-    ? `Instant reply sent (${instant.sent.join(' + ')})${instant.skipped && instant.skipped.length ? `; skipped ${instant.skipped.join(', ')}` : ''}`
-    : `Instant reply NOT sent (${(instant && instant.reason) || 'unknown'})`;
-  const lines = [
-    `:large_green_circle: *New lead: ${lead.full_name || 'Unknown'}*`,
-    `Source: ${lead.source || 'unknown'}`,
-    lead.phone ? `Phone: <tel:+1${lead.phone}|${lead.phone}>` : null,
-    lead.email ? `Email: ${lead.email}` : null,
-    projectNotes ? `Project: ${projectNotes}` : null,
-    instantLine,
-    `<${SITE_URL}/#leads|Open TopCoat leads>`,
-  ].filter(Boolean);
-  try {
-    const res = await fetch(hook, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: lines.join('\n') }),
-    });
-    if (!res.ok) console.warn(`pec-lead-intake: Slack lead alert failed (${res.status})`);
-  } catch (err) {
-    console.warn('pec-lead-intake: Slack lead alert failed:', err && err.message);
-  }
-}
-
-// Prompt 73 Part E2: staff bell row. Web-form leads arrive unassigned, so the
-// bell is the office-wide alert (the same global pec_notifications feed the
-// booking bell uses); when rep assignment at intake exists someday, target it
-// here. Best-effort like everything after the insert.
-async function notifyLeadBell(db, lead, instant) {
-  await db('POST', '/pec_notifications', {
-    type: 'lead_created',
-    body: `New ${lead.source || 'online'} lead: ${lead.full_name || 'Unknown'}`
-      + (instant && instant.sent && instant.sent.length ? ` (instant ${instant.sent.join(' + ')} reply sent)` : ''),
-    target_view: 'leads',
-    target_id: lead.id,
-  }).catch(e => console.warn('pec-lead-intake: lead bell failed (non-fatal):', e && e.message));
 }
 
 // Kick off the per-lead AI analysis for a freshly inserted lead (Dylan's
