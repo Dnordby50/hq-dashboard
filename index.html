@@ -13753,12 +13753,17 @@ async function renderMetrics() {
       // it ever grows past a few thousand rows.
       supabase.from('pec_booking_requests').select('id,status,name,phone,email,address_city,address_zip,in_area,requested_start,appointment_id,lead_id,error_text,sms_consent,created_at').order('created_at', { ascending: false }).limit(2000),
       supabase.from('pec_appointments').select('id,status,start_at,created_at').eq('source', 'booking'),
+      // Instant Pricing funnel: same enumerated-columns discipline as the
+      // booking read (the staff grant deliberately excludes ip_hash, so
+      // select('*') is a permission error by design). Degrades independently
+      // pre-migration.
+      supabase.from('pec_pricing_requests').select('id,status,project_type_name,sqft,price_low,price_high,name,address_city,address_zip,in_area,lead_id,booked_appointment_id,error_text,created_at').order('created_at', { ascending: false }).limit(2000),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes,
-    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes, sosEstRes, bkReqRes, bkApptRes] = res;
+    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes, sosEstRes, bkReqRes, bkApptRes, przReqRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
   // any labor math below; missing keys keep the shipped defaults.
@@ -14352,6 +14357,43 @@ async function renderMetrics() {
     footnote: 'Recorded since online booking shipped (2026-08-19). Rejected reasons: rate limit, honeypot, too fast, duplicate, slot taken.',
   }));
 
+  // ---- Instant Pricing funnel -----------------------------------------------
+  // pec_pricing_requests records every quote attempt; "booked" is a priced
+  // row whose same-visit booking got linked back (booked_appointment_id).
+  // This conversion number is the business case for the Price Guide AI
+  // replacement, so it lives here from day one; the deep drill matches the
+  // booking card's shape.
+  const przFunnelOn = !(przReqRes && przReqRes.error);
+  const przReqs = ((przReqRes && !przReqRes.error && przReqRes.data) || []).map(r => ({ ...r, day: bkPhxDay(r.created_at) }));
+  const przInWin = przReqs.filter(r => inWin(r.day));
+  const przQuoted = przInWin.filter(r => ['priced', 'out_of_area', 'call_us'].includes(r.status));
+  const przBookedRows = przQuoted.filter(r => r.booked_appointment_id);
+  const przOoa = przInWin.filter(r => r.status === 'out_of_area');
+  const przRej = przInWin.filter(r => r.status === 'rejected' || r.status === 'error');
+  const przByType = {};
+  for (const r of przQuoted) { const k = r.project_type_name || 'Unknown'; przByType[k] = (przByType[k] || 0) + 1; }
+  const przStatusLabel = { priced: 'Priced', out_of_area: 'Out of area', call_us: 'Call us', rejected: 'Rejected', error: 'Error' };
+  const przRange = (r) => (r.price_low != null && r.price_high != null)
+    ? `$${Number(r.price_low).toLocaleString()} to $${Number(r.price_high).toLocaleString()}` : '—';
+  const przFunnelDrillId = regDrill(() => ({
+    title: 'Instant Pricing funnel: every quote attempt in window',
+    summary: przInWin.length
+      ? `${countOf(przInWin.length, 'attempt')}: ${przQuoted.length} quoted (${Object.entries(przByType).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}), ${przBookedRows.length} booked their visit in the same session, ${przOoa.length} out of area, ${przRej.length} rejected or errored. Every quoted row is a captured lead; the range shown is snapshotted on the row even if rates change later.`
+      : 'No pricing-page attempts in this window.',
+    columns: ['When', 'Name', 'Project', 'Sqft', 'Range shown', 'Status', 'Booked?'],
+    rows: przInWin.slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).map(r => ({ cells: [
+      invFmtDate(r.day),
+      r.name || '—',
+      r.project_type_name || '—',
+      r.sqft != null ? Number(r.sqft).toLocaleString() : '—',
+      przRange(r),
+      r.status === 'rejected' ? `Rejected (${(r.error_text || '').replace(/_/g, ' ')})` : (przStatusLabel[r.status] || r.status),
+      r.booked_appointment_id ? 'Yes' : '—',
+    ] })),
+    total: [countOf(przInWin.length, 'attempt'), '', '', '', '', `${przQuoted.length} quoted`, `${przBookedRows.length} booked`],
+    footnote: 'Recorded since Instant Pricing shipped. Rejected reasons: rate limit, honeypot, too fast, duplicate.',
+  }));
+
   const deltaHtml = (cur, prev) => {
     const win = `prior ${winDays} day${winDays === 1 ? '' : 's'}`;
     if (cur == null || prev == null || (prev === 0 && cur === 0)) return '<div class="pec-m-kpi-delta flat">no prior-window data</div>';
@@ -14815,6 +14857,7 @@ async function renderMetrics() {
       ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize), null, 'sales')}
       ${sosEnabled ? kpiCard(kpiIds.soldOnSite, 'check', 'Sold on site', 'Accepted estimates signed while the rep was still in the home (appointment window + grace).', `${invPct(sosRate)}${sosInWin.length ? ` <span style="font-size:.6em;font-weight:600;color:var(--muted)">${sosSold.length}/${sosInWin.length}</span>` : ''}`, deltaHtml(sosRate, sosPrevRate), null, 'sales') : ''}
       ${bkFunnelOn ? kpiCard(bkFunnelDrillId, 'trend', 'Online booking funnel', 'Booking-page attempts in this window: booked, out of area, rejected, errors. The question Routemize could never answer.', `${bkBooked}<span style="font-size:.55em;font-weight:600;color:var(--muted)"> booked / ${bkInWin.length} attempt${bkInWin.length === 1 ? '' : 's'}</span>`, bkReconciles ? '' : '<div class="pec-m-kpi-delta down">booked rows disagree with the calendar, open for detail</div>', null, 'sales') : ''}
+      ${przFunnelOn ? kpiCard(przFunnelDrillId, 'trend', 'Instant Pricing funnel', 'Pricing-page quotes in this window: every quote is a captured lead; booked means they scheduled their visit in the same session.', `${przQuoted.length}<span style="font-size:.55em;font-weight:600;color:var(--muted)"> quoted / ${przBookedRows.length} booked</span>`, przOoa.length ? `<div class="pec-m-kpi-delta flat">${przOoa.length} out of area</div>` : '', null, 'sales') : ''}
     </div>
     <div class="pec-m-group-h" data-metcat="production admin">Production &amp; quality</div>
     <div class="pec-m-kpis" style="margin-bottom:16px">
@@ -19973,6 +20016,7 @@ const SETTINGS_PAGES = [
   { key: 'estimates',    label: 'Estimates',    group: 'config', keywords: ['line pricing', 'optional lines', 'gp floor', 'comps', 'proposal'] },
   { key: 'invoicing',    label: 'Invoicing',    group: 'config', keywords: ['deposit', 'payment schedule', 'installment'] },
   { key: 'presentation', label: 'Presentation', group: 'config', keywords: ['present mode', 'sections', 'gallery', 'reviews'] },
+  { key: 'pricing',      label: 'Instant Pricing', group: 'config', keywords: ['price', 'sqft', 'rates', 'project types', 'ballpark', 'quote', 'instant', 'price guide'] },
   { key: 'busybusy',     label: 'BusyBusy',     group: 'config', keywords: ['hours', 'import', 'payroll', 'geofence', 'time entries'] },
   { key: 'brand',        label: 'Brand',        group: 'config', keywords: ['logo', 'terms', 'invoice text', 'status descriptions'] },
   { key: 'health',       label: 'System health', group: 'config', keywords: ['heartbeat', 'monitor', 'scheduled functions', 'slack alert', 'uptime', 'stale'] },
@@ -21399,6 +21443,361 @@ function openPresentationSectionModal(existing, brandKey, allSections) {
         .catch(err => console.warn('presentation photo cleanup failed (orphaned files, harmless):', err));
     }
     pendingFiles.forEach(f => { try { URL.revokeObjectURL(f._url); } catch (_) {} });
+    pecCloseModalWrap(wrap);
+    renderSettings();
+  });
+}
+
+// Settings > Instant Pricing: the public /pricing funnel that replaced the
+// Price Guide AI subscription. One card for the page itself (enable + link +
+// Advanced copy/knobs, rule 12), one for the project-type price book
+// (photo, description, manual $/sqft range per type, per Dylan's locked
+// decision: manual ranges, never the estimator engine, so the website can
+// never leak internal margin math). The preview iframe IS the real /pricing
+// page in preview mode, reloaded after saves.
+function pricingImageUrl(path) {
+  if (!path) return null;
+  try { return supabase.storage.from('pec-pricing').getPublicUrl(path).data.publicUrl; }
+  catch (_) { return null; }
+}
+
+async function renderSettingsPricing() {
+  const root = $('pecViewRoot');
+  const [typesRes, setRes] = await withFreshSession(() => Promise.all([
+    supabase.from('pec_pricing_project_types').select('*').eq('brand', 'PEC')
+      .order('sort_order', { ascending: true, nullsFirst: false }).order('name'),
+    supabase.from('settings').select('key,value').like('key', 'pricing_%'),
+  ]), { label: 'settings-pricing' });
+  const prMigrated = !(typesRes && typesRes.error);
+  const types = (typesRes && typesRes.data) || [];
+  const prSettings = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const prUrl = (prSettings.pricing_url || '').trim() || (location.origin + '/pricing');
+  const prEmbedSnippet = `<iframe src="${prUrl}?embed=1" style="width:100%;border:0;min-height:900px" loading="lazy" title="Get your instant price"></iframe>`;
+
+  const fmtRate = (v) => (v == null || v === '' ? '?' : '$' + Number(v).toFixed(2));
+  const typeRow = (t, i) => `
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--border);${t.active ? '' : 'opacity:.55'}" data-pr-type="${esc(t.id)}">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <button type="button" class="pec-btn ghost sm" data-prt-up="${esc(t.id)}" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+        <button type="button" class="pec-btn ghost sm" data-prt-down="${esc(t.id)}" ${i === types.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+      </div>
+      ${t.image_path
+        ? `<img src="${esc(pricingImageUrl(t.image_path) || '')}" alt="" style="width:72px;height:54px;object-fit:cover;border-radius:8px;background:#333">`
+        : '<div style="width:72px;height:54px;border-radius:8px;background:var(--border);display:flex;align-items:center;justify-content:center;font-size:.66rem;color:var(--muted)">no photo</div>'}
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:700">${esc(t.name)} ${t.active ? '' : '<span style="font-size:.7rem;font-weight:800;color:var(--muted)">(OFF)</span>'}</div>
+        <div style="color:var(--muted);font-size:.74rem;margin-top:2px">
+          ${t.priceable === false ? 'Call us (no online range)' : `${fmtRate(t.rate_low)} to ${fmtRate(t.rate_high)} per sqft${t.min_price != null ? ` · $${Number(t.min_price).toLocaleString()} minimum` : ''}`}</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="pec-btn sm ${t.active ? 'ghost' : 'primary'}" data-prt-toggle="${esc(t.id)}">${t.active ? 'Turn off' : 'Turn on'}</button>
+        <button type="button" class="pec-btn sm" data-prt-edit="${esc(t.id)}">Edit</button>
+        <button type="button" class="pec-btn ghost sm danger" data-prt-del="${esc(t.id)}">Delete</button>
+      </div>
+    </div>`;
+
+  root.innerHTML = `
+    ${settingsTabBar('pricing')}
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Instant pricing page</h3>
+      ${!prMigrated ? '<div class="pec-empty">Run the 2026-09-15_instant_pricing.sql migration to enable instant pricing.</div>' : `
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        Website visitors pick a project type, enter square footage and their address, leave
+        their contact info, and see a ballpark range on the spot. The lead lands on the
+        Leads board with the full new-lead treatment (alerts, AI score, instant reply,
+        drip), and in-area visitors can book their on-site estimate in the same visit
+        through the online booking engine. This replaces Price Guide AI.
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="prEnabled" style="width:auto" ${prSettings.pricing_enabled === 'true' ? 'checked' : ''}>
+        <strong>Instant pricing enabled</strong> <span style="color:var(--muted);font-size:.76rem">(off shows a call-us page; nothing prices)</span></label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <input readonly value="${esc(prUrl)}" style="max-width:320px;font-size:.8rem" id="prUrlShow">
+        <button class="pec-btn sm" id="prCopyLink">Copy link</button>
+        <button class="pec-btn ghost sm" id="prCopyEmbed" title="One line to paste into the website. The frame sizes itself.">Copy embed code</button>
+        <a class="pec-btn ghost sm" href="${esc(prUrl)}" target="_blank" rel="noopener">Open</a>
+        <span id="prCopyStatus" style="font-size:.72rem;color:var(--muted)"></span>
+      </div>
+      ${!types.filter(t => t.active).length ? '<div style="font-size:.78rem;color:#b45309;font-weight:600;margin-bottom:6px">No active project types. Add at least one below before enabling, or every visitor lands on the call-us page.</div>' : ''}
+      ${types.filter(t => t.active && !t.image_path).length ? `<div style="font-size:.78rem;color:#b45309;margin-bottom:6px">${types.filter(t => t.active && !t.image_path).length} active type${types.filter(t => t.active && !t.image_path).length === 1 ? ' has' : 's have'} no photo yet; the page shows a plain tile until you add one.</div>` : ''}
+      <details>
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Page copy (customer-facing: no em dashes)</div>
+        <div class="pec-field" style="max-width:560px"><label>Headline (last word shows in the accent color)</label>
+          <input data-pr-set="pricing_headline" value="${esc(prSettings.pricing_headline || '')}" placeholder="Get your instant price"></div>
+        <div class="pec-field" style="max-width:560px"><label>Intro line</label>
+          <input data-pr-set="pricing_intro_text" value="${esc(prSettings.pricing_intro_text || '')}"></div>
+        <div class="pec-field" style="max-width:560px"><label>Price reveal copy ({low} and {high} are the range)</label>
+          <textarea rows="3" data-pr-set="pricing_reveal_copy" style="font-size:.78rem">${esc(prSettings.pricing_reveal_copy || '')}</textarea></div>
+        <div class="pec-field" style="max-width:560px"><label>Out-of-area copy (they still see their price)</label>
+          <textarea rows="2" data-pr-set="pricing_out_of_area_copy" style="font-size:.78rem">${esc(prSettings.pricing_out_of_area_copy || '')}</textarea></div>
+        <div class="pec-field" style="max-width:560px"><label>Call-us copy (types priced in person)</label>
+          <textarea rows="2" data-pr-set="pricing_call_us_copy" style="font-size:.78rem">${esc(prSettings.pricing_call_us_copy || '')}</textarea></div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Range math</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:520px">
+          <div class="pec-field"><label>Round to ($)</label>
+            <input type="number" min="1" step="1" data-pr-set="pricing_round_to" value="${esc(prSettings.pricing_round_to || '50')}"></div>
+          <div class="pec-field"><label>Min sqft</label>
+            <input type="number" min="1" step="10" data-pr-set="pricing_min_sqft" value="${esc(prSettings.pricing_min_sqft || '50')}"></div>
+          <div class="pec-field"><label>Max sqft</label>
+            <input type="number" min="1" step="100" data-pr-set="pricing_max_sqft" value="${esc(prSettings.pricing_max_sqft || '20000')}"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:12px 0 4px">Abuse control</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:520px">
+          <div class="pec-field"><label>Quotes/hour per visitor</label>
+            <input type="number" min="0" step="1" data-pr-set="pricing_rate_limit_per_hour" value="${esc(prSettings.pricing_rate_limit_per_hour || '10')}"></div>
+          <div class="pec-field"><label>Min fill (seconds)</label>
+            <input type="number" min="0" step="1" data-pr-set="pricing_min_fill_seconds" value="${esc(prSettings.pricing_min_fill_seconds || '2')}"></div>
+          <div class="pec-field"><label>Duplicate window (hours)</label>
+            <input type="number" min="0" step="1" data-pr-set="pricing_duplicate_window_hours" value="${esc(prSettings.pricing_duplicate_window_hours || '24')}"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted)" id="prSetStatus"></div>
+      </details>`}
+    </div>
+    ${prMigrated ? `
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:2px">
+        <div>
+          <h3 style="margin:0 0 4px">Project types</h3>
+          <div style="color:var(--muted);font-size:.76rem">The price book the page quotes from. Ranges are your call; the seeded numbers bracket your real completed-job medians. A type marked "call us" shows no range and routes straight to booking.</div>
+        </div>
+        <button type="button" class="pec-btn sm primary" id="prTypeAdd">+ Add type</button>
+      </div>
+      ${types.length ? types.map(typeRow).join('') : '<div style="color:var(--muted);font-size:.8rem;padding-top:8px">No project types yet. Add the first one.</div>'}
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+        <div style="font-weight:700">Live preview</div>
+        <button type="button" class="pec-btn ghost sm" id="prPreviewRefresh">Refresh</button>
+      </div>
+      <div style="color:var(--muted);font-size:.74rem;margin-bottom:8px">This IS the real /pricing page in preview mode (every step stacked, submits off, sample numbers on the reveal). It refreshes after each save.</div>
+      <iframe id="prPreview" src="/pricing?embed=1&preview=1" style="width:100%;max-width:560px;border:1px solid var(--border);border-radius:12px;height:1500px;background:#f5f5f7"></iframe>
+    </div>` : ''}`;
+  wireSettingsTabs(root);
+  if (!prMigrated) return;
+
+  const prSave = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'pricing-setting-save' });
+    if (w && w.error) throw w.error;
+  };
+  const prStatus = (msg) => { const el = $('prSetStatus'); if (el) { el.textContent = msg; setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 2000); } };
+  const refreshPreview = () => { const f = $('prPreview'); if (f) f.src = f.src; };
+  $('prPreviewRefresh').addEventListener('click', refreshPreview);
+
+  $('prEnabled').addEventListener('change', async (e) => {
+    const onNow = e.target.checked;
+    if (onNow && !types.filter(t => t.active).length) {
+      e.target.checked = false;
+      showToast('Add at least one active project type below before enabling instant pricing.', { ttl: 6000 });
+      return;
+    }
+    try {
+      await prSave('pricing_enabled', onNow ? 'true' : 'false');
+      if (onNow && !(prSettings.pricing_url || '').trim()) {
+        await prSave('pricing_url', location.origin + '/pricing');
+        prSettings.pricing_url = location.origin + '/pricing';
+      }
+      showToast(onNow ? 'Instant pricing is LIVE' : 'Instant pricing switched off', { ttl: 3000 });
+      refreshPreview();
+    } catch (err) { e.target.checked = !onNow; showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); }
+  });
+
+  $('prCopyLink').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(prUrl); $('prCopyStatus').textContent = 'Link copied.'; }
+    catch (_) { $('prCopyStatus').textContent = prUrl; }
+    setTimeout(() => { $('prCopyStatus').textContent = ''; }, 2500);
+  });
+  $('prCopyEmbed').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(prEmbedSnippet); $('prCopyStatus').textContent = 'Embed code copied. Paste it into the website where Price Guide AI was.'; }
+    catch (_) { $('prCopyStatus').textContent = 'Copy failed; embed code logged to console.'; console.log(prEmbedSnippet); }
+    setTimeout(() => { $('prCopyStatus').textContent = ''; }, 3500);
+  });
+
+  root.querySelectorAll('[data-pr-set]').forEach(el => el.addEventListener('change', async () => {
+    try { await prSave(el.dataset.prSet, el.value.trim()); prStatus('Saved.'); refreshPreview(); }
+    catch (err) { prStatus('Save failed: ' + (err.message || err)); }
+  }));
+
+  const byTypeId = Object.fromEntries(types.map(t => [String(t.id), t]));
+  const swapTypeOrder = async (a, b) => {
+    const w1 = await withFreshWriteRetry(() => supabase.from('pec_pricing_project_types')
+      .update({ sort_order: b.sort_order }).eq('id', a.id), { label: 'pricing-type-reorder' });
+    if (w1 && w1.error) throw w1.error;
+    const w2 = await withFreshWriteRetry(() => supabase.from('pec_pricing_project_types')
+      .update({ sort_order: a.sort_order }).eq('id', b.id), { label: 'pricing-type-reorder' });
+    if (w2 && w2.error) throw w2.error;
+  };
+  root.querySelectorAll('[data-prt-up]').forEach(b => b.addEventListener('click', async () => {
+    const i = types.findIndex(t => String(t.id) === b.dataset.prtUp);
+    if (i <= 0) return;
+    b.disabled = true;
+    try { await swapTypeOrder(types[i], types[i - 1]); } catch (err) { showToast('Could not reorder: ' + esc(err.message || String(err)), { ttl: 5000 }); }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-prt-down]').forEach(b => b.addEventListener('click', async () => {
+    const i = types.findIndex(t => String(t.id) === b.dataset.prtDown);
+    if (i < 0 || i >= types.length - 1) return;
+    b.disabled = true;
+    try { await swapTypeOrder(types[i], types[i + 1]); } catch (err) { showToast('Could not reorder: ' + esc(err.message || String(err)), { ttl: 5000 }); }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-prt-toggle]').forEach(b => b.addEventListener('click', async () => {
+    const t = byTypeId[b.dataset.prtToggle]; if (!t) return;
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_pricing_project_types')
+      .update({ active: !t.active }).eq('id', t.id), { label: 'pricing-type-toggle' });
+    if (w && w.error) { showToast('Could not save: ' + esc(w.error.message || ''), { ttl: 5000 }); b.disabled = false; return; }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-prt-del]').forEach(b => b.addEventListener('click', async () => {
+    const t = byTypeId[b.dataset.prtDel]; if (!t) return;
+    if (!confirm(`Delete the project type "${t.name}"? Past quote rows keep their snapshot; the photo is removed from storage. This cannot be undone.`)) return;
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_pricing_project_types').delete().eq('id', t.id), { label: 'pricing-type-delete' });
+    if (w && w.error) { showToast('Could not delete: ' + esc(w.error.message || ''), { ttl: 5000 }); b.disabled = false; return; }
+    if (t.image_path) {
+      supabase.storage.from('pec-pricing').remove([t.image_path])
+        .catch(err => console.warn('pricing photo cleanup failed (orphaned file, harmless):', err));
+    }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-prt-edit]').forEach(b => b.addEventListener('click', () => openPricingTypeModal(byTypeId[b.dataset.prtEdit], types)));
+  $('prTypeAdd').addEventListener('click', () => openPricingTypeModal(null, types));
+}
+
+// Create/edit one pricing project type. Data-entry modal, same discipline as
+// the presentation modal: the photo uploads only on Save so Cancel never
+// orphans a file; a replaced photo is deleted only after the row save
+// succeeds; the save is guarded on updated_at so two tabs cannot silently
+// clobber each other (the touch trigger owns updated_at).
+function openPricingTypeModal(existing, allTypes) {
+  const t = existing || { name: '', description: '', image_path: null, rate_low: null, rate_high: null, min_price: null, priceable: true, active: true };
+  let pendingFile = null;
+  const wrap = openModal(`
+    <div style="max-width:560px;width:min(560px,92vw)">
+      <h3 style="margin:0 0 14px">${existing ? 'Edit project type' : 'New project type'}</h3>
+      <div class="pec-field"><label>Name (shown to the visitor)</label>
+        <input id="ptName" maxlength="80" value="${esc(t.name || '')}" placeholder="e.g. Standard Flake"></div>
+      <div class="pec-field"><label>One-line description</label>
+        <input id="ptDesc" maxlength="160" value="${esc(t.description || '')}" placeholder="Customer language: what it is, where it goes."></div>
+      <div class="pec-field"><label>Photo</label>
+        <div id="ptThumb" style="margin-bottom:8px"></div>
+        <input type="file" id="ptFile" accept="image/jpeg,image/png,image/webp">
+        <span style="color:var(--muted);font-size:.68rem;display:block;margin-top:4px">Resized automatically to 1600 px. One photo per type; your best finished floor of this kind.</span>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:.86rem;margin:10px 0"><input type="checkbox" id="ptPriceable" ${t.priceable !== false ? 'checked' : ''}> Show a price range online</label>
+      <div id="ptRates" style="${t.priceable !== false ? '' : 'display:none'}">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+          <div class="pec-field"><label>Low ($/sqft)</label>
+            <input type="number" id="ptLow" min="0" step="0.05" value="${t.rate_low != null ? esc(String(t.rate_low)) : ''}"></div>
+          <div class="pec-field"><label>High ($/sqft)</label>
+            <input type="number" id="ptHigh" min="0" step="0.05" value="${t.rate_high != null ? esc(String(t.rate_high)) : ''}"></div>
+          <div class="pec-field"><label>Minimum job ($, optional)</label>
+            <input type="number" id="ptMin" min="0" step="50" value="${t.min_price != null ? esc(String(t.min_price)) : ''}" placeholder="e.g. 1500"></div>
+        </div>
+        <span style="color:var(--muted);font-size:.68rem">The visitor sees sqft times this range, rounded. The minimum lifts small jobs to a floor worth rolling a truck for.</span>
+      </div>
+      <div id="ptCallUs" style="${t.priceable !== false ? 'display:none' : ''};color:var(--muted);font-size:.76rem;margin:4px 0">No range shows for this type; the visitor sees your call-us copy and goes straight to booking the on-site visit.</div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:.86rem;margin:10px 0 16px"><input type="checkbox" id="ptActive" ${t.active ? 'checked' : ''}> Active (shows on the pricing page)</label>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button type="button" class="pec-btn ghost" id="ptCancel">Cancel</button>
+        <button type="button" class="pec-btn primary" id="ptSave">Save type</button>
+      </div>
+    </div>`);
+  const q = (sel) => wrap.querySelector(sel);
+
+  const renderThumb = () => {
+    const host = q('#ptThumb');
+    if (pendingFile) {
+      host.innerHTML = `<img src="${esc(pendingFile._url)}" alt="" style="width:120px;height:90px;object-fit:cover;border-radius:8px;background:#333;opacity:.85"> <span style="color:var(--muted);font-size:.7rem">new photo, uploads on Save</span>`;
+    } else if (t.image_path) {
+      host.innerHTML = `<img src="${esc(pricingImageUrl(t.image_path) || '')}" alt="" style="width:120px;height:90px;object-fit:cover;border-radius:8px;background:#333">`;
+    } else {
+      host.innerHTML = '<span style="color:var(--muted);font-size:.72rem">No photo yet.</span>';
+    }
+  };
+  renderThumb();
+
+  q('#ptFile').addEventListener('change', () => {
+    const f = (q('#ptFile').files || [])[0];
+    if (!f) return;
+    if (pendingFile) { try { URL.revokeObjectURL(pendingFile._url); } catch (_) {} }
+    f._url = URL.createObjectURL(f);
+    pendingFile = f;
+    q('#ptFile').value = '';
+    renderThumb();
+  });
+
+  q('#ptPriceable').addEventListener('change', () => {
+    const on = q('#ptPriceable').checked;
+    q('#ptRates').style.display = on ? '' : 'none';
+    q('#ptCallUs').style.display = on ? 'none' : '';
+  });
+
+  q('#ptCancel').addEventListener('click', () => {
+    if (pendingFile) { try { URL.revokeObjectURL(pendingFile._url); } catch (_) {} }
+    pecCloseModalWrap(wrap);
+  });
+
+  q('#ptSave').addEventListener('click', async () => {
+    const btn = q('#ptSave');
+    const name = (q('#ptName').value || '').trim();
+    if (!name) { showToast('The project type needs a name.', { ttl: 4000 }); return; }
+    const priceable = q('#ptPriceable').checked;
+    const low = q('#ptLow').value === '' ? null : Number(q('#ptLow').value);
+    const high = q('#ptHigh').value === '' ? null : Number(q('#ptHigh').value);
+    const minP = q('#ptMin').value === '' ? null : Number(q('#ptMin').value);
+    if (priceable) {
+      if (low == null || high == null || !isFinite(low) || !isFinite(high) || low < 0 || high < low) {
+        showToast('A priced type needs a low and high rate, with low at or below high.', { ttl: 5000 }); return;
+      }
+    }
+    btn.disabled = true; btn.textContent = 'Saving…';
+    let uploadedPath = null;
+    try {
+      if (pendingFile) {
+        const blob = await pecResizePresentationImage(pendingFile);
+        uploadedPath = `PEC/${(crypto.randomUUID && crypto.randomUUID()) || Date.now() + '-' + Math.random().toString(36).slice(2)}.jpg`;
+        const { error } = await supabase.storage.from('pec-pricing').upload(uploadedPath, blob, { contentType: 'image/jpeg' });
+        if (error) throw new Error(`Photo upload failed: ${error.message}`);
+      }
+      const row = {
+        brand: 'PEC',
+        name,
+        description: (q('#ptDesc').value || '').trim() || null,
+        image_path: uploadedPath || t.image_path || null,
+        priceable,
+        rate_low: priceable ? low : null,
+        rate_high: priceable ? high : null,
+        min_price: priceable ? minP : null,
+        active: q('#ptActive').checked,
+      };
+      if (existing) {
+        // Optimistic concurrency on updated_at (the touch trigger owns it):
+        // zero rows back means someone else saved first; say so honestly.
+        const w = await withFreshWriteRetry(() => supabase.from('pec_pricing_project_types')
+          .update(row).eq('id', existing.id).eq('updated_at', existing.updated_at).select('updated_at'), { label: 'pricing-type-save' });
+        if (w && w.error) throw w.error;
+        if (!w || !Array.isArray(w.data) || !w.data.length) {
+          throw new Error('Someone else saved this type since you opened it. Close and reopen to see the latest, then redo your edit.');
+        }
+      } else {
+        row.sort_order = (allTypes || []).reduce((m, x) => Math.max(m, Number(x.sort_order) || 0), 0) + 1;
+        const w = await withFreshWriteRetry(() => supabase.from('pec_pricing_project_types').insert(row), { label: 'pricing-type-save' });
+        if (w && w.error) throw w.error;
+      }
+    } catch (err) {
+      if (uploadedPath) supabase.storage.from('pec-pricing').remove([uploadedPath]).catch(() => {});
+      showToast('Could not save: ' + esc(err.message || String(err)), { ttl: 6000 });
+      btn.disabled = false; btn.textContent = 'Save type';
+      return;
+    }
+    // The old photo is deleted only after the row save succeeded.
+    if (uploadedPath && t.image_path && t.image_path !== uploadedPath) {
+      supabase.storage.from('pec-pricing').remove([t.image_path])
+        .catch(err => console.warn('pricing photo cleanup failed (orphaned file, harmless):', err));
+    }
+    if (pendingFile) { try { URL.revokeObjectURL(pendingFile._url); } catch (_) {} }
     pecCloseModalWrap(wrap);
     renderSettings();
   });
@@ -24488,6 +24887,7 @@ async function renderSettings() {
   if (state.settingsTab === 'estimates') return renderSettingsEstimates();
   if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
   if (state.settingsTab === 'presentation') return renderSettingsPresentation();
+  if (state.settingsTab === 'pricing') return renderSettingsPricing();
   if (state.settingsTab === 'busybusy') return renderSettingsBusybusy();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   if (state.settingsTab === 'health') return renderSettingsSystemHealth();
