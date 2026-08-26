@@ -1,0 +1,22 @@
+-- @artifacts
+--   column: public.estimates.lead_source
+-- @end
+-- ============================================================================
+-- 2026-09-18: estimates.lead_source (Dylan, 2026-08-26: lead source required
+-- everywhere staff creates a customer or estimate, including the estimator).
+-- Author: Claude Code. Direct to prod per rule 14 (additive nullable text;
+-- does not touch estimates.status, money, or auth).
+--
+-- WHY a column on estimates: the estimator PWA writes ONLY estimates rows
+-- through its idempotent offline outbox (it never inserts customers), so the
+-- rep's picked lead source has to ride the estimate row to survive offline
+-- saves. Consumers: ensureLeadForCustomer (apps/estimator/src/lib/
+-- customerSearch.ts) writes it onto the lead it creates instead of the old
+-- hardcoded 'estimator' token, and the accept path (ensureJobCreated in
+-- pec-public-estimate.cjs) stamps it onto a customer row it CREATES (never
+-- onto an existing customer's attribution). Dashboard-created estimates leave
+-- it null on purpose: their customer row already carries lead_source.
+-- Values are pec_lead_sources names (the one vocabulary, prompt 61).
+-- ============================================================================
+
+alter table public.estimates add column if not exists lead_source text;
