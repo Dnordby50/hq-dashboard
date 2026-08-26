@@ -462,7 +462,9 @@
 # `Content-Security-Policy` key. Origins allowed: self, Supabase (REST/auth/realtime),
 # Google Fonts, Google Maps + gstatic tiles, Stripe Checkout (form redirect),
 # and https:/data:/blob: images (Supabase Storage photos, CompanyCam, map tiles).
-# TODO: before enforcing the CSP, add `frame-src 'self' <Enhancify embed origin>`
+# TODO: before enforcing the CSP, add `frame-src 'self' https://*.supabase.co`
+# for the warranty PDF iframe on the estimate page (2026-08-26), and add
+# `frame-src 'self' <Enhancify embed origin>`
 # (the financing_embed_url setting) or default-src 'self' will block the
 # Enhancify iframe on the estimate/invoice pages.
 [[headers]]

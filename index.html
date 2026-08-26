@@ -20772,6 +20772,13 @@ async function renderSettingsFollowups() {
 // one settings row; the readers (pec-public-estimate.cjs for views, the
 // estimator PWA for search) default the same way when the row is missing, so
 // pre-migration nothing changes.
+// Public URL for a company document in the pec-docs bucket (the warranty PDF
+// today). Twin of datasheetPublicUrl; paths are stored, URLs built at read.
+function pecDocPublicUrl(path) {
+  try { return path ? supabase.storage.from('pec-docs').getPublicUrl(path).data.publicUrl : ''; }
+  catch (_) { return ''; }
+}
+
 async function renderSettingsEstimates() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
@@ -20782,7 +20789,7 @@ async function renderSettingsEstimates() {
       'estimate_line_generate_enabled', 'estimate_line_polish_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
       'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
       'companycam_name_match_min_score', 'companycam_max_customer_photos',
-      'estimate_warranty_enabled', 'estimate_color_chart_enabled',
+      'estimate_warranty_enabled', 'estimate_warranty_pdf_path', 'estimate_color_chart_enabled',
       'estimate_color_chart_min_products', 'estimate_color_chart_max_swatches', 'estimate_color_chart_print_mode',
       'sold_on_site_enabled', 'sold_on_site_grace_minutes', 'sold_on_site_appt_types', 'sold_on_site_lookback_hours']),
     { label: 'settings-estimates' });
@@ -20841,6 +20848,7 @@ async function renderSettingsEstimates() {
   // Warranty + color charts (prompt 93). Defaults MUST match the migration
   // seeds and pec-public-estimate.cjs fallbacks: true / true / 6 / 60 / omit.
   const warrOn = (map.estimate_warranty_enabled || 'true') !== 'false';
+  const warrPdfPath = (map.estimate_warranty_pdf_path || '').trim();
   const chartOn = (map.estimate_color_chart_enabled || 'true') !== 'false';
   const chartMin = Number(map.estimate_color_chart_min_products) > 0 ? Number(map.estimate_color_chart_min_products) : 6;
   const chartMax = Number(map.estimate_color_chart_max_swatches) > 0 ? Number(map.estimate_color_chart_max_swatches) : 60;
@@ -20999,7 +21007,19 @@ async function renderSettingsEstimates() {
         </div>
       </details>`)}
     ${toggleCard('Warranty on customer estimates', warrOn,
-      'Shows your warranty document on every customer estimate, pinned right after the terms. Write it under Settings, Presentation, as a section of kind Our warranty. The wording freezes when an estimate is sent, so a customer always sees the warranty their document went out with.', 'setEstWarranty')}
+      'Shows your warranty at the bottom of every customer estimate. Upload your warranty PDF here and it appears with a view and download link; typed sections under Settings, Presentation (kind Our warranty) show above it if you have any. Everything freezes when an estimate is sent, so a customer always sees the warranty their document went out with.', 'setEstWarranty',
+      `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="font-size:.7rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Warranty PDF</div>
+        ${warrPdfPath ? `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <a class="pec-btn ghost sm" href="${esc(pecDocPublicUrl(warrPdfPath))}" target="_blank" rel="noopener">View current PDF</a>
+          <button type="button" class="pec-btn sm" id="warrPdfReplace">Replace</button>
+          <button type="button" class="pec-btn ghost sm danger" id="warrPdfRemove">Remove</button>
+        </div>` : `
+        <div style="font-size:.76rem;color:var(--muted);margin-bottom:6px">No PDF uploaded yet. PDF only, up to 10 MB.</div>`}
+        <input type="file" id="warrPdfFile" accept="application/pdf" style="${warrPdfPath ? 'display:none' : ''};margin-top:6px">
+        <span id="warrPdfStatus" style="font-size:.72rem;color:var(--muted);display:block;margin-top:4px"></span>
+      </div>`)}
     ${toggleCard('Color charts on customer estimates', chartOn,
       'Each line\'s system shows its color chart, built live from the products catalog (a flake line shows the flake chart, a metallic line the metallic colors). The customer\'s chosen color is marked. Charts only appear for slots with enough product images in the catalog.', 'setEstChart',
       `<details style="margin-top:10px">
@@ -21072,6 +21092,49 @@ async function renderSettingsEstimates() {
     cb.disabled = false;
   });
   wire('setEstWarranty', 'estimate_warranty_enabled', warrOn);
+  // Warranty PDF upload (2026-08-26). Upload happens on pick (the datasheets
+  // contract): object first, then the settings row; the OLD object is deleted
+  // only after the setting save lands, so a failed save orphans a file (a
+  // cron-less nit) instead of dangling a broken path. Client gates: PDF mime
+  // only; the bucket's 10 MB server limit rejects oversize with a shown error.
+  {
+    const warrStatus = (msg) => { const el = $('warrPdfStatus'); if (el) el.textContent = msg; };
+    const uploadWarrantyPdf = async (file) => {
+      if (!file) return;
+      if (file.type !== 'application/pdf') { warrStatus('That file is not a PDF.'); return; }
+      warrStatus('Uploading…');
+      const path = `${(crypto.randomUUID && crypto.randomUUID()) || Date.now() + '-' + Math.random().toString(36).slice(2)}.pdf`;
+      const up = await supabase.storage.from('pec-docs').upload(path, file, { contentType: 'application/pdf' });
+      if (up.error) { warrStatus('Upload failed: ' + (up.error.message || '')); return; }
+      try { await saveSetting('estimate_warranty_pdf_path', path); }
+      catch (err) {
+        supabase.storage.from('pec-docs').remove([path]).catch(() => {});
+        warrStatus('Could not save: ' + (err.message || err));
+        return;
+      }
+      if (warrPdfPath && warrPdfPath !== path) {
+        supabase.storage.from('pec-docs').remove([warrPdfPath])
+          .catch(err => console.warn('warranty pdf cleanup failed (orphaned file, harmless):', err));
+      }
+      renderSettings();
+    };
+    const fileEl = $('warrPdfFile');
+    if (fileEl) fileEl.addEventListener('change', () => { uploadWarrantyPdf((fileEl.files || [])[0]); fileEl.value = ''; });
+    const replBtn = $('warrPdfReplace');
+    if (replBtn) replBtn.addEventListener('click', () => { const f = $('warrPdfFile'); if (f) { f.style.display = ''; f.click(); } });
+    const rmBtn = $('warrPdfRemove');
+    if (rmBtn) rmBtn.addEventListener('click', async () => {
+      if (!confirm('Remove the warranty PDF from customer estimates? Already-sent estimates keep their frozen copy.')) return;
+      rmBtn.disabled = true;
+      try { await saveSetting('estimate_warranty_pdf_path', ''); }
+      catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); rmBtn.disabled = false; return; }
+      if (warrPdfPath) {
+        supabase.storage.from('pec-docs').remove([warrPdfPath])
+          .catch(err => console.warn('warranty pdf cleanup failed (orphaned file, harmless):', err));
+      }
+      renderSettings();
+    });
+  }
   wire('setEstChart', 'estimate_color_chart_enabled', chartOn);
   wire('setSosOn', 'sold_on_site_enabled', sosOn);
   $('sosSetSave').addEventListener('click', async () => {
@@ -35177,15 +35240,21 @@ async function markEstimateSent(est) {
 // PATCH with NO status column: trg_estimate_status_guard fails whole updates
 // that carry a stale status backward, so the snapshot must never ride one.
 async function pecWarrantySnapshotAtSend(est) {
-  const setRes = await supabase.from('settings').select('value').eq('key', 'estimate_warranty_enabled').maybeSingle();
-  if (String((setRes.data && setRes.data.value) ?? 'true') === 'false') return; // disabled: leave whatever exists alone
+  const setRes = await supabase.from('settings').select('key,value')
+    .in('key', ['estimate_warranty_enabled', 'estimate_warranty_pdf_path']);
+  const setMap = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  if (String(setMap.estimate_warranty_enabled ?? 'true') === 'false') return; // disabled: leave whatever exists alone
   const { data, error } = await supabase.from('pec_presentation_sections')
     .select('id,title,body,images,sort_order')
     .eq('brand', presentBrandKey(est.brand)).eq('kind', 'warranty').eq('active', true)
     .order('sort_order', { ascending: true });
   if (error) throw error;
-  const snapshot = (data && data.length)
-    ? { sections: data.map(s => ({ id: s.id, title: s.title, body: s.body, images: s.images })), frozen_at: new Date().toISOString() }
+  // 2026-08-26: the uploaded warranty PDF freezes alongside the text
+  // sections, so replacing the document later never rewrites what a sent
+  // estimate showed. Older {sections, frozen_at} snapshots stay valid.
+  const pdfPath = String(setMap.estimate_warranty_pdf_path || '').trim() || null;
+  const snapshot = ((data && data.length) || pdfPath)
+    ? { sections: (data || []).map(s => ({ id: s.id, title: s.title, body: s.body, images: s.images })), pdf_path: pdfPath, frozen_at: new Date().toISOString() }
     : null;
   const upd = await supabase.from('estimates').update({ warranty_snapshot: snapshot }).eq('id', est.id);
   if (upd.error) throw upd.error;

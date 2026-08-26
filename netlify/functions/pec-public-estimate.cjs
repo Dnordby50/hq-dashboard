@@ -779,10 +779,14 @@ function estimatePage(est, brand, opts) {
     </div>
 
     ${colorChartsBlockHtml(opts && opts.colorCharts, b.accent_color)}
-    ${financingBlock}${termsBlock}${warrantyBlockHtml(opts && opts.warranty)}${signedBlock}
+    ${financingBlock}${termsBlock}${signedBlock}
     ${actions}
     ${ccPhotosBlockHtml(opts && opts.ccPhotos)}
     ${literatureBlockHtml(opts && opts.literature, b.accent_color)}
+    ${/* Warranty moved to the BOTTOM of the document (Dylan, 2026-08-26;
+        was pinned after the terms since prompt 93): the last thing they
+        review before the print button. */''}
+    ${warrantyBlockHtml(opts && opts.warranty)}
 
     <div class="noprint" style="text-align:center;margin-top:24px">
       <button class="printbtn" onclick="window.print()">Print / Save as PDF</button>
@@ -1154,8 +1158,9 @@ function ccPhotosBlockHtml(cc) {
 }
 
 function literatureBlockHtml(literature, accent) {
-  // Warranty sections never float here (prompt 93): they render pinned after
-  // the terms card via warrantyBlockHtml, whatever their sort_order says.
+  // Warranty sections never float here (prompt 93): they render via
+  // warrantyBlockHtml at the BOTTOM of the document (moved from
+  // after-the-terms on 2026-08-26), whatever their sort_order says.
   const sections = (literature && Array.isArray(literature.sections) ? literature.sections : []).filter(s => s.kind !== 'warranty');
   if (!sections.length) return '';
   const reviews = Array.isArray(literature.reviews) ? literature.reviews : [];
@@ -1318,21 +1323,38 @@ function colorChartsBlockHtml(cc, accent) {
 // ---------------------------------------------------------------------------
 async function loadWarranty(est) {
   try {
-    const rows = await sb('GET', '/settings?key=eq.estimate_warranty_enabled&select=value&limit=1');
-    const enabled = String(((Array.isArray(rows) && rows[0]) || {}).value ?? 'true') !== 'false';
+    const rows = await sb('GET', '/settings?key=in.(estimate_warranty_enabled,estimate_warranty_pdf_path)&select=key,value');
+    const map = Object.fromEntries((Array.isArray(rows) ? rows : []).map(r => [r.key, r.value]));
+    const enabled = String(map.estimate_warranty_enabled ?? 'true') !== 'false';
     if (!enabled) return null;
+    // Snapshot wins when it carries EITHER text sections or a frozen PDF path
+    // (shape since 2026-08-26: {sections, pdf_path, frozen_at}; older
+    // {sections, frozen_at} snapshots read pdf_path undefined, correctly).
     const snap = est.warranty_snapshot;
-    if (snap && Array.isArray(snap.sections) && snap.sections.length) return { sections: snap.sections, source: 'snapshot' };
+    const snapSections = snap && Array.isArray(snap.sections) ? snap.sections : [];
+    const snapPdf = snap && typeof snap.pdf_path === 'string' && snap.pdf_path.trim() ? snap.pdf_path.trim() : null;
+    if (snapSections.length || snapPdf) return { sections: snapSections, pdfPath: snapPdf, source: 'snapshot' };
+    // Accepted with no snapshot renders NOTHING (prompt 93 posture: showing
+    // wording the customer never signed under is worse than showing none).
     if (est.status === 'accepted') return null;
     const brandKey = presentationBrandKey(est.brand);
     const sections = await sb('GET', `/pec_presentation_sections?brand=eq.${encodeURIComponent(brandKey)}&kind=eq.warranty&active=is.true&select=id,title,body,images,sort_order&order=sort_order.asc`);
-    return Array.isArray(sections) && sections.length ? { sections, source: 'live' } : null;
+    const live = Array.isArray(sections) ? sections : [];
+    const livePdf = String(map.estimate_warranty_pdf_path || '').trim() || null;
+    return live.length || livePdf ? { sections: live, pdfPath: livePdf, source: 'live' } : null;
   } catch (_) { return null; }
 }
 
+// Public URL for an object in the pec-docs bucket (company documents; the
+// warranty PDF today). Path-in-settings, URL-built-here, the datasheets
+// convention.
+const pecDocUrl = (p) =>
+  `${SUPABASE_URL}/storage/v1/object/public/pec-docs/${String(p).split('/').map(encodeURIComponent).join('/')}`;
+
 function warrantyBlockHtml(w) {
   const sections = w && Array.isArray(w.sections) ? w.sections : [];
-  if (!sections.length) return '';
+  const pdfPath = w && w.pdfPath ? w.pdfPath : null;
+  if (!sections.length && !pdfPath) return '';
   const imagesHtml = (imgs) => {
     const list = Array.isArray(imgs) ? imgs.filter(Boolean) : [];
     if (!list.length) return '';
@@ -1340,13 +1362,26 @@ function warrantyBlockHtml(w) {
       ${list.map((p) => `<img src="${esc(presentationImageUrl(p))}" alt="" loading="lazy" style="width:100%;height:160px;object-fit:cover;border-radius:10px;background:#eef0f3">`).join('')}
     </div>`;
   };
-  return sections.map((s) => `
+  const sectionCards = sections.map((s) => `
     <div class="card pad" style="margin-top:18px">
       <div class="eyebrow">Our warranty</div>
       <h3 class="sec">${esc(s.title || 'Warranty')}</h3>
       ${s.body ? `<div style="font-size:14px;color:#374151;line-height:1.7">${mdToSafeHtml(s.body)}</div>` : ''}
       ${imagesHtml(s.images)}
     </div>`).join('');
+  // The uploaded warranty document (2026-08-26): an embedded viewer for
+  // on-screen review plus a link that also works on paper. The iframe is
+  // noprint because embedded PDFs never print with the page; the link line
+  // prints. (CSP note: object-src is 'none' in the report-only policy, which
+  // is why this is an iframe; frame-src needs the supabase host before the
+  // CSP is ever enforced, flagged in netlify.toml.)
+  const pdfCard = pdfPath ? `
+    <div class="card pad" style="margin-top:18px">
+      ${sections.length ? '' : '<div class="eyebrow">Our warranty</div>'}
+      <iframe class="noprint" src="${esc(pecDocUrl(pdfPath))}" title="Warranty (PDF)" style="width:100%;height:620px;border:1px solid #e5e7eb;border-radius:10px;background:#fff"></iframe>
+      <div style="margin-top:10px;font-size:14px"><a href="${esc(pecDocUrl(pdfPath))}" target="_blank" rel="noopener">View or download our warranty (PDF)</a></div>
+    </div>` : '';
+  return sectionCards + pdfCard;
 }
 
 async function loadBrand(brandKey) {
@@ -1590,6 +1625,10 @@ async function ensureJobCreated(est) {
       name: est.customer_name || 'Customer',
       email: est.customer_email || null,
       phone: est.customer_phone || null,
+      // The estimator's picked lead source (estimates.lead_source,
+      // 2026-08-26) attributes a customer born from an accept. CREATE branch
+      // only: an existing customer's attribution is never overwritten.
+      lead_source: est.lead_source || null,
       company: 'prescott-epoxy',
       ...splitIdentity,
     }, true);
@@ -2352,4 +2391,5 @@ exports._internals = {
   loadEstimate, loadEstimateById, estimatePage, notFoundPage, stateForStatus, moveLead,
   mdToSafeHtml, applySelection, loadLiterature, literatureBlockHtml, presentationBrandKey,
   loadInstallments, loadAcceptedPay, liSubtitleHtml, handleSelect,
+  loadWarranty, warrantyBlockHtml,
 };
