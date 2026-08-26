@@ -1,5 +1,36 @@
 [
   {
+    "id": "warranty-pdf-on-estimates",
+    "date": "2026-08-26",
+    "title": "Attach your warranty PDF to every estimate.",
+    "summary": "Upload your warranty document once and it appears at the bottom of every customer estimate, with a viewer on screen and a view and download link that also prints. The copy each customer saw is frozen when their estimate is sent, so replacing the document later never changes a quote that already went out.",
+    "howto": [
+      "Open Settings, then Estimates, and find the Warranty card. Upload your warranty PDF (10 MB max).",
+      "Open any unsent estimate's customer view to see it at the bottom of the page.",
+      "To swap documents later, use Replace on the same card. Already-sent estimates keep the version they went out with."
+    ]
+  },
+  {
+    "id": "required-contact-fields",
+    "date": "2026-08-26",
+    "title": "Every new customer and lead needs full contact info.",
+    "summary": "Creating a customer, lead, or estimate now requires a first and last name (or company name for businesses), a 10 digit phone, a valid email, and a lead source, everywhere including the estimator app. No more half contacts that nobody can follow up with. Editing an older record asks you to complete anything missing.",
+    "howto": [
+      "Fill in all the marked fields; the form tells you exactly what is missing.",
+      "In the estimator, the Save button lists what is still needed on the Customer card, including the new Lead source picker."
+    ]
+  },
+  {
+    "id": "price-per-sqft-everywhere",
+    "date": "2026-08-26",
+    "title": "See price per square foot while you build an estimate.",
+    "summary": "Each line in the estimator now shows its own price per square foot, both in the line list and live in the line editor as you type the square footage. Change order pricing shows it too. Estimate cards on the Sales Pipeline board also gained the customer's phone with one-tap call and text.",
+    "howto": [
+      "Open any line in the estimator; the dollars per sqft updates as you change the square footage.",
+      "On the Pipeline board, tap the phone number on an estimate card to call or text without opening it."
+    ]
+  },
+  {
     "id": "instant-pricing",
     "date": "2026-08-24",
     "title": "Give website visitors an instant ballpark price.",

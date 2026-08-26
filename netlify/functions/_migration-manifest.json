@@ -3389,6 +3389,30 @@
           "name": "public.pec_pricing_project_types.tiers"
         }
       ]
+    },
+    {
+      "file": "2026-09-18_estimate_lead_source.sql",
+      "date": "2026-09-18",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.lead_source"
+        }
+      ]
+    },
+    {
+      "file": "2026-09-19_warranty_pdf.sql",
+      "date": "2026-09-19",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimate_warranty_pdf_path"
+        }
+      ]
     }
   ],
   "knownTables": [

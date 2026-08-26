@@ -30,6 +30,36 @@ Handoff to Dylan: Nothing required. Worth knowing: this fix only changes how slo
 
 ---
 
+## [2026-08-26 MST] Required contact fields everywhere, per-line $/sqft in the estimator, phone on pipeline estimate cards, and the warranty PDF at the bottom of the quote
+
+By: Claude Code
+
+Changed: TWO new migrations (2026-09-18_estimate_lead_source.sql, 2026-09-19_warranty_pdf.sql, BOTH APPLIED TO PROD), apps/estimator/src (customer.ts validators, catalog.ts lead-source vocabulary via the offline cache, customerSearch.ts source flow-through, lead.ts, estimateLoad.ts, offline/estimates.ts, EstimatorScreen.tsx; /estimator rebuilt), index.html (pecPhoneValid/pecEmailValid, five creation/edit doors, CO modal $/sqft hints, pipeline estimate-card phone, Settings warranty PDF upload, snapshot-at-send), netlify/functions/pec-public-estimate.cjs (warranty render + placement + accept-path lead_source), netlify.toml (CSP frame-src TODO), NEW production/warranty-pdf.test.cjs (19 checks), package.json, features.json, help/whats-new.json (3 entries), SCHEMA.md.
+
+Four asks from Dylan, decisions locked in planning:
+
+**1. Required fields (lead source, first, last, phone, email) at every staff creation door, estimator included.** Seven doors had seven different rules; now one rule with shared validators (10-digit phone with leading 1 tolerated; the pragmatic email regex). Scoping decisions worth remembering: the Pipeline New lead modal moved from phone-OR-email to BOTH, and its source select no longer defaults to Manual entry; the appointment quick-create was rebuilt (split first/last, a lead source picker from the shared vocabulary with a free-text fallback if the load fails) but stays individuals-only, businesses go through CRM; the CRM customer form validates on EDIT too, so legacy half-contacts complete on their next touch; the DripJobs CSV import is deliberately exempt (bulk historical data); webhook and booking intakes keep their own server contracts, this hardens staff doors only.
+
+**2. The estimator's lead source needed a HOME, which is the interesting design bit.** The estimator writes only estimates rows through its offline outbox, so the picked source lives on new estimates.lead_source. It flows three ways: ensureLeadForCustomer writes it onto the lead it creates (killing the hardcoded 'estimator' token that polluted source attribution reports), picking an existing record prefills the picker from that record's stored attribution (never forcing a redundant re-pick), and the accept path stamps it onto customer rows it CREATES, never onto existing attribution. The picker rides the offline catalog cache; a stale pre-change cache renders a free-text input so driveway saves are never blocked. The vocabulary read failing is non-fatal by the same logic.
+
+**3. Per-line $/sqft while inputting details.** The line editor sheet's money strip and the line-row chips show line price over line sqft, recomputing live as sqft is typed (the pricing memo already recomputes; the display is free). The change-order modal's hints carry the same ratio for auto and manual prices. The estimate detail card deliberately still shows NO blended $/sqft, the prompt 78 B3 decision stands (mixed-system footage makes a blended number a lie).
+
+**4. Warranty PDF at the bottom of the quote.** Prompt 93's text warranty existed but was empty in production and pinned mid-document. Dylan chose an uploaded PDF (matching how DripJobs attached it). New public pec-docs bucket (PDF-only, 10 MB; company documents get their own lifecycle, separate from product datasheets), path in estimate_warranty_pdf_path, upload on the Settings > Estimates warranty card (upload-then-save ordering so a failed save orphans a file instead of dangling a broken path). The customer page embeds it in a noprint iframe (object-src is 'none' in the report-only CSP, hence iframe; frame-src needs the supabase host before enforcement, flagged in netlify.toml) with a link line that prints. Both the text sections and the PDF moved from after-the-terms to the very bottom, after the literature. markEstimateSent now freezes {sections, pdf_path, frozen_at}; old two-key snapshots read as no-PDF, correctly; accepted-with-no-snapshot still renders nothing. Present mode deliberately skipped: a PDF slide is out of scope; text warranty sections still slide as before.
+
+**Verified:** full npm suite green, 30 files including the 19 new warranty checks (snapshot precedence, pdf-only render, page ordering with warranty after literature and before the print button, accept-path lead_source on the created customer); estimator tsc + vite build clean; all index.html script blocks parse; both migrations verified live (estimates.lead_source present, 4 pec_docs policies, bucket public, setting seeded).
+
+Files touched: see Changed.
+
+Next steps: Dylan's handoff below.
+
+## Handoff to Dylan
+
+1. In Settings > Estimates, find the Warranty card and upload your warranty PDF (the actual 10 year warranty document). It appears at the bottom of every open estimate immediately and freezes into each estimate at its next send.
+2. Optional: check the seeded lead-source list (Settings > Lead sources) covers what reps will pick in the estimator; anything missing is a data add, no deploy.
+3. Heads up for the crew: the estimator now refuses to save until first name, phone, email, and lead source are filled in on the Customer card, and the quick lead/customer forms in the dashboard now require phone AND email. That is the point, but it is a behavior change they will notice on day one.
+
+---
+
 ## [2026-08-24 MST] Instant Pricing: size-bracket pricing and the type modal fits again
 
 By: Claude Code
