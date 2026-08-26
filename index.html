@@ -7999,8 +7999,8 @@ async function openEstimateStartPicker(opts = {}) {
         <div class="pec-field"><label id="espLastLabel">Last name</label><input id="espLast" value="${esc(prefill.last || '')}"></div>
       </div>
       <div class="pec-row-2">
-        <div class="pec-field"><label>E-mail</label><input id="espEmail" value="${esc(prefill.email || '')}"></div>
-        <div class="pec-field"><label>Phone</label><input id="espPhone" value="${esc(prefill.phone || '')}"></div>
+        <div class="pec-field"><label>E-mail <span style="color:var(--accent,#D8531C)">*</span></label><input id="espEmail" value="${esc(prefill.email || '')}"></div>
+        <div class="pec-field"><label>Phone <span style="color:var(--accent,#D8531C)">*</span></label><input id="espPhone" value="${esc(prefill.phone || '')}"></div>
       </div>
       <div class="pec-field"><label>Lead source <span style="color:var(--danger);font-size:.65rem;text-transform:none;letter-spacing:0">important</span></label>
         <select id="espSource"><option value="">Pick a source…</option>${sources.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('')}</select>
@@ -8153,6 +8153,9 @@ async function openEstimateStartPicker(opts = {}) {
       const business = isBizNow() ? val('espBusiness') : '';
       if (isBizNow() && !business) { errEl.textContent = 'Business name is required.'; return; }
       if (!isBizNow() && (!first || !last)) { errEl.textContent = 'First and last name are both required.'; return; }
+      // 2026-08-26 required-fields rule: full contact before an estimate.
+      if (!pecPhoneValid(val('espPhone'))) { errEl.textContent = 'Enter a 10 digit phone number.'; return; }
+      if (!pecEmailValid(val('espEmail'))) { errEl.textContent = 'Enter a valid email address.'; return; }
       if (!val('espSource')) { errEl.textContent = 'Pick a lead source.'; return; }
       const btn = q('#espGo');
       btn.disabled = true; btn.textContent = 'Creating…';
@@ -9678,8 +9681,8 @@ async function openCustomerForm(c) {
       </div>
 
       <div class="pec-row-2">
-        <div class="pec-field"><label>Email</label><input name="email" type="email" value="${esc(c?.email || '')}"></div>
-        <div class="pec-field"><label>Phone</label><input name="phone" value="${esc(c?.phone || '')}"></div>
+        <div class="pec-field"><label>Email <span style="color:var(--accent,#D8531C)">*</span></label><input name="email" type="email" value="${esc(c?.email || '')}"></div>
+        <div class="pec-field"><label>Phone <span style="color:var(--accent,#D8531C)">*</span></label><input name="phone" value="${esc(c?.phone || '')}"></div>
       </div>
 
       <div class="pec-field"><label>Lead source <span style="color:var(--danger);font-size:.65rem;text-transform:none;letter-spacing:0">important</span></label>
@@ -9707,6 +9710,7 @@ async function openCustomerForm(c) {
         <div class="pec-field"><label>ZIP</label><input name="billing_zip" value="${esc(c?.billing_zip || '')}"></div>
       </div>
 
+      <div class="prod-msg-err" id="custErr" style="min-height:16px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
         <button type="submit" class="pec-btn primary">${isNew ? 'Create' : 'Save'}</button>
@@ -9751,12 +9755,19 @@ async function openCustomerForm(c) {
       const first_name = (isBiz ? fd.get('first_name_biz') : fd.get('first_name')) || null;
       const last_name  = (isBiz ? fd.get('last_name_biz')  : fd.get('last_name'))  || null;
       const company_name = isBiz ? (fd.get('company_name') || null) : null;
-      // Validation
-      if (isBiz && !company_name) { alert('Company name is required for businesses.'); return; }
+      // Validation (2026-08-26: phone and email joined the required set;
+      // alert() replaced by the inline error div the newer modals use). This
+      // form also EDITS, so legacy rows missing contact info must be
+      // completed on their next edit, which is the point.
+      const errEl = modal.querySelector('#custErr');
+      errEl.textContent = '';
+      if (isBiz && !company_name) { errEl.textContent = 'Company name is required for businesses.'; return; }
       // Prompt 62 Part B: an individual needs BOTH names (first-or-last used
       // to pass; that left half-named customers the search cannot find well).
-      if (!isBiz && (!first_name || !last_name)) { alert('First and last name are both required.'); return; }
-      if (!fd.get('lead_source')) { alert('Lead source is required.'); return; }
+      if (!isBiz && (!first_name || !last_name)) { errEl.textContent = 'First and last name are both required.'; return; }
+      if (!pecPhoneValid(fd.get('phone') || '')) { errEl.textContent = 'Enter a 10 digit phone number.'; return; }
+      if (!pecEmailValid(fd.get('email') || '')) { errEl.textContent = 'Enter a valid email address.'; return; }
+      if (!fd.get('lead_source')) { errEl.textContent = 'Lead source is required.'; return; }
 
       // Denormalized display name keeps customer portal renderers happy
       const displayName = company_name || [first_name, last_name].filter(Boolean).join(' ') || 'Customer';
@@ -11340,6 +11351,10 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
     // Pre-fill from the SAME pricing engine the estimator uses (cost-plus to
     // target GP with the standard house commission, charm-rounded). Editable:
     // a manual edit sticks until the system or sqft changes again.
+    // $/sqft rides every hint (Dylan, 2026-08-26): price and sqft sit in the
+    // same form, so the ratio is free context for judging a number.
+    const perSqftNote = (price, sqft) => (Number(price) > 0 && Number(sqft) > 0)
+      ? ` · $${(Number(price) / Number(sqft)).toFixed(2)}/sqft` : '';
     let priceTouched = false;
     const recompute = () => {
       if (!areaModeAvailable || priceTouched) return;
@@ -11354,7 +11369,7 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
         });
         if (out && !out.error && Number(out.price) > 0) {
           priceEl.value = out.price;
-          hintEl.textContent = `Suggested by estimator pricing (${out.targetGpPct}% target GP). Edit freely.`;
+          hintEl.textContent = `Suggested by estimator pricing (${out.targetGpPct}% target GP). Edit freely.${perSqftNote(out.price, sqft)}`;
         } else {
           hintEl.textContent = 'Could not auto-price (' + esc((out && out.error) || 'no pricing data') + '). Enter the price manually.';
         }
@@ -11363,7 +11378,9 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
     if (areaModeAvailable) {
       sysEl.addEventListener('change', () => { priceTouched = false; recompute(); });
       sqftEl.addEventListener('input', () => { priceTouched = false; recompute(); });
-      priceEl.addEventListener('input', () => { priceTouched = true; hintEl.textContent = 'Manual price.'; });
+      const manualHint = () => { hintEl.textContent = 'Manual price.' + perSqftNote(priceEl.value, sqftEl.value); };
+      priceEl.addEventListener('input', () => { priceTouched = true; manualHint(); });
+      sqftEl.addEventListener('input', () => { if (priceTouched) manualHint(); });
     }
 
     // Declined-line add-back prefill (prompt 72 F3). Applied AFTER the
@@ -11417,7 +11434,7 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
         });
         if (out && !out.error && Number(out.price) > 0) {
           coatPriceEl.value = out.price;
-          coatHintEl.textContent = `Suggested by estimator pricing (${out.targetGpPct}% target GP). Edit freely, down to $0.`;
+          coatHintEl.textContent = `Suggested by estimator pricing (${out.targetGpPct}% target GP). Edit freely, down to $0.${perSqftNote(out.price, sqft)}`;
         } else {
           coatHintEl.textContent = 'Could not auto-price (' + esc((out && out.error) || 'no pricing data') + '). Enter the price manually.';
         }
@@ -11432,7 +11449,9 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
       });
       coatEl.addEventListener('change', () => { coatPriceTouched = false; coatRecompute(); });
       coatSqftEl.addEventListener('input', () => { coatPriceTouched = false; coatRecompute(); });
-      coatPriceEl.addEventListener('input', () => { coatPriceTouched = true; coatHintEl.textContent = 'Manual price.'; coatZeroNote(); });
+      const coatManualHint = () => { coatHintEl.textContent = 'Manual price.' + perSqftNote(coatPriceEl.value, coatSqftEl.value); };
+      coatPriceEl.addEventListener('input', () => { coatPriceTouched = true; coatManualHint(); coatZeroNote(); });
+      coatSqftEl.addEventListener('input', () => { if (coatPriceTouched) coatManualHint(); });
     }
 
     saveBtn.addEventListener('click', async () => {
@@ -25442,6 +25461,19 @@ function qoTelHref(p) {
 // modals and re-rendered cards without per-surface wiring. Extra data-*
 // seeds (name / customer id / lead flag) let the thread open with the right
 // title even when the number has no history yet.
+// Contact validators for the required-fields rule (Dylan, 2026-08-26): every
+// staff door that creates a customer or estimate demands a real phone and
+// email. Phone: US 10 digits with a leading 1 tolerated. Email: the same
+// pragmatic regex the public pricing endpoint uses. Shared so the doors
+// cannot drift.
+function pecPhoneValid(s) {
+  const d = String(s || '').replace(/\D/g, '');
+  return d.length === 10 || (d.length === 11 && d[0] === '1');
+}
+function pecEmailValid(s) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(s || '').trim());
+}
+
 function pecPhoneActionsHtml(phone, opts = {}) {
   if (!phone) return opts.showEmpty ? '<span style="color:var(--muted);font-size:.78rem">No phone on file</span>' : '';
   return `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -29262,16 +29294,28 @@ async function openAppointmentForm(existing, prefill = {}) {
         <div id="afCustNew" style="display:none;margin-top:6px;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:8px">
           <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">New customer</div>
           <div class="pec-row-2">
-            <div class="pec-field"><label>Name</label><input id="afNewCustName"></div>
-            <div class="pec-field"><label>Phone</label><input id="afNewCustPhone" inputmode="tel"></div>
+            <div class="pec-field"><label>First name</label><input id="afNewCustFirst"></div>
+            <div class="pec-field"><label>Last name</label><input id="afNewCustLast"></div>
           </div>
-          <div class="pec-field"><label>Email</label><input id="afNewCustEmail" type="email" autocomplete="off"></div>
+          <div class="pec-row-2">
+            <div class="pec-field"><label>Phone</label><input id="afNewCustPhone" inputmode="tel"></div>
+            <div class="pec-field"><label>Email</label><input id="afNewCustEmail" type="email" autocomplete="off"></div>
+          </div>
+          <div class="pec-field"><label>Lead source</label><span id="afNewCustSourceHost"><input id="afNewCustSource" placeholder="How did they hear about us?"></span></div>
           <button type="button" class="pec-btn sm" id="afNewCustSave">Create customer</button>
           <span id="afNewCustErr" style="color:#dc2626;font-size:.75rem;margin-left:8px"></span>
         </div>`;
       const q = custWrap.querySelector('#afCustQ');
       const results = custWrap.querySelector('#afCustResults');
       const newBox = custWrap.querySelector('#afCustNew');
+      // Lead source is required here too (2026-08-26): swap the free-text
+      // fallback for the shared vocabulary select once it loads; on a load
+      // failure the text input stays so the quick-create never bricks.
+      activeLeadSourceNames().then((names) => {
+        const host = custWrap.querySelector('#afNewCustSourceHost');
+        if (!host || !Array.isArray(names) || !names.length) return;
+        host.innerHTML = `<select id="afNewCustSource"><option value="">Pick a source…</option>${leadSourceOptionsHtml(names, null)}</select>`;
+      }).catch(() => {});
       const pick = (c) => { curCustomer = c; custChanged = true; renderCustPicker(); syncTitle(); };
       const search = async () => {
         const term = (q.value || '').trim();
@@ -29292,8 +29336,15 @@ async function openAppointmentForm(existing, prefill = {}) {
              style="display:block;width:100%;text-align:left;margin-bottom:4px">${esc(c.name)}${c.phone ? ' · ' + esc(typeof qoFmtPhone === 'function' ? qoFmtPhone(c.phone) : c.phone) : ''}${c.billing_city ? ' · ' + esc(c.billing_city) : ''}</button>`).join('')
           || '<div style="font-size:.78rem;color:var(--muted)">No matching customers.</div>';
         newBox.style.display = '';
-        const nameEl = custWrap.querySelector('#afNewCustName');
-        if (nameEl && !nameEl.value && !digits) nameEl.value = term;
+        // Prefill the split name fields from what was typed (first word ->
+        // first name, the rest -> last), never overwriting typed values.
+        const firstEl = custWrap.querySelector('#afNewCustFirst');
+        const lastEl = custWrap.querySelector('#afNewCustLast');
+        if (firstEl && lastEl && !firstEl.value && !lastEl.value && !digits) {
+          const sp = term.indexOf(' ');
+          firstEl.value = sp < 0 ? term : term.slice(0, sp);
+          lastEl.value = sp < 0 ? '' : term.slice(sp + 1).trim();
+        }
         results.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
           const c = rows.find(r => r.id === b.dataset.pick) || { id: b.dataset.pick, name: b.dataset.name };
           pick({ id: c.id, name: c.name, email: c.email || null });
@@ -29314,17 +29365,26 @@ async function openAppointmentForm(existing, prefill = {}) {
       q.addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(search, 220); });
       custWrap.querySelector('#afNewCustSave').addEventListener('click', async () => {
         const errN = custWrap.querySelector('#afNewCustErr');
-        const nm = (custWrap.querySelector('#afNewCustName').value || '').trim();
+        const first = (custWrap.querySelector('#afNewCustFirst').value || '').trim();
+        const last = (custWrap.querySelector('#afNewCustLast').value || '').trim();
         const ph = (custWrap.querySelector('#afNewCustPhone').value || '').replace(/\D/g, '');
         const em = (custWrap.querySelector('#afNewCustEmail').value || '').trim();
-        if (!nm) { errN.textContent = 'Name is required.'; return; }
+        const srcEl = custWrap.querySelector('#afNewCustSource');
+        const source = ((srcEl && srcEl.value) || '').trim();
+        // 2026-08-26 required-fields rule. This quick-create is individuals
+        // only by scope; a business goes through CRM > New Customer.
+        if (!first || !last) { errN.textContent = 'First and last name are both required.'; return; }
+        if (!pecPhoneValid(ph)) { errN.textContent = 'Enter a 10 digit phone number.'; return; }
+        if (!pecEmailValid(em)) { errN.textContent = 'Enter a valid email address.'; return; }
+        if (!source) { errN.textContent = 'Pick a lead source.'; return; }
         errN.textContent = '';
         try {
           const ins = await withFreshWrite(() => supabase.from('customers').insert({
-            token: randomToken(), name: nm,
-            phone: ph ? ph.slice(-10) : null,
-            email: em || null,
-            lead_source: 'manual', company: 'prescott-epoxy',
+            token: randomToken(), name: `${first} ${last}`,
+            first_name: first, last_name: last,
+            phone: ph.slice(-10),
+            email: em,
+            lead_source: source, company: 'prescott-epoxy',
           }).select('id,name,email').single(), { label: 'appt-new-customer' });
           if (ins.error) throw ins.error;
           pick({ id: ins.data.id, name: ins.data.name, email: ins.data.email || null });
@@ -31445,6 +31505,7 @@ function estimateCardHtml(est) {
       ${estStatusChip(estimateEffectiveStatus(est))}
     </div>
     <div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${est.estimate_number != null ? 'EST-' + esc(est.estimate_number) : '(unnumbered)'}</div>
+    ${est.customer_phone ? `<div style="font-size:.76rem;margin-top:5px">${pecPhoneActionsHtml(est.customer_phone, { name: est.customer_name || '', customerId: est.customer_id || null })}</div>` : ''}
     ${price ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(price)}</div>` : ''}
     <div style="display:flex;justify-content:space-between;gap:6px;margin-top:8px;font-size:.7rem;color:var(--rd-muted,#6b7280)">
       <span>created ${esc(fmtRelativeTime(est.created_at))}</span>
@@ -31768,10 +31829,10 @@ function openNewLeadModal(prefill) {
       </div>
     </div>
     <div class="pec-row-2">
-      <div class="pec-field"><label>Phone</label><input id="nlPhone" placeholder="(928) 555-1212" value="${esc(pfPhone)}"></div>
-      <div class="pec-field"><label>Email</label><input id="nlEmail" placeholder="phone or email required"></div>
+      <div class="pec-field"><label>Phone <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlPhone" placeholder="(928) 555-1212" value="${esc(pfPhone)}"></div>
+      <div class="pec-field"><label>Email <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlEmail" placeholder="name@example.com"></div>
     </div>
-    <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${String(s).toLowerCase() === 'manual entry' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
+    <div class="pec-field"><label>Source <span style="color:var(--accent,#D8531C)">*</span></label><select id="nlSource"><option value="">Pick a source…</option>${sources.map(s => `<option value="${esc(s)}">${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
     <div class="pec-field"><label>Address</label><input id="nlAddress" placeholder="Start typing a street address" autocomplete="off"></div>
     <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
       <div class="pec-field"><label>City</label><input id="nlCity"></div>
@@ -31823,7 +31884,12 @@ function openNewLeadModal(prefill) {
       const email = val('nlEmail').toLowerCase();
       if (isBiz && !businessName) { errEl.textContent = 'Business name is required.'; return; }
       if (!isBiz && (!firstName || !lastName)) { errEl.textContent = 'First and last name are both required.'; return; }
-      if (!phone && !email) { errEl.textContent = 'Enter a phone or an email.'; return; }
+      // 2026-08-26 required-fields rule: phone AND email AND an explicit
+      // source (the old phone-or-email + defaulted-source shape let half
+      // contacts through the fastest door in the app).
+      if (!pecPhoneValid(phone)) { errEl.textContent = 'Enter a 10 digit phone number.'; return; }
+      if (!pecEmailValid(email)) { errEl.textContent = 'Enter a valid email address.'; return; }
+      if (!val('nlSource')) { errEl.textContent = 'Pick a lead source.'; return; }
       save.disabled = true; save.textContent = 'Saving…';
       try {
         const smsYes = modal.querySelector('#nlSms').checked;
@@ -33626,6 +33692,10 @@ async function renderEstJobInfoBlock(container, estimateId) {
       const isCom = container.querySelector('input[name="estJiType"][value="com"]').checked;
       if (isCom && !get('company').trim()) { showToast('Company name is required for a commercial job.', { ttl: 4000 }); return; }
       if (!isCom && (!get('firstName').trim() || !get('lastName').trim())) { showToast('First and last name are both required.', { ttl: 4000 }); return; }
+      // 2026-08-26 required-fields rule: an estimate's contact block stays
+      // complete on every edit too (legacy rows complete on next save).
+      if (!pecPhoneValid(get('phone'))) { showToast('Enter a 10 digit phone number.', { ttl: 4000 }); return; }
+      if (!pecEmailValid(get('email'))) { showToast('Enter a valid email address.', { ttl: 4000 }); return; }
       btn.disabled = true; btn.textContent = 'Saving…';
       const next = {
         isCommercial: container.querySelector('input[name="estJiType"][value="com"]').checked,
