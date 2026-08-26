@@ -82,6 +82,10 @@ export type Catalog = {
   recipeSlotsBySystemType: Record<string, RecipeSlot[]>;
   salespeople: SalesPerson[];
   addons: Addon[];
+  // Active pec_lead_sources names for the required Lead source picker
+  // (2026-08-26). Absent in caches written before the field existed; readers
+  // default to [] and fall back to a free-text input.
+  leadSources: string[];
   config: PricingConfig;
 };
 
@@ -89,7 +93,7 @@ export type Catalog = {
 // Each query is RLS-gated to admin staff (same as the dashboard), so this only
 // returns data for a signed-in admin.
 export async function loadCatalog(): Promise<Catalog> {
-  const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes] = await Promise.all([
+  const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes, leadSourcesRes] = await Promise.all([
     supabase
       .from('pec_prod_system_types')
       .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order,scope_template,scope_template_mvb,deposit_pct')
@@ -153,6 +157,11 @@ export async function loadCatalog(): Promise<Catalog> {
         'estimator_line_sheet_breakpoint_px',
         'estimate_autosave_enabled',
       ]),
+    supabase
+      .from('pec_lead_sources')
+      .select('name')
+      .eq('active', true)
+      .order('name', { ascending: true }),
   ]);
 
   const firstError =
@@ -219,6 +228,7 @@ export async function loadCatalog(): Promise<Catalog> {
     recipeSlotsBySystemType,
     salespeople: (salesRes.data ?? []) as SalesPerson[],
     addons: (addonsRes.data ?? []) as Addon[],
+    leadSources: ((leadSourcesRes.data ?? []) as { name: string }[]).map((r) => r.name),
     config,
   };
 

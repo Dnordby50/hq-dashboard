@@ -49,6 +49,9 @@ export type LoadedEstimate = {
   mvb: 'none' | 'addon' | 'standalone';
   flakeColor: string | null;
   leadId: string | null;
+  // The rep's picked lead source stored on the estimate (2026-08-26); null
+  // on rows saved before the column existed.
+  leadSource: string | null;
   createdBy: string | null;
   // Ready-to-edit split shape (build 23): mapped from the split columns when
   // present, else derived from the combined customer_name/customer_address so
@@ -270,6 +273,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     mvb: (['none', 'addon', 'standalone'].includes(String(e.mvb)) ? String(e.mvb) : 'none') as 'none' | 'addon' | 'standalone',
     flakeColor: (e.flake_color as string | null) ?? null,
     leadId: (e.lead_id as string | null) ?? null,
+    leadSource: (e.lead_source as string | null) ?? null,
     createdBy: (e.created_by as string | null) ?? null,
     customer: loadCustomer(e),
     intake: (e.intake as Record<string, unknown>) ?? {},

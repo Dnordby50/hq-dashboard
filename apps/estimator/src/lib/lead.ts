@@ -18,6 +18,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export type LeadLink = {
   id: string;
   name: string | null;
+  source: string | null;
   phone: string | null;
   email: string | null;
   address1: string | null;
@@ -64,21 +65,22 @@ export function estimateIdFromUrl(search: string = window.location.search): stri
 // estimate still attaches to the lead.
 export async function loadLeadLink(id: string | null): Promise<LeadLink | null> {
   if (!id) return null;
-  const empty: LeadLink = { id, name: null, phone: null, email: null, address1: null, city: null, state: null, zip: null };
+  const empty: LeadLink = { id, name: null, source: null, phone: null, email: null, address1: null, city: null, state: null, zip: null };
   try {
     const { data, error } = await supabase
       .from('leads')
-      .select('full_name,phone,email,address,city,state,zip')
+      .select('full_name,source,phone,email,address,city,state,zip')
       .eq('id', id)
       .maybeSingle();
     if (error || !data) return empty;
     const d = data as {
-      full_name: string | null; phone: string | null; email: string | null;
+      full_name: string | null; source: string | null; phone: string | null; email: string | null;
       address: string | null; city: string | null; state: string | null; zip: string | null;
     };
     return {
       id,
       name: d.full_name ?? null,
+      source: d.source ?? null,
       phone: d.phone ?? null,
       email: d.email ?? null,
       address1: d.address ?? null,

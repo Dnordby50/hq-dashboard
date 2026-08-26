@@ -23,6 +23,10 @@ export type CustomerMatch = {
   phone: string | null;
   email: string | null;
   addressLine: string | null;
+  // The record's stored attribution (customers.lead_source / leads.source);
+  // prefills the estimator's required Lead source picker so an existing
+  // record never forces a redundant re-pick.
+  leadSource: string | null;
   form: CustomerForm;
 };
 
@@ -70,12 +74,13 @@ function leadToForm(l: LeadRow): CustomerForm {
 type CustomerRow = {
   id: string; name: string; first_name: string | null; last_name: string | null;
   company_name: string | null; email: string | null; phone: string | null;
+  lead_source: string | null;
   billing_address_line1: string | null; billing_address_line2: string | null;
   billing_city: string | null; billing_state: string | null; billing_zip: string | null;
 };
 type LeadRow = {
   id: string; full_name: string | null; first_name: string | null; last_name: string | null;
-  email: string | null; phone: string | null; address: string | null;
+  email: string | null; phone: string | null; source: string | null; address: string | null;
   city: string | null; state: string | null; zip: string | null; customer_id: string | null;
 };
 
@@ -91,13 +96,13 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
   const [custRes, leadRes] = await Promise.all([
     supabase
       .from('customers')
-      .select('id,name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+      .select('id,name,first_name,last_name,company_name,email,phone,lead_source,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
       .is('archived_at', null)
       .or(`name.ilike.${pat},first_name.ilike.${pat},last_name.ilike.${pat},company_name.ilike.${pat},email.ilike.${pat},billing_address_line1.ilike.${pat}${phoneClause('phone_norm')}`)
       .limit(8),
     supabase
       .from('leads')
-      .select('id,full_name,first_name,last_name,email,phone,address,city,state,zip,customer_id')
+      .select('id,full_name,first_name,last_name,email,phone,source,address,city,state,zip,customer_id')
       .is('deleted_at', null)
       .or(`full_name.ilike.${pat},first_name.ilike.${pat},last_name.ilike.${pat},email.ilike.${pat},address.ilike.${pat}${phoneClause('phone_norm')}`)
       .limit(8),
@@ -119,6 +124,7 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
       phone: t(l.phone) || null,
       email: t(l.email) || null,
       addressLine: [t(l.address), t(l.city)].filter(Boolean).join(', ') || null,
+      leadSource: t(l.source) || null,
       form: leadToForm(l),
     })),
     ...customers.map((c): CustomerMatch => ({
@@ -128,6 +134,7 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
       phone: t(c.phone) || null,
       email: t(c.email) || null,
       addressLine: [t(c.billing_address_line1), t(c.billing_city)].filter(Boolean).join(', ') || null,
+      leadSource: t(c.lead_source) || null,
       form: customerToForm(c),
     })),
   ];
@@ -150,7 +157,7 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
 // reuse their newest live lead, else create one from the customer's contact
 // block. Insert failures bubble to the caller, which degrades to
 // prefill-without-link (never blocks the estimate).
-export async function ensureLeadForCustomer(customerId: string, form: CustomerForm): Promise<string> {
+export async function ensureLeadForCustomer(customerId: string, form: CustomerForm, source?: string | null): Promise<string> {
   const existing = await supabase
     .from('leads')
     .select('id')
@@ -167,7 +174,10 @@ export async function ensureLeadForCustomer(customerId: string, form: CustomerFo
     .from('leads')
     .insert({
       customer_id: customerId,
-      source: 'estimator',
+      // The rep's picked lead source when one is known (the customer's
+      // stored attribution or the estimator picker); 'estimator' only as the
+      // last resort so attribution reports stop seeing a tool name.
+      source: (source ?? '').trim() || 'estimator',
       first_name: t(form.firstName) || null,
       last_name: t(form.lastName) || null,
       full_name: fullName,

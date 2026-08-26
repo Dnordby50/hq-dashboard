@@ -26,7 +26,7 @@ import {
   type LineItemInput,
 } from '../../offline/estimates';
 import type { LeadLink } from '../../lib/lead';
-import { composeCustomerAddress, composeCustomerName, emptyCustomer, splitLegacyName, type CustomerForm } from '../../lib/customer';
+import { composeCustomerAddress, composeCustomerName, emptyCustomer, emailValid, phoneValid, splitLegacyName, type CustomerForm } from '../../lib/customer';
 import AddressAutocomplete from './AddressAutocomplete';
 import BottomSheet from './BottomSheet';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
@@ -376,6 +376,10 @@ export default function EstimatorScreen({
   const [custMatches, setCustMatches] = useState<CustomerMatch[]>([]);
   const [custSearchOpen, setCustSearchOpen] = useState(false);
   const [linkedLead, setLinkedLead] = useState<{ id: string; name: string } | null>(null);
+  // Required lead source (2026-08-26). Prefilled from the edited estimate, the
+  // lead link, or a picked record's stored attribution; otherwise the rep
+  // picks. Estimator state, not CustomerForm: it is attribution, not identity.
+  const [leadSource, setLeadSource] = useState<string>(() => editing?.leadSource ?? leadLink?.source ?? '');
   const [linkNote, setLinkNote] = useState<string | null>(null);
   useEffect(() => {
     if (!custSearchEnabled || custSearch.trim().length < 2) {
@@ -405,6 +409,7 @@ export default function EstimatorScreen({
     // Picking a match IS "info inputted", so the card locks right away when
     // the record carries a savable identity. Plain typing never auto-locks.
     if (customerComplete(m.form)) setCustLocked(true);
+    if (m.leadSource) setLeadSource((cur) => cur.trim() ? cur : m.leadSource!);
     if (m.kind === 'lead') {
       setLinkedLead({ id: m.id, name: m.name });
       setLinkNote(null);
@@ -414,7 +419,7 @@ export default function EstimatorScreen({
     // readers key off), found or created now. On failure the fields stay
     // prefilled and the save proceeds unlinked, with a visible note.
     try {
-      const leadId = await ensureLeadForCustomer(m.id, m.form);
+      const leadId = await ensureLeadForCustomer(m.id, m.form, m.leadSource ?? (leadSource.trim() || null));
       setLinkedLead({ id: leadId, name: m.name });
       setLinkNote(null);
     } catch {
@@ -1715,6 +1720,7 @@ export default function EstimatorScreen({
         priceOverride: null,
         createdBy,
         leadId: linkedLead?.id ?? leadLink?.id ?? null,
+        leadSource: leadSource.trim() || null,
         isCustom,
         customScope: isCustom ? customScope : null,
         customPrice: null,
@@ -1932,6 +1938,14 @@ export default function EstimatorScreen({
     if (customerIncomplete) {
       list.push(customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.');
     }
+    // Required contact fields (Dylan, 2026-08-26): every estimate carries a
+    // full contact plus attribution. Commercial keeps contact names optional
+    // (company is the identity); phone, email, and source are required for
+    // everyone.
+    if (!customer.isCommercial && !customer.firstName.trim()) list.push('Enter the customer’s first name (Customer card).');
+    if (!phoneValid(customer.phone)) list.push('Enter a 10 digit phone number (Customer card).');
+    if (!emailValid(customer.email)) list.push('Enter a valid email address (Customer card).');
+    if (!leadSource.trim()) list.push('Pick a lead source (Customer card).');
     if (isCustom) {
       if (customPrice == null) list.push('Type the price (the Price field, custom mode has no calculator).');
     } else {
@@ -1955,7 +1969,7 @@ export default function EstimatorScreen({
     }
     if (addonsIncomplete) list.push('Finish the add-on lines (each needs a label and a price).');
     return list;
-  }, [salesperson, customerIncomplete, customer.isCommercial, isCustom, customPrice, mvbMissing, err, areas, lineRows, overrideNeedsReason, linesReady, addonsIncomplete]);
+  }, [salesperson, customerIncomplete, customer.isCommercial, customer.firstName, customer.phone, customer.email, leadSource, isCustom, customPrice, mvbMissing, err, areas, lineRows, overrideNeedsReason, linesReady, addonsIncomplete]);
   const canSave = saveBlockers.length === 0 && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
@@ -2731,6 +2745,7 @@ export default function EstimatorScreen({
         // The dedup pick (linkedLead) outranks the URL lead link: the rep
         // explicitly chose that record. An edit keeps its stored lead.
         leadId: editing?.leadId ?? linkedLead?.id ?? leadLink?.id ?? null,
+        leadSource: leadSource.trim() || null,
         // Custom saves write the scope themselves (with scope_edited_at).
         // Prompt 94: a standard save now WRITES the assembled document (the
         // same line-text assembly localScopePreview shows) instead of
@@ -3198,12 +3213,29 @@ export default function EstimatorScreen({
                 </>
               ) : (
                 <>
-                  <label className="field"><span>First name</span><input value={customer.firstName} onChange={(e) => setCustomerField('firstName', e.target.value)} /></label>
+                  <label className="field"><span>First name{customer.firstName.trim() ? '' : ' (required)'}</span><input value={customer.firstName} onChange={(e) => setCustomerField('firstName', e.target.value)} /></label>
                   <label className="field"><span>Last name{customer.lastName.trim() ? '' : ' (required)'}</span><input value={customer.lastName} onChange={(e) => setCustomerField('lastName', e.target.value)} /></label>
                 </>
               )}
-              <label className="field"><span>Phone</span><input value={customer.phone} onChange={(e) => setCustomerField('phone', e.target.value)} inputMode="tel" /></label>
-              <label className="field"><span>Email</span><input value={customer.email} onChange={(e) => setCustomerField('email', e.target.value)} inputMode="email" /></label>
+              <label className="field"><span>Phone{phoneValid(customer.phone) ? '' : ' (required)'}</span><input value={customer.phone} onChange={(e) => setCustomerField('phone', e.target.value)} inputMode="tel" /></label>
+              <label className="field"><span>Email{emailValid(customer.email) ? '' : ' (required)'}</span><input value={customer.email} onChange={(e) => setCustomerField('email', e.target.value)} inputMode="email" /></label>
+              <label className="field cust-wide"><span>Lead source{leadSource.trim() ? '' : ' (required)'}</span>
+                {catalog.leadSources && catalog.leadSources.length ? (
+                  <select value={leadSource} onChange={(e) => setLeadSource(e.target.value)}>
+                    <option value="">Pick a source…</option>
+                    {leadSource.trim() && !catalog.leadSources.includes(leadSource) && (
+                      <option value={leadSource}>{leadSource}</option>
+                    )}
+                    {catalog.leadSources.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                ) : (
+                  // Pre-change offline cache (or a failed vocabulary read):
+                  // free text keeps the required gate satisfiable in the field.
+                  <input value={leadSource} onChange={(e) => setLeadSource(e.target.value)} placeholder="How did they hear about us?" />
+                )}
+              </label>
               <label className="field cust-wide"><span>Address 1</span>
                 <AddressAutocomplete
                   value={customer.address1}
@@ -3396,6 +3428,7 @@ export default function EstimatorScreen({
                         ? <span className="line-chip scope-ok">scope ✓</span>
                         : <span className="line-chip scope-missing">no scope yet</span>}
                       {row?.kind === 'calc' && row.override != null && row.calcPrice != null && <span>calc {money2(row.calcPrice)}</span>}
+                      {sqftNum > 0 && price != null && <span>{money2(price / sqftNum)}/sqft</span>}
                       {lm?.gpPct != null && (
                         <span className={lineRed ? 'gp-red' : ''}>GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}</span>
                       )}
@@ -4020,6 +4053,11 @@ export default function EstimatorScreen({
                         GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}
                       </span>
                     )}
+                    {(() => {
+                      const s = Number(a.sqft);
+                      const p2 = finalAmt ?? row.current ?? row.calcPrice;
+                      return s > 0 && p2 != null ? <span className="muted">{money2(p2 / s)}/sqft</span> : null;
+                    })()}
                   </div>
                 )}
               </div>

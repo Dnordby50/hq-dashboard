@@ -182,6 +182,9 @@ export type SaveEstimateArgs = {
   priceAllOptions?: number | null;
   priceOverride: { reason: string; by: string | null } | null;
   createdBy: string | null;
+  // The rep's picked lead source (2026-08-26 required-fields rule); stored on
+  // the estimate row because the estimator never writes customers rows.
+  leadSource?: string | null;
   // Set when the estimator was opened from a lead (/estimator/?lead_id=<uuid>).
   // Null for a walk-up estimate with no lead behind it.
   leadId: string | null;
@@ -231,6 +234,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     // Carries through the outbox unchanged, so an estimate written offline at a
     // job site still lands attached to its lead when the phone gets signal.
     lead_id: args.leadId ?? null,
+    lead_source: (args.leadSource ?? '').trim() || null,
     intake: {
       ...args.intake,
       salesperson_id: args.salesperson.id,

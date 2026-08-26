@@ -73,3 +73,12 @@ export function splitLegacyName(name: string | null): { firstName: string; lastN
 export function splitLegacyAddress(address: string | null): { address1: string } {
   return { address1: t(address) };
 }
+
+// Contact validators (2026-08-26 required-fields rule). Phone: US 10 digits,
+// with a leading 1 tolerated. Email: the same pragmatic regex the public
+// pricing endpoint uses. Shared by the save gate and any future field hints.
+export const phoneValid = (s: string): boolean => {
+  const d = String(s || '').replace(/\D/g, '');
+  return d.length === 10 || (d.length === 11 && d[0] === '1');
+};
+export const emailValid = (s: string): boolean => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(s || '').trim());
