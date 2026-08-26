@@ -1,3 +1,35 @@
+## [2026-08-26 12:55] Google Routes key created and wired into Netlify: booking slots now space by real drive time, not the flat 30-minute buffer
+
+By: Cowork
+
+Changed: Google Cloud (new API key "TopCoat Routes - Server (Netlify)" in project cowork-automations) and Netlify env (new secret variable GOOGLE_ROUTES_API_KEY, scoped Builds/Functions/Runtime, same value in Production, Deploy Previews and Branch deploys), plus one triggered redeploy. NO repo file changed by this work; PROJECT-LOG.md is the only file this entry touches.
+
+Why: Dylan asked to fix the Routes key. The 2026-08-21 go-live entry left GOOGLE_ROUTES_API_KEY unset (Cowork declined to mint a credential unattended), so _pec-booking-drive.cjs:104 returned early on the empty key and every booking session fell back to booking_buffer_default_minutes. Nothing looked broken, which is exactly why it sat for five days.
+
+**Diagnosis before touching anything (evidence, not assumption).** booking_enabled true, booking_drive_time_enabled true, booking_home_base_address set to 1030 Sandretto Dr Suite K. A live POST to /api/booking/slots with a real Prescott address returned real slots, and pec_drive_time_cache stayed at 0 rows, its lifetime count. Netlify env filtered on GOOGLE returned only GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET. That pair (drive time on, cache empty after a live call, no key in env) is what proved the key had never been wired, rather than the key being present and failing.
+
+**Correction to the premise.** Dylan believed a Routes-capable key already existed. It did not. The account has exactly ONE Google Cloud project (Cowork Automations) holding exactly ONE API key, "New Google Sheets - Dashboard", restricted to HTTP referrers. That key cannot authenticate a Netlify function call: a server request carries no Referer header, so Google rejects it. This is the same distinction claude-code-prompt-101 section 3 called out. Routes API was already ENABLED on the project, so only the key was missing.
+
+**What was created (Dylan approved the mint in session).** Key "TopCoat Routes - Server (Netlify)", Application restrictions = None, API restrictions = Routes API only. Application-restriction None is deliberate and is the only workable choice: Netlify function egress IPs are not stable enough to allowlist, and referrer restriction is what disqualified the existing key. The compensating controls are the API restriction (this key can call nothing but Routes), the Netlify secret flag (value unreadable from the Netlify UI/API afterward), and the code-side leash already in _pec-booking-drive.cjs (one batched computeRouteMatrix per session, cache-first with a 30-day TTL, booking_routes_max_origins_per_request budget of 25, 4s abort). The value was moved Google-clipboard-to-Netlify-field and never printed in chat. It is NOT in the repo and needs NO netlify.toml SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES entry, because unlike the Maps/Sheets browser key this one never reaches client code (standing rule 7 proper, not its committed-client-key exception).
+
+**Verified live after the deploy went green ("Site is live", 12:55 PM).** Same POST to /api/booking/slots, then re-query: pec_drive_time_cache went 0 rows to 9, all destinationed on the probe address, with sane values. Home base 7 min / 6,189 m. 1030 Sandretto 8 min. 2 Glen Oaks 7 min. 333 Rimrock 8 min. 1415 Pinion Shadow 10 min. 5690 Spearmint 14 min. 5075 Cactus Place 15 min. Slot list after the fix: 100 slots over 22 days, 5 per normal day, and Friday 2026-08-28 gained a 2:30 PM slot it did not offer on the pre-fix probe (consistent with a measured buffer beating the flat 30, though a calendar change in the same 20 minutes cannot be fully excluded, so treat that one as corroborating not conclusive).
+
+**Finding worth acting on, flagged not fixed (out of scope for this task).** Two of the nine cached rows are garbage-in: origin "milwaukee mke" resolved to 1,593 minutes and "phoenix phx" to 107 minutes. They are Google-imported PERSONAL calendar events, "Flight to Phoenix (WN 2894)" on 2026-09-06 and "Flight to Milwaukee (WN 3890)" on 2026-08-29, whose location field is an airport code. The clamp contains the damage (buffer = clamp(driveMinutes, booking_buffer_min_minutes 20, booking_buffer_max_minutes 90), so a 26-hour "drive" becomes a 90-minute buffer, not a 26-hour hole), but the behavior is still wrong: a flight on Dylan's calendar will silently push the booking buffer to its maximum around those two dates and squeeze real estimate slots. It also burns a Routes call and parks a nonsense row in the cache for 30 days. Cheapest fix when someone picks this up: skip drive-time resolution for an origin whose address has no city AND no zip (both null on these two rows, unlike every real appointment), which costs one condition in the origins list build and needs no new setting.
+
+**Second flag, unrelated to Routes: the free trial.** The Google Cloud account shows "Free trial status: $300.00 credit and 54 days remaining", full account not activated. Routes API needs live billing. When the trial lapses the Routes calls start failing and _pec-booking-drive.cjs degrades silently back to the flat buffer, with no alert anywhere, which is precisely how this went unnoticed for five days the first time. Dylan chose to note it now and handle it later.
+
+**Side effect Dylan should know about.** The redeploy shipped main@HEAD, which was 9fa4722 ("estimator: required contact fields + lead source picker + per-line $/sqft"). That commit and 76f80b1 were both already pushed to origin/main with auto-publishing on, so they were bound for production regardless, but this deploy is what actually carried 9fa4722 live. Neither commit has a PROJECT-LOG entry yet, and index.html currently has uncommitted local modifications, so a Claude Code session appears to be mid-flight. Nothing in this task touched index.html or any working-tree file.
+
+Files touched: PROJECT-LOG.md.
+
+Next steps: (1) The airport-code origin filter above. (2) Activate the Google Cloud account before the trial runs out, or accept the silent fall back to the flat buffer. (3) Log entries for 76f80b1 and 9fa4722 are owed by whoever wrote them.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: Nothing required. Worth knowing: this fix only changes how slots are SPACED, and there has been exactly one booking request ever (the 2026-08-21 test), so the payoff is nil until /book gets traffic. If the flight-event buffer inflation matters before someone ships the filter, deleting or clearing the location field on those two calendar events removes the problem immediately.
+
+---
+
 ## [2026-08-24 MST] Instant Pricing: size-bracket pricing and the type modal fits again
 
 By: Claude Code
