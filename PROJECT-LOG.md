@@ -94,6 +94,28 @@ Handoff to Dylan: Nothing required. Worth knowing: this fix only changes how slo
 
 ---
 
+## [2026-08-27 MST] Portion complete: mark part of a job done, and bill exactly that part
+
+By: Claude Code
+
+Changed: index.html (per-line Mark done toggle + Completed tag on the invoice line items, the completed-so-far strip with a prefilled Request payment button, the all-done nudge to the real Mark Complete, flag pass-through in the Edit line items modal and saveJob's area regeneration, openRequestPaymentModal prefill params), netlify/functions/pec-public-invoice.cjs (Completed tag on the customer page), features.json, help/whats-new.json. NO migration, NO status change, NO settings.
+
+Dylan's ask, with two live cases behind it (Haley Construction, Tiffany Meunks: split jobs, part of the work completed): "need option to mark a portion of a job complete." The Haley job is the archetype: $11,000 across four lines (Attached Garage, RV Garage, plus two change orders including an explicit return-trip line), part done, part scheduled later.
+
+**Design decision worth remembering: a done line is jsonb, never a status.** jobs.status is a 4-value CHECK with SIX independent writers and consumers all over the app (AR bucketing, invoice terms, on_completion installment triggers, review asks, bonus locks, metrics, the portal). A fifth "partial" value would have been a rule-14 branch-rehearsed migration plus a blast radius audit. Instead each line item carries {completed: true, completed_at} inside the SAME jobs.line_items jsonb: no migration, the job honestly stays in_progress, and every existing completion consumer keeps meaning exactly what it meant.
+
+How it works: the invoice's line items table grew a Mark done / Undo toggle per line (hidden once the whole job is completed) writing the whole array back idempotently and auditing via logJobActivity. Done lines show a green Completed tag on the dashboard AND on the customer's /pay page (so a partial payment request reads as billing for finished work, not a random number). A partially done invoice shows "Work completed so far: $X of $Y (n of m lines)" with Request payment for completed work, which opens the 2026-08-27 request modal PREFILLED with the done value not yet covered by payments, clamped to the balance, labeled "Completed work". The two features are one flow now: mark the garage done, click once, the customer gets a pay link for exactly that garage. When EVERY line is done the strip flips to a nudge for the real Mark Complete (markJobComplete), because that is the path that stamps completed_date, due-on-completion terms, and the review ask.
+
+Flag durability, the fiddly part: jobs.line_items has two rewriters. The Edit line items modal now passes completed/completed_at through its clean() rebuild (and shows a small "done" note per line). saveJob's area-derived regeneration carries the flags by NAME match, so a normal estimate re-save keeps them; renaming an area drops its mark VISIBLY on the invoice (a re-click, never silent corruption). Change-order appends never rewrite existing entries, so they were already safe.
+
+Verified: full npm suite green (30 files); all index.html script blocks parse; pec-public-invoice.cjs syntax-checked. No schema change to verify.
+
+Files touched: see Changed.
+
+Next steps: none. Haley's and Tiffany's invoices can be portion-marked today.
+
+---
+
 ## [2026-08-27 MST] Request a payment on an invoice (partial billing on demand), and the "Ops Queue9" label glitch fixed
 
 By: Claude Code

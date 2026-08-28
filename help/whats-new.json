@@ -1,5 +1,16 @@
 [
   {
+    "id": "portion-complete",
+    "date": "2026-08-27",
+    "title": "Mark part of a job complete.",
+    "summary": "For split jobs where some of the work is done and the rest comes later, each invoice line item now has a Mark done button. Done lines get a green Completed tag on your invoice and on the customer's pay page, and the invoice shows the completed value with a one-click Request payment for completed work, prefilled with what is done but not yet paid. The job itself stays in progress until you mark the whole thing complete.",
+    "howto": [
+      "Open the invoice and click Mark done on each finished line item.",
+      "Use Request payment for completed work to bill the finished portion; the amount is prefilled.",
+      "When every line is done, the invoice offers the normal Mark job complete."
+    ]
+  },
+  {
     "id": "request-a-payment",
     "date": "2026-08-27",
     "title": "Request part of an invoice instead of billing in full.",

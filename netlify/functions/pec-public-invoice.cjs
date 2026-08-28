@@ -93,7 +93,7 @@ function lineItemsRows(items) {
   return list.map(li => {
     const price = li.price != null ? li.price : (li.total != null ? li.total : li.unit_price);
     return `<tr>
-      <td><span style="font-weight:600">${esc(li.name || '')}</span>${li.is_change_order ? ' <span style="color:#b45309;font-size:12px;font-weight:600">(change order)</span>' : ''}${li.description ? `<div class="desc">${esc(li.description)}</div>` : ''}</td>
+      <td><span style="font-weight:600">${esc(li.name || '')}</span>${li.is_change_order ? ' <span style="color:#b45309;font-size:12px;font-weight:600">(change order)</span>' : ''}${li.completed ? ' <span style="color:#16a34a;font-size:12px;font-weight:600">Completed</span>' : ''}${li.description ? `<div class="desc">${esc(li.description)}</div>` : ''}</td>
       <td>${price != null ? usd(price) : ''}</td>
     </tr>`;
   }).join('');

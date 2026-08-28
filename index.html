@@ -12199,7 +12199,7 @@ async function pecPrepareDepositClient(row, { onDone }) {
 // of it would keep it off the pay page forever, decision 8: later lines
 // never jump the queue). Non-deposit rows are renumbered 1..N around the
 // insertion point, the same locked-row re-seq the schedule editor performs.
-function openRequestPaymentModal(row, installments, payments, { onDone }) {
+function openRequestPaymentModal(row, installments, payments, { onDone, suggestAmount = null, suggestLabel = null } = {}) {
   const balance = invRound2(Number(row.balance != null ? row.balance : row.balance_remaining) || 0);
   if (balance < 0.5) { showToast('Nothing left to collect on this invoice.', { ttl: 4000 }); return; }
   const activeIns = (installments || []).filter(i => !['skipped', 'canceled'].includes(i.status));
@@ -12213,9 +12213,9 @@ function openRequestPaymentModal(row, installments, payments, { onDone }) {
       ${depositBlocks ? '<div class="pec-ar-sub" style="color:#b45309;margin-bottom:10px">The deposit is still due, so it stays the current ask; this request becomes due right after the deposit is collected.</div>' : ''}
       <div class="pec-row-2">
         <div class="pec-field"><label>Amount ($)</label>
-          <input id="rqAmt" type="number" min="0.50" max="${balance}" step="0.01" placeholder="e.g. ${Math.min(balance, Math.max(0.5, Math.round(balance / 2)))}"></div>
+          <input id="rqAmt" type="number" min="0.50" max="${balance}" step="0.01" value="${suggestAmount != null && suggestAmount >= 0.5 ? invRound2(Math.min(suggestAmount, balance)) : ''}" placeholder="e.g. ${Math.min(balance, Math.max(0.5, Math.round(balance / 2)))}"></div>
         <div class="pec-field"><label>Label (customer sees this)</label>
-          <input id="rqLabel" maxlength="60" value="Progress payment"></div>
+          <input id="rqLabel" maxlength="60" value="${esc(suggestLabel || 'Progress payment')}"></div>
       </div>
       <div class="prod-msg-err" id="rqErr" style="min-height:16px"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
@@ -12825,11 +12825,34 @@ async function renderJobInvoice(jobId) {
   // Standardized line shape is { name, description, price }; tolerate legacy
   // rows that used total / unit_price.
   const invLinePrice = it => { const v = it.price ?? it.total ?? it.unit_price; return v == null ? null : invNum(v); };
-  const itemRows = items.length ? items.map(it => `<tr class="nohover">
-      <td>${esc(it.name || '—')} ${tag(it)}</td>
+  // Portion complete (2026-08-27, Dylan's split-job ask: Haley Construction /
+  // Tiffany Meunks, part of the work done, the rest scheduled later). A line
+  // carries { completed: true, completed_at } in the SAME jsonb; the job's
+  // own 4-value status is untouched (a part-done job is in_progress, and the
+  // six status writers plus their dozens of consumers stay exactly as they
+  // are). The value done so far feeds Request payment below.
+  const jobDone = row.status === 'completed';
+  const lineDoneTag = it => it.completed ? `<span class="pec-age pec-age-green" title="${it.completed_at ? 'Marked done ' + esc(invFmtDate(String(it.completed_at).slice(0, 10))) : ''}">Completed</span>` : '';
+  const itemRows = items.length ? items.map((it, i) => `<tr class="nohover">
+      <td>${esc(it.name || '—')} ${tag(it)} ${lineDoneTag(it)}</td>
       <td style="white-space:pre-wrap;font-size:.85rem;color:var(--muted)">${esc(it.description || '')}</td>
-      <td style="text-align:right">${invLinePrice(it) != null ? invUSD(invLinePrice(it)) : '—'}</td></tr>`).join('')
-    : '<tr class="nohover"><td colspan="3" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
+      <td style="text-align:right">${invLinePrice(it) != null ? invUSD(invLinePrice(it)) : '—'}</td>
+      <td style="text-align:right;white-space:nowrap">${jobDone ? '' : `<button class="pec-btn ghost sm" data-line-done="${i}" title="${it.completed ? 'Take back the done mark on this line' : 'Mark this part of the work finished'}">${it.completed ? 'Undo' : 'Mark done'}</button>`}</td></tr>`).join('')
+    : '<tr class="nohover"><td colspan="4" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
+  const doneValue = invRound2(items.filter(it => it.completed).reduce((s, it) => s + (invLinePrice(it) || 0), 0));
+  const doneCount = items.filter(it => it.completed).length;
+  const allDone = items.length > 0 && doneCount === items.length;
+  const doneUnbilled = invRound2(Math.max(0, Math.min(doneValue - invNum(row.paid_to_date), invNum(row.balance_remaining))));
+  const portionStrip = (!jobDone && doneCount && !allDone) ? `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #16a34a;border-radius:8px">
+      <span style="font-size:.82rem">Work completed so far: <strong>${invUSD(doneValue)}</strong> of ${invUSD(invNum(row.price))} (${doneCount} of ${items.length} line${items.length === 1 ? '' : 's'})</span>
+      ${doneUnbilled >= 0.5 ? `<button class="pec-btn sm" id="pecPortionRequest" title="Opens Request payment prefilled with the completed value not yet covered by payments">Request payment for completed work</button>` : '<span class="pec-ar-sub">Payments already cover the completed value.</span>'}
+    </div>` : '';
+  const allDoneStrip = (!jobDone && allDone) ? `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #16a34a;border-radius:8px">
+      <span style="font-size:.82rem">Every line item is done. Mark the whole job complete so the invoice ages and due dates stamp.</span>
+      <button class="pec-btn sm primary" id="pecPortionComplete">Mark job complete</button>
+    </div>` : '';
   // In-flight / bounced transfers render ABOVE recorded payments, visually
   // muted (or red) so they never read as money in hand.
   const achPayRows = [
@@ -13044,8 +13067,8 @@ async function renderJobInvoice(jobId) {
     <div class="pec-card">
       <h3>Line items</h3>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Item</th><th>Scope</th><th style="text-align:right">Price</th></tr></thead>
-        <tbody>${itemRows}</tbody></table></div>
+        <thead><tr><th>Item</th><th>Scope</th><th style="text-align:right">Price</th><th></th></tr></thead>
+        <tbody>${itemRows}</tbody></table></div>${portionStrip}${allDoneStrip}
     </div>
     <div id="invCoCard"></div>
     <div class="pec-card">
@@ -13090,6 +13113,32 @@ async function renderJobInvoice(jobId) {
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const reqB = $('pecInvRequest');
   if (reqB) reqB.addEventListener('click', () => openRequestPaymentModal(row, installments, payments, { onDone: () => renderInvoicing() }));
+  // Portion complete: per-line done toggles + the completed-work strips. The
+  // toggle writes the WHOLE line_items array back (idempotent full-value
+  // write, safe to retry); nothing touches jobs.status or completed_date,
+  // those stay with the real Mark Complete paths.
+  root.querySelectorAll('[data-line-done]').forEach(b => b.addEventListener('click', async () => {
+    const i = Number(b.dataset.lineDone);
+    if (!items[i]) return;
+    b.disabled = true;
+    const next = items.map((it, idx) => {
+      if (idx !== i) return it;
+      const { completed, completed_at, ...rest } = it;
+      return it.completed ? rest : { ...rest, completed: true, completed_at: mstTodayIso() };
+    });
+    const w = await withFreshWriteRetry(() => supabase.from('jobs').update({ line_items: next }).eq('id', row.id), { label: 'line-done-toggle' });
+    if (w && w.error) { showToast('Could not save: ' + esc(w.error.message || ''), { ttl: 5000 }); b.disabled = false; return; }
+    logJobActivity(row.id, items[i].completed ? `Line "${items[i].name || 'Item'}" un-marked done` : `Line "${items[i].name || 'Item'}" marked done`, null, null).catch(() => {});
+    renderJobInvoice(jobId);
+  }));
+  const portionReqB = $('pecPortionRequest');
+  if (portionReqB) portionReqB.addEventListener('click', () => openRequestPaymentModal(row, installments, payments, {
+    onDone: () => renderInvoicing(),
+    suggestAmount: doneUnbilled,
+    suggestLabel: 'Completed work',
+  }));
+  const portionCompleteB = $('pecPortionComplete');
+  if (portionCompleteB) portionCompleteB.addEventListener('click', () => markJobComplete(row));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
   // Email invoice: opens a small modal (pre-filled with the customer's email),
   // POSTs to pec-send-email with the invoice template + the job's brand. The
@@ -13277,6 +13326,8 @@ async function renderJobInvoice(jobId) {
       name: l.name || '', description: l.description || '',
       price: Number(l.price != null ? l.price : (l.total != null ? l.total : l.unit_price)) || 0,
       is_change_order: !!l.is_change_order,
+      // Portion-complete flags ride through the editor untouched.
+      completed: !!l.completed, completed_at: l.completed_at || null,
     }));
     openModal(`
       <h3>Edit line items</h3>
@@ -13308,6 +13359,7 @@ async function renderJobInvoice(jobId) {
             <textarea class="ile-desc" data-i="${i}" rows="1" placeholder="Detail (optional)" style="width:100%;resize:vertical">${esc(l.description)}</textarea>
             <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
               ${l.is_change_order ? '<span class="pec-ar-sub" style="font-size:.7rem">change order</span>' : ''}
+              ${l.completed ? '<span class="pec-ar-sub" style="font-size:.7rem;color:#16a34a">done</span>' : ''}
               <span style="flex:1"></span>
               <button type="button" class="pec-btn ghost sm ile-up" data-i="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
               <button type="button" class="pec-btn ghost sm ile-down" data-i="${i}" ${i === lines.length - 1 ? 'disabled' : ''}>↓</button>
@@ -13335,7 +13387,7 @@ async function renderJobInvoice(jobId) {
         syncFromInputs();
         const errEl = modal.querySelector('#ileErr'); errEl.textContent = '';
         const clean = lines
-          .map(l => ({ name: (l.name || '').trim(), description: (l.description || '').trim(), price: invRound2(Number(l.price) || 0), ...(l.is_change_order ? { is_change_order: true } : {}) }))
+          .map(l => ({ name: (l.name || '').trim(), description: (l.description || '').trim(), price: invRound2(Number(l.price) || 0), ...(l.is_change_order ? { is_change_order: true } : {}), ...(l.completed ? { completed: true, completed_at: l.completed_at || mstTodayIso() } : {}) }))
           .filter(l => l.name || l.price);
         const price = invRound2(clean.reduce((s, l) => s + l.price, 0));
         const sb = modal.querySelector('#ileSave'); sb.disabled = true; sb.textContent = 'Saving…';
@@ -18136,11 +18188,22 @@ async function renderJobDetailInner(id) {
     // lines (added from the invoice; they have no area) so a re-save never drops
     // them. jobs.price = areas total + change-order total, matching the invoice.
     const changeOrderLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order);
-    const areaLineItems = areas.map((a, idx) => ({
-      name: (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main Area' : `Area ${idx+1}`),
-      description: (a.description || '').trim(),
-      price: Number(a.price) || 0,
-    }));
+    // Portion-complete flags survive regeneration by NAME match (renaming an
+    // area drops its done mark; the invoice page makes that visible, so it is
+    // a re-click, not silent data loss).
+    const doneByName = {};
+    for (const l of (Array.isArray(job.line_items) ? job.line_items : [])) {
+      if (l.completed && !l.is_change_order && l.name) doneByName[l.name] = l.completed_at || null;
+    }
+    const areaLineItems = areas.map((a, idx) => {
+      const name = (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main Area' : `Area ${idx+1}`);
+      return {
+        name,
+        description: (a.description || '').trim(),
+        price: Number(a.price) || 0,
+        ...(name in doneByName ? { completed: true, completed_at: doneByName[name] } : {}),
+      };
+    });
     const newLineItems = [...areaLineItems, ...changeOrderLines];
     const coTotal = changeOrderLines.reduce((s, l) => s + (Number(l.price ?? l.total ?? l.unit_price) || 0), 0);
     const newPrice = invRound2(areaLineItems.reduce((s, l) => s + l.price, 0) + coTotal);
