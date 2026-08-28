@@ -1,3 +1,35 @@
+## [2026-08-27 19:55] Two stranded open items closed: Aron inbox brand mapped + backfilled, Bryan Smith completed_date set (unhides $6,400 AR)
+
+By: Cowork
+
+Changed: live DB only, three writes, no repo file except this log. (1) settings.quo_number_brand_map '{}' to '{"+19284931922":"prescott-epoxy"}'. (2) pec_call_log: 44 brand-null rows set to 'prescott-epoxy'. (3) jobs 3783eaf8-fd49-4ad9-b134-115fcb668236 (Bryan Smith): completed_date and invoice_due_date both set to 2026-08-25.
+
+Why: both items had been recorded as open with no resolution. Dylan supplied the two decisions this session: the Aron inbox is a PEC number, and the Bryan Smith job finished 2026-08-25 ("we finished the final callback item").
+
+**Item 1: Aron inbox brand. The recorded count was wrong, and the reason matters.** The open item said 33 brand-null pec_call_log rows; live was **44**. Every one of the 44 involves +19284931922 and nothing else, so the backfill scope was unambiguous, but the drift is the interesting part: the line is still in use. Three of the 44 postdate Aron's 2026-08-12 termination, including 2026-08-24 where an inbound no-answer at 10:12 was followed by a 28-second outbound callback 13 minutes later plus a 110-second outbound that evening. Raised with Dylan as a possible access problem (ex-employee still holding the Quo app). **Dylan: "it was me."** He is working that line himself. No security issue; the number is his now in practice.
+
+Applied: `quo_number_brand_map` = `{"+19284931922":"prescott-epoxy"}`, which is the mechanism `brandForOurNumber` in pec-webhook-quo.cjs falls back to after pec_sms_senders. This number can NEVER get a senders row (that table is PRIMARY KEY (brand) and PEC's send-from line is already taken), so the settings map is the correct and only home for it, not a workaround. Future calls on the line now attribute to PEC automatically. Backfill verified: pec_call_log went 1277/1053/44-null to **1321 prescott-epoxy, 1053 finishing-touch, ZERO nulls**.
+
+**Item 2: Bryan Smith completed_date.** CRM job 3783eaf8, $12,550 price, $6,150 paid, **$6,400 balance**, terms due_on_completion, status 'completed' but completed_date NULL. Null completed_date means null invoice_due_date means null days_outstanding, so the balance aged nowhere and never surfaced in AR.
+
+Evidence gathered before proposing a date: production job 58ec3097 installed 2026-08-10, status completed, costing finalized 8/17; invoice first sent 8/13. The SECOND Bryan Smith production job (88416322, install_date 8/20, status 'unscheduled') is NOT outstanding work: is_callback true, original_job_id 58ec3097, touchup_state 'done', touchup_cause 'crew_workmanship', note "Smeared yellow paint was clean up and retouched with flake & clear." Cowork recommended 2026-08-10 on that evidence. Dylan corrected it to **2026-08-25**, the day the final callback item was actually finished, which the DB could not have known: the touch-up row carries an install_date of 8/20 and was never moved to the real work date.
+
+Both completed_date and invoice_due_date were set to 2026-08-25 in the same statement. invoice_due_date was set deliberately, not incidentally: `computeDueDate` in _pec-invoice-terms.cjs resolves due_on_completion to the completed date, but that resolution only runs in the application paths, so a raw SQL completed_date fix that ignored it would have closed one gap and left the due-date gap open. The UPDATE was guarded `and completed_date is null and status = 'completed'` so a re-run cannot overwrite a later correction.
+
+Verified live: Bryan Smith now reads completed_date 2026-08-25, invoice_due_date 2026-08-25, **days_outstanding 3**, balance $6,400 visible in pec_job_ar. Re-query of the whole view: 7 jobs remain status='completed' with a null completed_date, and **all 7 carry a $0 balance** (Buettner, Herod, Macelwee, Petosa, Cirzan, Walker, Rhodes, all signed 2026-05-15 to 2026-06-16, the legacy import batch). No money is hidden anywhere in AR now.
+
+**Why this happened, and why it can recur.** index.html:6202-6209 is explicit that manual completion is the ONLY thing that stamps completed_date, and it stamps `mstTodayIso()`. Something set Bryan's status to 'completed' without going through that path (status_manual_at is null on the row, so it was not the manual button). The path that produced a completed job with no date still exists and is not identified. Note also that had anyone "fixed" this by clicking Mark Complete, it would have stamped today (2026-08-27) and reported the receivable as 0 days old instead of 3, which is exactly why this was left for an explicit-date SQL fix.
+
+Files touched: PROJECT-LOG.md.
+
+Next steps: (1) Identify the path that sets jobs.status='completed' without stamping completed_date; it is one job away from hiding money again. A cheap guard is a DB trigger stamping completed_date on the status transition when it is null, though the date it can infer (now) is the wrong one, so surfacing the gap may beat auto-filling it. (2) The 7 legacy zero-balance rows need no action; leave them.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: Bryan Smith's $6,400 is now live in AR aging at 3 days, due 2026-08-25. Nothing else to do. Worth deciding whether that touch-up job (88416322) should have its install_date corrected from 8/20 to the 8/25 you actually finished it, since right now the production record and the completion date disagree.
+
+---
+
 ## [2026-08-26 12:55] Google Routes key created and wired into Netlify: booking slots now space by real drive time, not the flat 30-minute buffer
 
 By: Cowork
