@@ -62,6 +62,28 @@ Handoff to Dylan: Nothing required. Worth knowing: this fix only changes how slo
 
 ---
 
+## [2026-08-27 MST] Request a payment on an invoice (partial billing on demand), and the "Ops Queue9" label glitch fixed
+
+By: Claude Code
+
+Changed: index.html only (openRequestPaymentModal, the Request payment toolbar button, the Cancel request affordance on the schedule card, the {{due_now}} email token, the pecNavBtnLabel badge-proof label reader), production/installments.test.cjs (+12 checks), features.json, help/whats-new.json. NO migration, NO server function changes, NO settings rows.
+
+**1. Request a payment (Dylan: "make an option to request a payment on an invoice, if we are not billing in full").** The design insight that kept this out of rule-14 territory entirely: a payment request IS a pec_invoice_installments row with trigger_kind='manual', which has been schema headroom since prompt 45 with no UI. Because a 'queued' row counts as fired in BOTH resolvers, inserting one makes it the current ask instantly, and every money surface follows with zero changes: the pay page hero shows the requested amount, kind=installment charges exactly it server-side (already clamped to the real balance, already netting pending ACH), the webhook settles it, reminders reference it, and the invoice SMS states it. No new charge path, no schema change, no new settings (the amount and label are per-request inputs, not tunables; the feature rides the existing payment-schedules machinery and its cards, which satisfies rule 12 without a new knob).
+
+The one subtle part is PLACEMENT, now documented in code and pinned by tests: payment allocation is positional (front-to-back by seq), so the request must land AFTER every settled row (an earlier insert would steal their applied dollars and rewrite history) and BEFORE the first unsettled row (decision 8: later lines never jump the queue, so a request behind an unfired milestone would never surface). The modal renumbers non-deposit rows around the insertion point, the same locked-row re-seq the schedule editor already performs. If the deposit is still due, the deposit stays the ask and the modal says so plainly.
+
+Flow: invoice toolbar > Request payment (shows only when the balance is at least 50 cents and the installments migration is live) > amount + customer-facing label > Create only / Create + email / Create + text (the existing send kit; the sent stamp is scoped to the request's own row id so a racing schedule change cannot stamp the wrong line; the insert itself is NEVER blind-retried, a double insert would double-ask). Withdrawing: an unsettled request nothing has been paid against shows Cancel request on the schedule card (status 'canceled', guarded status-in so a racing payment makes it a no-op). New {{due_now}} email token resolves to the current ask when one exists, else the balance; {{balance}} keeps meaning the full remaining balance, unchanged.
+
+**2. "Ops Queue9" (Dylan's report: "theres numbers at the top of the settings pages").** Root cause: the Ops Queue and Follow-ups nav badges are spans INJECTED into the rail source buttons, and two places read those buttons' raw textContent, flattening "Ops Queue" + badge "9" into "Ops Queue9": the rail flyout item labels (bites whenever the rail rebuilds after the badges landed) and the page title refresher. Both now go through pecNavBtnLabel, which reads only the button's text nodes.
+
+**Verified:** installments fixture suite 83 checks green including the 12 new pins (manual queued row IS the ask ahead of an unfired milestone; behind one it never jumps, documenting why the renumber exists; settled deposits stay settled; canceled requests drop out; the ask clamps to the balance; pending ACH nets against it, down to not-chargeable); full npm suite green; all index.html script blocks parse.
+
+Files touched: see Changed.
+
+Next steps: none. Requests work on any invoice with a balance today.
+
+---
+
 ## [2026-08-26 MST] Required contact fields everywhere, per-line $/sqft in the estimator, phone on pipeline estimate cards, and the warranty PDF at the bottom of the quote
 
 By: Claude Code

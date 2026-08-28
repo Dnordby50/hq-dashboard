@@ -1,5 +1,16 @@
 [
   {
+    "id": "request-a-payment",
+    "date": "2026-08-27",
+    "title": "Request part of an invoice instead of billing in full.",
+    "summary": "The invoice page has a new Request payment button. Type the amount you want now (say 2,000 of a 6,000 balance) and a label, then send it by text or email. The customer's pay link shows exactly that amount as due, online card and bank payments charge exactly that amount, and the rest stays on the invoice. You can withdraw a request any time before it is paid.",
+    "howto": [
+      "Open the invoice and click Request payment, next to Receive payment.",
+      "Enter the amount and a label the customer will see, then choose Create + text, Create + email, or Create only (the pay link updates either way).",
+      "To take it back, open the invoice's Settings tab and click Cancel request on that line."
+    ]
+  },
+  {
     "id": "warranty-pdf-on-estimates",
     "date": "2026-08-26",
     "title": "Attach your warranty PDF to every estimate.",

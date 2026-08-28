@@ -5442,6 +5442,17 @@ if (document.readyState === 'loading') {
     // row at the bottom (Help is a universal utility, not part of Admin).
     const RAIL_PIN = { docs: 'Help' };
 
+    // A nav button's LABEL, excluding injected count badges (the Ops Queue /
+    // Follow-ups .pec-*-navbadge spans). Reading raw textContent flattened
+    // "Ops Queue" + badge "9" into "Ops Queue9" wherever the rail rebuilt or
+    // the title refreshed after the badges landed (Dylan, 2026-08-27).
+    const pecNavBtnLabel = (btn) => {
+      const t = Array.from(btn.childNodes)
+        .filter(n => n.nodeType === Node.TEXT_NODE)
+        .map(n => n.textContent).join('').trim();
+      return t || btn.textContent.trim();
+    };
+
     // Parse #pecSubnav (in document order) into groups of source buttons.
     const railGroups = [];
     if (crmNav) {
@@ -5593,7 +5604,7 @@ if (document.readyState === 'loading') {
         item.setAttribute('role', 'menuitem');
         item.dataset.pecView = view;
         if (src.classList.contains('pec-role-admin')) item.classList.add('pec-role-admin');
-        item.textContent = RAIL_RELABEL[view] || src.textContent.trim();
+        item.textContent = RAIL_RELABEL[view] || pecNavBtnLabel(src);
         item.style.display = src.style.display; // mirror initial visibility
         item.addEventListener('click', (e) => {
           if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // browser opens the tab
@@ -5734,7 +5745,7 @@ if (document.readyState === 'loading') {
         const crmActive = document.querySelector('#pecSubnav button.active');
         // data-pec-title lets a rail item carry a short label but a longer,
         // unambiguous page title (e.g. "Pipeline" -> "Sales Pipeline").
-        if (crmActive) pageTitle = (crmActive.dataset.pecTitle || crmActive.textContent).trim();
+        if (crmActive) pageTitle = (crmActive.dataset.pecTitle || pecNavBtnLabel(crmActive)).trim();
       }
       if (titleEl) titleEl.textContent = pageTitle;
       if (subEl)   subEl.textContent   = pageSub;
@@ -12171,6 +12182,130 @@ async function pecPrepareDepositClient(row, { onDone }) {
   }
 }
 
+// Request a payment (2026-08-27, Dylan: "an option to request a payment on
+// an invoice, if we are not billing in full"). NO new money machinery: a
+// request IS a pec_invoice_installments row with trigger_kind='manual' and
+// status 'queued' (schema headroom since prompt 45, first UI here). Because
+// 'queued' counts as fired in BOTH resolvers, the row becomes the current
+// ask the moment it lands, and every downstream surface (pay page hero,
+// kind=installment Stripe charge, webhook settle, reminder drip, invoice
+// SMS copy) follows with zero changes -- the ask amount is already clamped
+// to the real balance server-side.
+//
+// PLACEMENT is the one subtle part: payment allocation is positional
+// (front-to-back by seq), so the request must land AFTER every settled row
+// (or an earlier insert would steal their applied dollars and "unsettle"
+// history) and BEFORE the first unsettled row (or an unfired milestone ahead
+// of it would keep it off the pay page forever, decision 8: later lines
+// never jump the queue). Non-deposit rows are renumbered 1..N around the
+// insertion point, the same locked-row re-seq the schedule editor performs.
+function openRequestPaymentModal(row, installments, payments, { onDone }) {
+  const balance = invRound2(Number(row.balance != null ? row.balance : row.balance_remaining) || 0);
+  if (balance < 0.5) { showToast('Nothing left to collect on this invoice.', { ttl: 4000 }); return; }
+  const activeIns = (installments || []).filter(i => !['skipped', 'canceled'].includes(i.status));
+  const askNow = activeIns.length ? pecInstallmentAsk(row, installments, payments) : null;
+  const depositBlocks = !!(askNow && askNow.mode === 'installment' && askNow.installment && askNow.installment.is_deposit);
+  const wrap = openModal(`
+    <div style="max-width:460px;width:min(460px,92vw)">
+      <h3 style="margin:0 0 6px">Request a payment</h3>
+      <div class="pec-ar-sub" style="margin-bottom:12px">Ask the customer for part of the balance now. The pay link shows this amount as what is due; the rest stays on the invoice.</div>
+      <div class="pec-ar-sub" style="margin-bottom:12px">Remaining balance: <strong>${invUSD(balance)}</strong>${askNow && askNow.mode === 'installment' && !depositBlocks ? ` &middot; currently asking ${invUSD(askNow.amount)} (${esc(askNow.label || 'installment')})` : ''}</div>
+      ${depositBlocks ? '<div class="pec-ar-sub" style="color:#b45309;margin-bottom:10px">The deposit is still due, so it stays the current ask; this request becomes due right after the deposit is collected.</div>' : ''}
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Amount ($)</label>
+          <input id="rqAmt" type="number" min="0.50" max="${balance}" step="0.01" placeholder="e.g. ${Math.min(balance, Math.max(0.5, Math.round(balance / 2)))}"></div>
+        <div class="pec-field"><label>Label (customer sees this)</label>
+          <input id="rqLabel" maxlength="60" value="Progress payment"></div>
+      </div>
+      <div class="prod-msg-err" id="rqErr" style="min-height:16px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+        <button type="button" class="pec-btn ghost" id="rqCancel">Cancel</button>
+        <button type="button" class="pec-btn" id="rqCreate" title="Creates the request without messaging the customer; the pay link already shows it.">Create only</button>
+        <button type="button" class="pec-btn" id="rqSendEmail">Create + email</button>
+        <button type="button" class="pec-btn primary" id="rqSendText">Create + text</button>
+      </div>
+    </div>`);
+  const q = (sel) => wrap.querySelector(sel);
+  q('#rqCancel').addEventListener('click', () => pecCloseModalWrap(wrap));
+
+  const createRequest = async () => {
+    const errEl = q('#rqErr');
+    errEl.textContent = '';
+    const amt = invRound2(Number(q('#rqAmt').value));
+    const label = (q('#rqLabel').value || '').trim() || 'Progress payment';
+    if (!isFinite(amt) || amt < 0.5) { errEl.textContent = 'Enter an amount of at least $0.50.'; return null; }
+    if (amt > balance + PEC_INST_EPS) { errEl.textContent = `That is more than the ${invUSD(balance)} balance.`; return null; }
+
+    // Placement: renumber the non-deposit rows around the insertion point.
+    const schedule = askNow ? askNow.schedule : [];
+    const nonDep = schedule.filter(s => !s.inst.is_deposit);
+    let insertAt = nonDep.findIndex(s => !s.settled);
+    if (insertAt < 0) insertAt = nonDep.length;
+    const newRow = {
+      job_id: row.id, label, amount_kind: 'fixed', amount_value: amt, computed_amount: amt,
+      trigger_kind: 'manual', status: 'queued', queued_at: new Date().toISOString(),
+      is_deposit: false, standalone: false,
+      created_by: (state.adminUser && state.adminUser.id) || null,
+    };
+    const order = [...nonDep.slice(0, insertAt).map(s => s.inst), newRow, ...nonDep.slice(insertAt).map(s => s.inst)];
+    try {
+      // Seq renumber first (idempotent per row, safe to retry); the insert
+      // last and NEVER blind-retried (a double insert would double-ask).
+      for (let i = 0; i < order.length; i++) {
+        const target = i + 1;
+        const ins = order[i];
+        if (ins === newRow) { newRow.seq = target; continue; }
+        if ((Number(ins.seq) || 0) === target) continue;
+        const w = await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+          .update({ seq: target }).eq('id', ins.id), { label: 'request-payment-reseq' });
+        if (w && w.error) throw w.error;
+      }
+      const ins = await withFreshWrite(() => supabase.from('pec_invoice_installments')
+        .insert(newRow).select('id').single(), { label: 'request-payment-insert' });
+      if (ins.error) throw ins.error;
+      return { id: ins.data.id, amount: amt, label };
+    } catch (err) {
+      errEl.textContent = 'Could not create the request: ' + (err.message || String(err));
+      return null;
+    }
+  };
+
+  // Stamp THIS request 'sent' after a successful text/email (the same stamp
+  // the page's send kit applies to the current ask; scoped to our row id so
+  // a racing schedule change cannot stamp the wrong line).
+  const kitFor = (createdId) => pecInvoiceSendKit(row, {
+    invNo: row.hq_invoice_number || '',
+    onDone: () => { if (onDone) onDone(); },
+    onSent: async () => {
+      try {
+        await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+          .update({ status: 'sent', sent_at: new Date().toISOString() })
+          .eq('id', createdId).in('status', ['planned', 'queued', 'pending_approval']), { label: 'request-payment-sent-stamp' });
+      } catch (err) { console.warn('[pec] request sent-stamp skipped:', err && err.message ? err.message : err); }
+    },
+  });
+
+  const runSend = async (mode) => {
+    ['rqCreate', 'rqSendEmail', 'rqSendText'].forEach(id => { const b = q('#' + id); if (b) b.disabled = true; });
+    const created = await createRequest();
+    if (!created) { ['rqCreate', 'rqSendEmail', 'rqSendText'].forEach(id => { const b = q('#' + id); if (b) b.disabled = false; }); return; }
+    // The email template's {{due_now}} token reads this (the {{balance}}
+    // token keeps meaning the full remaining balance, unchanged).
+    row._dueNow = depositBlocks ? null : created.amount;
+    pecCloseModalWrap(wrap);
+    if (mode === 'none') {
+      showToast(`Payment request for ${invUSD(created.amount)} created. The pay link now asks for it.`, { ttl: 4500 });
+      if (onDone) onDone();
+      return;
+    }
+    const kit = kitFor(created.id);
+    if (mode === 'text') kit.text(); else kit.email();
+  };
+  q('#rqCreate').addEventListener('click', () => runSend('none'));
+  q('#rqSendText').addEventListener('click', () => runSend('text'));
+  q('#rqSendEmail').addEventListener('click', () => runSend('email'));
+}
+
 // The schedule editor (prompt 45). Add/edit/remove/reorder installments,
 // dollar-or-percent per line, milestone trigger per line, and the deposit
 // choice (first line of the schedule vs its own separate line). Editing is
@@ -12792,6 +12927,7 @@ async function renderJobInvoice(jobId) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
         ${pecSplitSendHtml('pecInvSend', 'Send invoice')}
+        ${!instErr && invNum(row.balance_remaining) >= 0.5 ? '<button class="pec-btn sm" id="pecInvRequest" title="Ask the customer for part of the balance now">Request payment</button>' : ''}
         <button class="pec-btn sm primary" id="pecInvPay">Receive payment</button>
         <div style="position:relative">
           <button class="pec-btn sm" id="pecInvMore" aria-haspopup="true">More actions &#9662;</button>
@@ -12874,7 +13010,7 @@ async function renderJobInvoice(jobId) {
         <td>${s.inst.is_deposit ? '<span class="pec-age pec-age-yellow">Deposit</span> ' : ''}${esc(s.inst.label || (s.inst.is_deposit ? '' : 'Installment'))}${s.isCurrent ? ' <span style="color:var(--rd-accent,#D8531C);font-weight:800;font-size:.68rem;letter-spacing:.5px">DUE NOW</span>' : ''}</td>
         <td style="text-align:right">${invUSD(s.amount)}${s.inst.amount_kind === 'percent' ? `<div class="pec-ar-sub" style="font-size:.68rem">${esc(String(Number(s.inst.amount_value)))}% of total</div>` : ''}${!s.settled && s.applied > PEC_INST_EPS ? `<div class="pec-ar-sub" style="font-size:.68rem">${invUSD(s.applied)} applied</div>` : ''}</td>
         <td>${esc(pecInstMilestoneLabel(s.inst.trigger_kind, s.inst.due_date))}</td>
-        <td>${pecInstStatusChip(s)}${achChip(s)}${s.inst.sent_at ? `<div class="pec-ar-sub" style="font-size:.68rem">sent ${esc(invFmtDate(String(s.inst.sent_at).slice(0, 10)))}</div>` : ''}</td>
+        <td>${pecInstStatusChip(s)}${achChip(s)}${s.inst.sent_at ? `<div class="pec-ar-sub" style="font-size:.68rem">sent ${esc(invFmtDate(String(s.inst.sent_at).slice(0, 10)))}</div>` : ''}${s.inst.trigger_kind === 'manual' && !s.settled && s.applied <= PEC_INST_EPS && ['queued', 'sent'].includes(s.inst.status) ? `<div style="margin-top:3px"><button class="pec-btn ghost sm danger" data-req-cancel="${esc(s.inst.id)}" title="Withdraw this payment request; nothing has been paid against it">Cancel request</button></div>` : ''}</td>
       </tr>`).join('');
       const modeNote = ask.mode === 'none'
         ? `<div class="pec-ar-sub" style="margin-top:8px">Nothing is due right now: the next installment waits on its milestone (${esc(pecInstMilestoneLabel(ask.installment && ask.installment.trigger_kind).toLowerCase())}).</div>`
@@ -12952,6 +13088,8 @@ async function renderJobInvoice(jobId) {
     else pecDownloadInvoicePdf(row, payments);
   });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
+  const reqB = $('pecInvRequest');
+  if (reqB) reqB.addEventListener('click', () => openRequestPaymentModal(row, installments, payments, { onDone: () => renderInvoicing() }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
   // Email invoice: opens a small modal (pre-filled with the customer's email),
   // POSTs to pec-send-email with the invoice template + the job's brand. The
@@ -13099,6 +13237,9 @@ async function renderJobInvoice(jobId) {
   // exactly one invoice send path). onSent stamps the current planned/held
   // installment 'sent' when a schedule exists; the deposit's manual send is
   // exactly this stamp. onDone re-lands on this invoice via renderInvoicing.
+  // {{due_now}} email token: the current ask on scheduled invoices, the
+  // balance otherwise (emailComposeValues reads this).
+  row._dueNow = ask && (ask.mode === 'installment' || ask.mode === 'balance') ? ask.amount : null;
   const sendKit = pecInvoiceSendKit(row, {
     invNo,
     onDone: () => renderInvoicing(),
@@ -13242,6 +13383,20 @@ async function renderJobInvoice(jobId) {
   if (schedEditB) schedEditB.addEventListener('click', () => openScheduleEditor(row, installments, { onSaved: () => renderJobInvoice(jobId) }));
   const schedDepB = $('pecSchedPrepDep');
   if (schedDepB) schedDepB.addEventListener('click', () => pecPrepareDepositClient(row, { onDone: () => renderJobInvoice(jobId) }));
+  // Withdraw a payment request (a manual-trigger row nothing has been paid
+  // against): status -> canceled, which both resolvers filter out, so the
+  // pay page falls back to whatever was due before. Guarded status-in so a
+  // racing payment (row settles) makes this a no-op instead of hiding a
+  // covered ask.
+  root.querySelectorAll('[data-req-cancel]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Withdraw this payment request? The pay link goes back to what was due before it.')) return;
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+      .update({ status: 'canceled', note: 'Request withdrawn by staff' })
+      .eq('id', b.dataset.reqCancel).in('status', ['queued', 'sent']), { label: 'request-payment-cancel' });
+    if (w && w.error) { showToast('Could not cancel: ' + esc(w.error.message || ''), { ttl: 5000 }); b.disabled = false; return; }
+    renderJobInvoice(jobId);
+  }));
 }
 
 // Edit a previously-recorded payment. Goes through the atomic edit_recorded_payment
@@ -27326,6 +27481,9 @@ function emailComposeValues(row) {
   return {
     customer_name: row.customer_name || '', invoice_number: invNo,
     total: invUSD(row.price), balance: invUSD(row.balance != null ? row.balance : row.balance_remaining),
+    // {{due_now}}: the current ask when the caller knows it (payment
+    // requests, scheduled invoices); falls back to the full balance.
+    due_now: invUSD(row._dueNow != null ? row._dueNow : (row.balance != null ? row.balance : row.balance_remaining)),
     business_name: name, brand_name: name, from_name: name, portal_link: '#',
     year: String(new Date().getFullYear()), cta, line_items_table: emailLineItemsTable(row.line_items),
   };

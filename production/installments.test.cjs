@@ -428,6 +428,69 @@ function stubProviders(log = { sms: [], email: [], enrolls: [] }) {
   }
 
   // ==========================================================================
+  // Request-a-payment (2026-08-27): the manual-trigger row semantics the new
+  // dashboard "Request payment" flow depends on. These pin behavior that was
+  // schema headroom until now, so a resolver change that would silently break
+  // requests fails here first.
+  {
+    // A queued manual row placed BEFORE an unfired milestone IS the ask.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [
+      inst({ seq: 1, computed_amount: 2000, trigger_kind: 'manual', status: 'queued', label: 'Progress payment' }),
+      inst({ seq: 2, computed_amount: 8000, trigger_kind: 'on_completion', status: 'planned' }),
+    ];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [] });
+    ok(ask && ask.mode === 'installment' && ask.amount === 2000 && ask.label === 'Progress payment',
+      'request: queued manual row ahead of an unfired milestone is the current ask');
+    const charge = computeInstallmentCharge({ job: j, installments: rows, payments: [], pendingSum: 0 });
+    ok(charge && charge.amount === 2000, 'request: Stripe kind=installment charges exactly the requested amount');
+  }
+  {
+    // Behind an unfired milestone the manual row does NOT jump the queue --
+    // the documented reason the UI renumbers rows around the insertion point.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [
+      inst({ seq: 1, computed_amount: 8000, trigger_kind: 'on_completion', status: 'planned' }),
+      inst({ seq: 2, computed_amount: 2000, trigger_kind: 'manual', status: 'queued' }),
+    ];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [] });
+    ok(ask && ask.mode === 'none', 'request: a manual row behind an unfired milestone never jumps the queue');
+  }
+  {
+    // Placement after settled rows preserves history: the paid deposit stays
+    // settled, the request is the ask, the remainder asks last (mode balance
+    // after both settle).
+    const j = job({ status: 'signed', price: 10000, deposit_collected: true });
+    const rows = [
+      inst({ seq: 0, computed_amount: 5000, is_deposit: true, trigger_kind: 'on_acceptance', status: 'paid' }),
+      inst({ seq: 1, computed_amount: 2000, trigger_kind: 'manual', status: 'sent', label: 'Progress payment' }),
+    ];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [pay(5000)] });
+    ok(ask && ask.mode === 'installment' && ask.amount === 2000, 'request: lands after the settled deposit and asks its own amount');
+    ok(ask.schedule[0].settled === true && ask.schedule[0].isDeposit === true, 'request: the paid deposit stays settled');
+    const askAfter = resolveCurrentAsk({ job: j, installments: rows, payments: [pay(5000), pay(2000)] });
+    ok(askAfter && askAfter.mode === 'balance' && askAfter.amount === 3000, 'request: once paid, the uncovered remainder asks as the balance');
+  }
+  {
+    // Withdrawn (canceled) requests drop out of the resolver entirely.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [inst({ seq: 1, computed_amount: 2000, trigger_kind: 'manual', status: 'canceled' })];
+    ok(resolveCurrentAsk({ job: j, installments: rows, payments: [] }) === null,
+      'request: a canceled request leaves the invoice on legacy full-balance behavior');
+  }
+  {
+    // The ask is clamped to the real balance: an over-sized request can never
+    // over-charge (Stripe additionally nets pending ACH).
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [inst({ seq: 1, computed_amount: 9000, trigger_kind: 'manual', status: 'queued' })];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [pay(8000)] });
+    ok(ask && ask.amount === 1000, 'request: payments allocate to the request first; the ask is its remaining');
+    const charge = computeInstallmentCharge({ job: j, installments: rows, payments: [pay(8000)], pendingSum: 600 });
+    ok(charge && charge.amount === 400, 'request: pending ACH nets against the requested ask');
+    const noCharge = computeInstallmentCharge({ job: j, installments: rows, payments: [pay(8000)], pendingSum: 999.9 });
+    ok(noCharge === null, 'request: an ask fully covered by pending ACH is not chargeable');
+  }
+
   console.log(`\n${state.passed} passed, ${state.failed} failed`);
   process.exit(state.failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });
