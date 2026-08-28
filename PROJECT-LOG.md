@@ -1,3 +1,35 @@
+## [2026-08-27 20:20] Touch-up causes backfilled (6 of 15 were blank), new 'weather' cause value added, and the open-callback backlog surfaced
+
+By: Cowork
+
+Changed: supabase/migrations/2026-09-20_touchup_cause_weather.sql (new, applied live via MCP), netlify/functions/_migration-manifest.json (regenerated), and six pec_prod_jobs rows given a touchup_cause. No other repo file touched; index.html was deliberately left alone (see the handoff).
+
+Why: Dylan asked to be walked through every callback missing touch-up info. Six of the fifteen callbacks had touchup_cause NULL, which is the field the whole touch-up feature exists to produce: index.html groups the cause breakdown on it, and a null row just reads "No cause recorded (pre-tracking)" and drops out of the analysis.
+
+**What was actually missing.** Of 15 non-archived is_callback jobs: touchup_state, touchup_billable and original_job_id were populated on all 15; only touchup_cause was blank, on 6. So the gap was narrow and the fix was one field, not a data-quality project.
+
+**Causes recorded, all from Dylan directly, none inferred.** Kim Patterson (missing flakes on main stairs, dry spots on garage floor), Ruth Goossen (buff and coat 2 rougher/lighter sections), Jamy Myrmel (spots to touch up coyote flake) and Pam Duncan (generic warranty callback) -> crew_workmanship. Harold Tuttle (bubbles in quartz) -> weather. Brandon Campos (generic warranty callback) -> damage_after_install, note "Lizard got into the clear coat while it was wet."
+
+Two of those needed a judgment call, both flagged to Dylan rather than buried:
+- **Tuttle / weather.** Dylan answered "weather", which was not in the CHECK vocabulary. It was parked in 'other' with a note first so the answer could not be lost, Dylan was asked whether weather should become a real value, he said yes, and the migration below made it one; the row was then re-recorded from 'other' to 'weather'. It was never silently mapped onto crew_workmanship, which would have blamed a crew for a Dylan-identified weather callback.
+- **Campos / lizard.** "Lizard got in his clear coat, not from us" has no exact bucket. damage_after_install was chosen because it is the only value that carries "external agent, not our fault" into the breakdown; the verbatim explanation is in touchup_cause_note so the classification is reversible if Dylan prefers 'other'.
+
+**Migration.** 2026-09-20_touchup_cause_weather.sql widens pec_prod_jobs_touchup_cause_check to admit 'weather' (drop + re-add, the only way to change a CHECK). Additive: every pre-existing value stays legal, so it cannot invalidate a row and needs no backfill, and the one row it was written for is re-recorded OUTSIDE the migration so replaying the DDL never touches data. @artifacts header uses `none:` because a CHECK constraint is not one of the four tracked kinds (table/column/index/setting), following the material_type and prompt-93 kind-widening precedent. Manifest regenerated (196 files, 488 artifacts).
+
+**Result.** All 15 callbacks now carry a cause, zero nulls. The breakdown Dylan can finally act on: **crew_workmanship 9, material_failure 2, customer_expectation 1, weather 1, damage_after_install 1, other 1.** Nine of fifteen, 60 percent, trace to application rather than product or customer. That is a training/QC signal, not a supplier signal, and it was invisible while six rows sat blank.
+
+**Second finding, raised unprompted: the open callback backlog, and two rows that lie about it.** Five touch-ups are not closed. Jamy Myrmel open **24 days**, Ruth Goossen **18**, Kim Patterson **18**, Pam Duncan 7, Harold Tuttle 3. Worse than the ages: Myrmel and Goossen both have touchup_state 'scheduled' while their install_date (2026-08-05 and 2026-08-12) is already in the PAST and the parent job status is still 'unscheduled'. They were scheduled, the date came and went, nothing moved them, and the board still shows them as scheduled. Patterson, Duncan and Tuttle have no install_date at all. Five customers are waiting on a return trip and three of them are not on any calendar.
+
+Files touched: supabase/migrations/2026-09-20_touchup_cause_weather.sql, netlify/functions/_migration-manifest.json, PROJECT-LOG.md.
+
+Next steps: (1) index.html TOUCHUP_CAUSES (~line 36222) needs `weather: 'Weather'`. Until it lands, the close-touch-up modal cannot produce the value; read paths already degrade safely (`TOUCHUP_CAUSES[v] || v` renders the raw word), but closing the Tuttle touch-up through the modal before that ships would overwrite 'weather' with whatever the picker offers. (2) A 'scheduled' touch-up whose install_date has passed should not keep reading as scheduled; it belongs back in 'open' or on the Ops Queue. (3) The 60 percent crew-workmanship rate deserves a look at which crews and which systems.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: Every callback now has a cause; the breakdown is above and 60 percent is workmanship. The thing needing you is the backlog: Myrmel (24 days) and Goossen (18 days) show as scheduled but their dates already passed, and Patterson, Duncan and Tuttle have no date at all.
+
+---
+
 ## [2026-08-27 19:55] Two stranded open items closed: Aron inbox brand mapped + backfilled, Bryan Smith completed_date set (unhides $6,400 AR)
 
 By: Cowork

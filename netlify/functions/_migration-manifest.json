@@ -3413,6 +3413,13 @@
           "name": "estimate_warranty_pdf_path"
         }
       ]
+    },
+    {
+      "file": "2026-09-20_touchup_cause_weather.sql",
+      "date": "2026-09-20",
+      "hasHeader": true,
+      "none": "extends the pec_prod_jobs_touchup_cause_check CHECK constraint with",
+      "artifacts": []
     }
   ],
   "knownTables": [
