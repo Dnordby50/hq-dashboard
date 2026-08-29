@@ -28240,7 +28240,7 @@ async function loadProdCore() {
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
     cachedSystemTypes(),
     supabase.from('pec_prod_crews').select('*').order('name'),
-    supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
+    supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index,flake_color_id,flake_product_id,flake_size,basecoat_product_id,topcoat_product_id,special_order_color'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_prod_tasks').select('*').order('task_date'),
     supabase.from('pec_prod_holidays').select('*').order('holiday_date'),
@@ -38147,6 +38147,9 @@ function openJobQuickLook(jobId) {
       || (a.flake_product_id && prodById[a.flake_product_id] && (prodById[a.flake_product_id].color || prodById[a.flake_product_id].name))
       || null)
     .filter(Boolean))];
+  // Fallback: the CRM job's area picks (job_areas via buildProdEstimateFacts),
+  // where real flake data lives for bridged jobs; pec_prod_areas rarely has it.
+  if (!flakePicks.length) flakePicks.push(...((state.flakeByProdJob || {})[jobId] || []));
   const basecoatPicks = pickNames('basecoat_product_id', false);
   const topcoatPicks = pickNames('topcoat_product_id', false);
   const flakeSizes = [...new Set(areas.map(a => a.flake_size).filter(Boolean))];
@@ -39863,7 +39866,7 @@ function openTaskModal(task, opts = {}) {
 // itself (cached), because budgetedHours = laborBudget / rate, so a different
 // rate would break the modal == Budget card == Job Costing acceptance rule.
 async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
-  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, crmPriceByProd: {}, products: [], flakeColors: [], laborRate: laborRate };
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, crmPriceByProd: {}, flakeByProd: {}, products: [], flakeColors: [], laborRate: laborRate };
   if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
   const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
   const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
@@ -39898,6 +39901,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
   // display surfaces (quick look shows the blend name, not "Per-job pick").
   const flakeColors = (flakeColorsRes && !flakeColorsRes.error && flakeColorsRes.data) || [];
   const colorBcByColorId = window.flakeColorBasecoatDefaults(flakeColors);
+  const flakeColorNameById = Object.fromEntries(flakeColors.map(c => [c.id, c.name]));
   out.flakeColors = flakeColors;
   const areasByJob = {};
   for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
@@ -39949,6 +39953,16 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     const jid = job.id;
     const resolved = resolvedByProd[jid];
     const crmAreas = resolved ? (crmAreasByCrmId[resolved.id] || []) : [];
+    // Flake blend names from the CRM job's areas (prompt: flake in the schedule
+    // quick look). The CRM job_areas picks are where real flake data lives for
+    // bridged jobs; pec_prod_areas rarely carries them. Rides the area read
+    // already being made, never a second query.
+    const crmFlakes = [...new Set(crmAreas
+      .map(a => (a.flake_color_id && flakeColorNameById[a.flake_color_id])
+        || (a.flake_product_id && productById[a.flake_product_id] && (productById[a.flake_product_id].color || productById[a.flake_product_id].name))
+        || null)
+      .filter(Boolean))];
+    if (crmFlakes.length) out.flakeByProd[jid] = crmFlakes;
     // planAreas: CRM job card picks (source of truth, matches the Budget
     // card) for any prod job resolved to a CRM job (bridged OR matched by
     // name+address); else pec_prod_areas with saved picks; else the
@@ -39996,6 +40010,7 @@ async function loadScheduleEstimates() {
     state.crmPhoneByProdJob = facts.crmPhoneByProd;
     state.crmIdByProdJob = facts.crmIdByProd;
     state.crmPriceByProdJob = facts.crmPriceByProd;
+    state.flakeByProdJob = facts.flakeByProd;
     state.flakeColors = facts.flakeColors;
     if (facts.products.length && !(state.products || []).length) state.products = facts.products;
   } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
