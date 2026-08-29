@@ -36477,7 +36477,17 @@ async function openTouchupAddModal(opts = {}) {
       <div class="pec-field"><label>Find the original job</label>
         <input id="tuAddSearch" placeholder="Customer name or address…" autocomplete="off">
       </div>
-      <div id="tuAddResults" style="display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto;margin-bottom:10px"></div>
+      <div id="tuAddResults" style="display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto;margin-bottom:6px"></div>
+      <div style="margin-bottom:10px"><button type="button" class="pec-btn ghost sm" id="tuAddLegacy">Job predates TopCoat? Add without linking</button></div>
+    </div>
+    <div id="tuAddManualWrap" style="display:none">
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px">For jobs done before TopCoat existed. The touch-up will not be linked to an original job. <button type="button" class="pec-btn ghost sm" id="tuAddManualBack" style="margin-left:4px">Back to job search</button></div>
+      <div class="pec-field"><label>Customer name</label>
+        <input id="tuAddManualName" placeholder="e.g. John Smith" autocomplete="off">
+      </div>
+      <div class="pec-field"><label>Address (optional)</label>
+        <input id="tuAddManualAddr" placeholder="e.g. 123 Main St, Prescott" autocomplete="off">
+      </div>
     </div>
     <div id="tuAddPicked" style="${picked ? '' : 'display:none'};margin-bottom:10px"></div>
     <div class="pec-field"><label>What needs touching up</label>
@@ -36496,6 +36506,25 @@ async function openTouchupAddModal(opts = {}) {
     const pickedEl = modal.querySelector('#tuAddPicked');
     const pickWrap = modal.querySelector('#tuAddPickWrap');
     const saveBtn = modal.querySelector('#tuAddSave');
+    const manualWrap = modal.querySelector('#tuAddManualWrap');
+    const manualName = modal.querySelector('#tuAddManualName');
+    const manualAddr = modal.querySelector('#tuAddManualAddr');
+    let manualMode = false;
+    const legacyBtn = modal.querySelector('#tuAddLegacy');
+    if (legacyBtn) legacyBtn.addEventListener('click', () => {
+      manualMode = true; picked = null;
+      pickWrap.style.display = 'none'; pickedEl.style.display = 'none'; manualWrap.style.display = '';
+      saveBtn.disabled = !(manualName.value || '').trim();
+      manualName.focus();
+    });
+    const manualBack = modal.querySelector('#tuAddManualBack');
+    if (manualBack) manualBack.addEventListener('click', () => {
+      manualMode = false;
+      manualWrap.style.display = 'none'; pickWrap.style.display = '';
+      saveBtn.disabled = true;
+      searchEl.focus();
+    });
+    if (manualName) manualName.addEventListener('input', () => { if (manualMode) saveBtn.disabled = !(manualName.value || '').trim(); });
     const showPicked = () => {
       if (!picked) return;
       pickedEl.style.display = '';
@@ -36523,7 +36552,8 @@ async function openTouchupAddModal(opts = {}) {
     if (picked) showPicked();
     saveBtn.addEventListener('click', async () => {
       const errEl = modal.querySelector('#tuAddErr'); errEl.textContent = '';
-      if (!picked) return;
+      const manual = manualMode ? { customer_name: (manualName.value || '').trim(), address: (manualAddr.value || '').trim() } : null;
+      if (!picked && !(manual && manual.customer_name)) return;
       saveBtn.disabled = true;
       const desc = (modal.querySelector('#tuAddDesc').value || '').trim();
       const reqBy = (modal.querySelector('#tuAddReqBy').value || '').trim();
@@ -36532,9 +36562,10 @@ async function openTouchupAddModal(opts = {}) {
         openScheduler: false,
         description: desc ? 'Touch-up: ' + desc : 'Touch-up / warranty callback',
         requestedBy: reqBy,
+        manual,
       });
       if (!newId) { saveBtn.disabled = false; return; }
-      showToast(`Touch-up added for <strong>${esc(picked.customer_name || '')}</strong>. It is in the Touch-ups list as Open.`);
+      showToast(`Touch-up added for <strong>${esc((picked ? picked.customer_name : manual.customer_name) || '')}</strong>. It is in the Touch-ups list as Open.`);
       if (state.view === 'schedule') renderSchedule();
     });
   } });
@@ -38035,19 +38066,24 @@ function openDayOffModal() {
 // its confirm() + straight-to-scheduler behavior; the panel / job-detail
 // intake passes its own description, skips the confirm (its modal IS the
 // confirmation), and leaves the new touch-up queued as 'open' in the panel.
+// opts.manual = { customer_name, address }: legacy escape hatch for jobs that
+// predate TopCoat. prodJob is null, original_job_id stays null (nullable in
+// the schema; every touch-up render path degrades safely on a null parent),
+// and customer info comes from the manual fields instead of the parent row.
 async function addTouchupCallback(prodJob, opts = {}) {
-  if (!prodJob) return;
+  const manual = !prodJob && opts.manual && (opts.manual.customer_name || '').trim() ? opts.manual : null;
+  if (!prodJob && !manual) return;
   const openScheduler = opts.openScheduler !== false;
-  if (!opts.skipConfirm && !confirm(`Add a touch-up / warranty callback for ${prodJob.customer_name || 'this job'}? It is a no-charge visit you will then place on the schedule.`)) return null;
+  if (!opts.skipConfirm && !confirm(`Add a touch-up / warranty callback for ${(prodJob ? prodJob.customer_name : manual.customer_name) || 'this job'}? It is a no-charge visit you will then place on the schedule.`)) return null;
   const row = {
-    customer_id: prodJob.customer_id || null,
-    customer_name: prodJob.customer_name,
-    address: prodJob.address || null,
+    customer_id: (prodJob && prodJob.customer_id) || null,
+    customer_name: prodJob ? prodJob.customer_name : manual.customer_name.trim(),
+    address: (prodJob ? prodJob.address : (manual.address || '').trim()) || null,
     is_callback: true,
-    original_job_id: prodJob.id,
+    original_job_id: prodJob ? prodJob.id : null,
     revenue: null,
     status: 'unscheduled',
-    notes: (opts.description || 'Touch-up / warranty callback') + (prodJob.proposal_number ? ' (for #' + prodJob.proposal_number + ')' : ''),
+    notes: (opts.description || 'Touch-up / warranty callback') + (prodJob && prodJob.proposal_number ? ' (for #' + prodJob.proposal_number + ')' : (manual ? ' (legacy job, pre-TopCoat)' : '')),
     // Queue lifecycle (prompt 51): every touch-up starts Open with its age
     // clock anchored at creation.
     touchup_state: 'open',
