@@ -40,4 +40,53 @@ function applyChangeOrder(price, lineItems, { name, description, amount }) {
   };
 }
 
-module.exports = { arDueAsOf, applyChangeOrder };
+// Tolerate legacy line shapes ({ total } / { unit_price }) the same way the
+// invoice renderer does; edits normalize the matched line to { price }.
+function coLinePrice(it) {
+  const v = it && (it.price ?? it.total ?? it.unit_price);
+  return v == null ? null : Number(v);
+}
+
+// Find the invoice line a change-order signature row bills through: the SAME
+// heuristic the CO card uses to detect orphans (is_change_order + title match
+// + amount within half a cent). First match wins; old values are captured
+// from a fresh signature-row read before calling, so both layers agree.
+function findChangeOrderLine(lineItems, { name, amount }) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  const want = String(name || '').trim().toLowerCase();
+  return items.findIndex(it => it && it.is_change_order
+    && String(it.name || '').trim().toLowerCase() === want
+    && Math.abs((coLinePrice(it) || 0) - Number(amount || 0)) < 0.005);
+}
+
+// Edit a pending change order's billing: replace its matched line (name,
+// description, price; completed flags and any other keys are preserved) and
+// move jobs.price by the amount delta. matched:false means the line was
+// hand-edited out from under the CO (Edit line items) and NOTHING changed;
+// the caller surfaces a reconcile message instead of guessing a line.
+// Inputs are never mutated.
+function editChangeOrder(price, lineItems, old, next) {
+  const idx = findChangeOrderLine(lineItems, old);
+  if (idx < 0) return { price: round2(Number(price || 0)), line_items: Array.isArray(lineItems) ? lineItems : [], matched: false };
+  const items = (Array.isArray(lineItems) ? lineItems : []).slice();
+  const { total, unit_price, ...keep } = items[idx];
+  items[idx] = { ...keep, name: next.name, description: next.description || '', price: round2(Number(next.amount || 0)), is_change_order: true };
+  return {
+    price: round2(Number(price || 0) - Number(old.amount || 0) + Number(next.amount || 0)),
+    line_items: items,
+    matched: true,
+  };
+}
+
+// Delete a pending change order's billing: splice exactly its matched line
+// and subtract its amount from jobs.price. Same matched:false contract as
+// editChangeOrder. Inputs are never mutated.
+function removeChangeOrder(price, lineItems, old) {
+  const idx = findChangeOrderLine(lineItems, old);
+  if (idx < 0) return { price: round2(Number(price || 0)), line_items: Array.isArray(lineItems) ? lineItems : [], matched: false };
+  const items = (Array.isArray(lineItems) ? lineItems : []).slice();
+  items.splice(idx, 1);
+  return { price: round2(Number(price || 0) - Number(old.amount || 0)), line_items: items, matched: true };
+}
+
+module.exports = { arDueAsOf, applyChangeOrder, editChangeOrder, removeChangeOrder, findChangeOrderLine };

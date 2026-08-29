@@ -10487,6 +10487,36 @@ function pecApplyChangeOrder(price, lineItems, { name, description, amount }) {
     ]),
   };
 }
+// Client mirrors of editChangeOrder / removeChangeOrder in
+// production/job-money.cjs (the fixture-tested authority; keep in lockstep).
+// The matcher is the SAME heuristic the CO card's orphan detection uses
+// (is_change_order + title + amount within half a cent), so both layers agree
+// on which invoice line a signature row bills through. matched:false means
+// Edit line items diverged the line by hand: nothing is touched and the
+// caller surfaces a reconcile message instead of guessing.
+function pecFindChangeOrderLine(lineItems, { name, amount }) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  const want = String(name || '').trim().toLowerCase();
+  const priceOf = it => { const v = it && (it.price ?? it.total ?? it.unit_price); return v == null ? null : Number(v); };
+  return items.findIndex(it => it && it.is_change_order
+    && String(it.name || '').trim().toLowerCase() === want
+    && Math.abs((priceOf(it) || 0) - Number(amount || 0)) < 0.005);
+}
+function pecEditChangeOrder(price, lineItems, old, next) {
+  const idx = pecFindChangeOrderLine(lineItems, old);
+  if (idx < 0) return { price: invRound2(Number(price || 0)), line_items: Array.isArray(lineItems) ? lineItems : [], matched: false };
+  const items = (Array.isArray(lineItems) ? lineItems : []).slice();
+  const { total, unit_price, ...keep } = items[idx];
+  items[idx] = { ...keep, name: next.name, description: next.description || '', price: invRound2(Number(next.amount || 0)), is_change_order: true };
+  return { price: invRound2(Number(price || 0) - Number(old.amount || 0) + Number(next.amount || 0)), line_items: items, matched: true };
+}
+function pecRemoveChangeOrder(price, lineItems, old) {
+  const idx = pecFindChangeOrderLine(lineItems, old);
+  if (idx < 0) return { price: invRound2(Number(price || 0)), line_items: Array.isArray(lineItems) ? lineItems : [], matched: false };
+  const items = (Array.isArray(lineItems) ? lineItems : []).slice();
+  items.splice(idx, 1);
+  return { price: invRound2(Number(price || 0) - Number(old.amount || 0)), line_items: items, matched: true };
+}
 function invWeekStart(d) { const x = invParse(d); const back = (x.getUTCDay() + 6) % 7; x.setUTCDate(x.getUTCDate() - back); return x.toISOString().slice(0, 10); }
 const invShortDate = d => { const x = invParse(d); return x ? (x.getUTCMonth() + 1) + '/' + x.getUTCDate() : ''; };
 const invFmtDate = d => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10) + '/' + d.slice(0, 4)) : '—';
@@ -11678,6 +11708,223 @@ async function mintCoSignature(jobId, fields) {
   }
 }
 
+// ---- Edit / delete / manually accept a PENDING change order (2026-08-28) ----
+// Dylan: change orders need to stay editable after they are sent, until they
+// are signed. Three shared rules across all of these:
+//   1. CUSTOMER WINS every race. Every write is CAS-guarded .eq('status',
+//      'pending') -- the exact mirror of the sign PATCH's guard -- so if the
+//      customer signs in the window, zero rows come back, nothing else is
+//      written, and the operator sees "signed while you were editing".
+//   2. Billing follows through the SAME matcher as the orphan detection
+//      (pecFindChangeOrderLine): matched lines are replaced/spliced with the
+//      price delta applied; a hand-diverged line is NEVER guessed at, the
+//      operator gets a reconcile toast pointing at Edit line items.
+//   3. Materials are NEVER re-pushed (pushChangeOrderMaterialsToProd is
+//      additive and non-idempotent); sqft edits and deletes tell the operator
+//      to adjust the Job Costing order sheet by hand.
+async function openChangeOrderEditModal(sigRow, { jobId, onSaved } = {}) {
+  const isArea = !!sigRow.area_id;
+  const oldSqft = sigRow.sqft != null ? Number(sigRow.sqft) : null;
+  openModal(`
+    <h3 style="margin:0 0 6px">Edit change order</h3>
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:10px">The approval link stays the same; the customer sees the updated version the next time the page loads. Signed change orders cannot be edited.</div>
+    <div class="pec-field"><label>Title</label><input id="coEdTitle" value="${esc(sigRow.title || '')}"></div>
+    <div class="pec-field"><label>Description</label><textarea id="coEdDesc" rows="2" style="width:100%">${esc(sigRow.description || '')}</textarea></div>
+    ${isArea ? `<div class="pec-field"><label>Square footage</label><input id="coEdSqft" type="number" min="0" step="1" value="${oldSqft != null ? oldSqft : ''}"></div>` : ''}
+    <div class="pec-field"><label>Amount ($)</label><input id="coEdAmt" type="number" min="0.01" step="0.01" value="${invNum(sigRow.amount)}"></div>
+    <div class="pec-li-sub" id="coEdPerSqft"></div>
+    ${isArea ? '<div class="pec-li-sub" style="margin-top:6px">Materials already sent to Job Costing are not recalculated. If the square footage changes, adjust quantities on the Job Costing order sheet.</div>' : ''}
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="coEdSave">Save changes</button>
+    </div>
+    <div class="prod-msg-err" id="coEdErr"></div>`, { onMount(modal) {
+    const titleEl = modal.querySelector('#coEdTitle');
+    const descEl = modal.querySelector('#coEdDesc');
+    const sqftEl = modal.querySelector('#coEdSqft');
+    const amtEl = modal.querySelector('#coEdAmt');
+    const perEl = modal.querySelector('#coEdPerSqft');
+    const errEl = modal.querySelector('#coEdErr');
+    const saveBtn = modal.querySelector('#coEdSave');
+    // Passive $/sqft ratio (the perSqftNote pattern): informational only, the
+    // amount is a flat operator number exactly as it is at creation.
+    const perNote = () => {
+      const sq = sqftEl ? Number(sqftEl.value) : null;
+      const amt = parseFloat(amtEl.value);
+      perEl.textContent = (sq > 0 && Number.isFinite(amt) && amt > 0) ? '≈ ' + invUSD(amt / sq) + '/sqft' : '';
+    };
+    if (sqftEl) sqftEl.addEventListener('input', perNote);
+    amtEl.addEventListener('input', perNote);
+    perNote();
+    saveBtn.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const title = titleEl.value.trim();
+      const description = descEl.value.trim();
+      const sqft = sqftEl ? Number(sqftEl.value) : null;
+      const amt = parseFloat(amtEl.value);
+      if (!title) { errEl.textContent = 'Enter a title.'; return; }
+      if (!Number.isFinite(amt) || amt <= 0) { errEl.textContent = 'Enter an amount greater than 0.'; return; }
+      if (sqftEl && !(sqft > 0)) { errEl.textContent = 'Enter the square footage.'; return; }
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        // a. Fresh re-read: the card can be stale, and OLD title/amount must
+        // come from the row as it IS so the billing matcher agrees with it.
+        const fr = await supabase.from('pec_change_order_signatures')
+          .select('id,status,title,description,amount,sqft,area_id').eq('id', sigRow.id).single();
+        if (fr.error) throw fr.error;
+        const old = fr.data;
+        if (old.status === 'signed') {
+          errEl.textContent = 'This change order was signed while you were editing. Nothing was changed.';
+          saveBtn.disabled = false; saveBtn.textContent = 'Save changes';
+          return;
+        }
+        // b. The gate: signature CAS first. Zero rows back = the customer
+        // signed in the window; abort with zero other writes.
+        const upd = await withFreshWrite(() => supabase.from('pec_change_order_signatures')
+          .update({ title, description: description || null, amount: invRound2(amt), ...(sqftEl ? { sqft } : {}) })
+          .eq('id', sigRow.id).eq('status', 'pending').select(), { label: 'co-edit' });
+        if (upd.error) throw upd.error;
+        if (!(upd.data || []).length) {
+          errEl.textContent = 'This change order was signed while you were editing. Nothing was changed.';
+          saveBtn.disabled = false; saveBtn.textContent = 'Save changes';
+          return;
+        }
+        // c. Billing: replace the matched invoice line and move the price by
+        // the delta. Unmatched = hand-diverged: skip, reconcile toast.
+        let billingNote = null;
+        const jr = await supabase.from('jobs').select('price,line_items').eq('id', jobId).single();
+        if (jr.error) throw Object.assign(new Error('Invoice read failed: ' + jr.error.message), { revert: old });
+        const next = pecEditChangeOrder(jr.data.price, jr.data.line_items, { name: old.title, amount: invNum(old.amount) }, { name: title, description, amount: amt });
+        if (!next.matched) {
+          billingNote = 'Change order updated, but its invoice line was edited by hand and could not be matched. Use Edit line items to correct the invoice amount.';
+        } else {
+          const w = await withFreshWrite(() => supabase.from('jobs').update({ line_items: next.line_items, price: next.price }).eq('id', jobId), { label: 'co-edit-billing' });
+          if (w.error) throw Object.assign(new Error('Invoice update failed: ' + w.error.message), { revert: old });
+        }
+        // d. The scope row (area-backed COs): best-effort, visible on failure.
+        if (old.area_id) {
+          try {
+            const aw = await supabase.from('job_areas').update({ name: title, sqft, price: invRound2(amt), description: description || null }).eq('id', old.area_id);
+            if (aw.error) throw aw.error;
+            window.pecCostingStale = true;
+          } catch (aerr) {
+            showToast('Change order updated, but its scope row could not be updated: ' + (aerr?.message || aerr), { ttl: 6000 });
+          }
+        }
+        logJobActivity(jobId, `Change order "${old.title}" edited: ${invUSD(invNum(old.amount))} to ${invUSD(invRound2(amt))}`, null, null).catch(() => {});
+        closeModal();
+        const sqftChanged = sqftEl && oldSqft != null && Number(sqft) !== oldSqft;
+        showToast(billingNote || ('Change order updated (' + invUSD(invRound2(amt)) + ').' + (sqftChanged ? ' Materials in Job Costing were not recalculated; adjust quantities there if needed.' : '')), { ttl: billingNote ? 8000 : 5000 });
+        if (onSaved) onSaved();
+      } catch (err) {
+        // Compensation: if the billing write failed AFTER the signature row
+        // moved, best-effort revert it via the same pending CAS so the
+        // customer page never shows an amount the invoice does not carry.
+        if (err && err.revert) {
+          try {
+            await supabase.from('pec_change_order_signatures')
+              .update({ title: err.revert.title, description: err.revert.description, amount: err.revert.amount, sqft: err.revert.sqft })
+              .eq('id', sigRow.id).eq('status', 'pending');
+          } catch (_) {}
+        }
+        saveBtn.disabled = false; saveBtn.textContent = 'Save changes';
+        errEl.textContent = isSessionStale(err) ? 'Session briefly stalled. Try again.' : (err.message || String(err));
+      }
+    });
+  } });
+}
+
+// Delete a pending CO: CAS delete first (customer signature wins), then the
+// invoice line + price via the same matcher, then the scope row. Materials
+// are never reversed; the toast points at the stamped Job Costing lines.
+async function deletePendingChangeOrder(sigRow, jobId, onChanged) {
+  if (!confirm(`Delete this change order? The invoice total goes down by ${invUSD(invNum(sigRow.amount))} and the approval link goes dead.`)) return;
+  try {
+    const del = await withFreshWrite(() => supabase.from('pec_change_order_signatures')
+      .delete().eq('id', sigRow.id).eq('status', 'pending').select(), { label: 'co-delete' });
+    if (del.error) throw del.error;
+    if (!(del.data || []).length) {
+      showToast('This change order was signed while you were looking at it. Nothing was deleted.', { ttl: 6000 });
+      if (onChanged) onChanged();
+      return;
+    }
+    let note = 'Change order deleted.';
+    const jr = await supabase.from('jobs').select('price,line_items').eq('id', jobId).single();
+    if (jr.error) {
+      note = 'Change order deleted, but the invoice could not be read to remove its line. Use Edit line items to remove "' + sigRow.title + '".';
+    } else {
+      const next = pecRemoveChangeOrder(jr.data.price, jr.data.line_items, { name: sigRow.title, amount: invNum(sigRow.amount) });
+      if (!next.matched) {
+        note = 'Change order deleted, but its invoice line was edited by hand and could not be matched. Use Edit line items to correct the invoice amount.';
+      } else {
+        const w = await withFreshWrite(() => supabase.from('jobs').update({ line_items: next.line_items, price: next.price }).eq('id', jobId), { label: 'co-delete-billing' });
+        if (w.error) note = 'Change order deleted, but its invoice line could not be removed (' + w.error.message + '). Use Edit line items.';
+      }
+    }
+    if (sigRow.area_id) {
+      try {
+        await supabase.from('job_areas').delete().eq('id', sigRow.area_id);
+        window.pecCostingStale = true;
+      } catch (_) {}
+      note += ' If materials were added to Job Costing, remove the lines marked "Change order: ' + sigRow.title + '" there.';
+    }
+    logJobActivity(jobId, `Change order "${sigRow.title}" (${invUSD(invNum(sigRow.amount))}) deleted`, null, null).catch(() => {});
+    showToast(note, { ttl: 8000 });
+    if (onChanged) onChanged();
+  } catch (err) {
+    showToast('Delete failed: ' + (err?.message || err), { ttl: 6000 });
+  }
+}
+
+// Manually accept a pending CO on our end (Dylan 2026-08-28: customer
+// approves verbally, staff records it). Same CAS as the sign PATCH, so a
+// racing customer signature wins and this becomes a no-op. Billing needs NO
+// write: it hit at save (signature is documentation, not a gate). The
+// customer page renders the signed state from signed_name/signed_at alone
+// (signature_data stays null and its <img> is conditional).
+async function markCoAcceptedManually(sigRow, jobId, onChanged) {
+  openModal(`
+    <h3 style="margin:0 0 6px">Mark change order accepted</h3>
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:10px">Records that the customer approved "${esc(sigRow.title || '')}" (${invUSD(invNum(sigRow.amount))}) without signing the link. The approval page will show it as accepted.</div>
+    <div class="pec-field"><label>Who accepted, and how</label>
+      <input id="coAccName" placeholder='e.g. "Kyle Kirby, by phone"' autocomplete="off">
+    </div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="coAccSave">Mark accepted</button>
+    </div>
+    <div class="prod-msg-err" id="coAccErr"></div>`, { onMount(modal) {
+    const nameEl = modal.querySelector('#coAccName');
+    const errEl = modal.querySelector('#coAccErr');
+    const saveBtn = modal.querySelector('#coAccSave');
+    nameEl.focus();
+    saveBtn.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const name = nameEl.value.trim();
+      if (!name) { errEl.textContent = 'Enter who accepted it.'; return; }
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        const upd = await withFreshWrite(() => supabase.from('pec_change_order_signatures')
+          .update({ status: 'signed', signed_name: name.slice(0, 120) + ' (recorded by staff)', signed_at: new Date().toISOString() })
+          .eq('id', sigRow.id).eq('status', 'pending').select(), { label: 'co-manual-accept' });
+        if (upd.error) throw upd.error;
+        if (!(upd.data || []).length) {
+          errEl.textContent = 'The customer signed this change order themselves in the meantime. Nothing was changed.';
+          saveBtn.disabled = false; saveBtn.textContent = 'Mark accepted';
+          return;
+        }
+        logJobActivity(jobId, `Change order "${sigRow.title}" marked accepted by staff (${name})`, null, null).catch(() => {});
+        closeModal();
+        showToast('Change order marked accepted.', { ttl: 4000 });
+        if (onChanged) onChanged();
+      } catch (err) {
+        saveBtn.disabled = false; saveBtn.textContent = 'Mark accepted';
+        errEl.textContent = err?.message || String(err);
+      }
+    });
+  } });
+}
+
 // Bridge a CO area's MATERIALS to the production side when the prod twin's
 // costing lines are already SAVED (persisted pec_prod_material_lines freeze
 // the derive path, so a new area would otherwise never reach Job Costing,
@@ -11891,6 +12138,9 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
         </table></div>
       </div>
       <div class="pec-co-actions">
+        ${r.status === 'signed' ? '' : `<button class="pec-btn sm ghost" data-co-edit="${esc(r.token)}">Edit</button>
+        <button class="pec-btn sm ghost" data-co-del="${esc(r.token)}">Delete</button>
+        <button class="pec-btn sm ghost" data-co-accept="${esc(r.token)}" title="Record that the customer approved this without signing the link (by phone or in person)">Mark accepted</button>`}
         <button class="pec-btn sm ghost" data-co-copy="${esc(r.token)}">Copy link</button>
         ${r.status === 'signed' ? '' : `<button class="pec-btn sm accent-line" data-co-email="${esc(r.token)}">Email link</button>
         <button class="pec-btn sm accent-line" data-co-text="${esc(r.token)}">Text link</button>`}
@@ -11949,7 +12199,8 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
             <tr class="nohover">
               <td><strong>#${numById[r.id]} · ${esc(r.title)}</strong>
                 ${sub ? `<div class="pec-li-sub">${esc(sub)}</div>` : ''}
-                ${r.description ? `<div class="pec-li-sub">${esc(r.description)}</div>` : ''}</td>
+                ${r.description ? `<div class="pec-li-sub">${esc(r.description)}</div>` : ''}
+                <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><button class="pec-btn sm ghost" data-co-edit="${esc(r.token)}">Edit</button><button class="pec-btn sm ghost" data-co-del="${esc(r.token)}">Delete</button><button class="pec-btn sm ghost" data-co-accept="${esc(r.token)}" title="Record that the customer approved this without signing the link">Mark accepted</button></div></td>
               <td class="pec-td-num pec-li-hide-sm">1.00</td>
               <td class="pec-td-num pec-li-hide-sm">${amt} / Ea</td>
               <td class="pec-td-num pec-li-hide-sm">${amt}</td>
@@ -12012,6 +12263,18 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
       + `<div class="pec-li-sub" style="text-align:right;font-weight:700;margin-top:6px">Change orders total: ${invUSD(coTotal)}</div>`);
   }
   const rowByToken = Object.fromEntries(rows.map(r => [String(r.token), r]));
+  el.querySelectorAll('[data-co-edit]').forEach(b => b.addEventListener('click', () => {
+    const r = rowByToken[b.dataset.coEdit]; if (!r) return;
+    openChangeOrderEditModal(r, { jobId, onSaved: onChanged });
+  }));
+  el.querySelectorAll('[data-co-del]').forEach(b => b.addEventListener('click', () => {
+    const r = rowByToken[b.dataset.coDel]; if (!r) return;
+    deletePendingChangeOrder(r, jobId, onChanged);
+  }));
+  el.querySelectorAll('[data-co-accept]').forEach(b => b.addEventListener('click', () => {
+    const r = rowByToken[b.dataset.coAccept]; if (!r) return;
+    markCoAcceptedManually(r, jobId, onChanged);
+  }));
   el.querySelectorAll('[data-co-view]').forEach(b => b.addEventListener('click', () => window.open('/co/' + b.dataset.coView, '_blank')));
   el.querySelectorAll('[data-co-copy]').forEach(b => b.addEventListener('click', () => {
     navigator.clipboard.writeText(`${location.origin}/co/${b.dataset.coCopy}`).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy link'; }, 1500); });

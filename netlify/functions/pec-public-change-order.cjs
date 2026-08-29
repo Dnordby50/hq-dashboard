@@ -199,7 +199,7 @@ ${signed ? '' : `<script>
     btn.disabled = true; btn.textContent = 'Signing\\u2026';
     fetch('/api/co/sign', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: ${JSON.stringify(String(co.token))}, name: name, signature: canvas.toDataURL('image/png') })
+      body: JSON.stringify({ token: ${JSON.stringify(String(co.token))}, name: name, signature: canvas.toDataURL('image/png'), amount: ${JSON.stringify(Number(co.amount) || 0)} })
     }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
         if (!res.ok) throw new Error((res.j && res.j.error) || 'Could not record the signature.');
@@ -234,10 +234,19 @@ exports.handler = async (event) => {
     }
     if (signature.length > MAX_SIG_BYTES) return json(400, { ok: false, error: 'Signature image too large' });
     try {
-      const rows = await sb('GET', `/pec_change_order_signatures?token=eq.${encodeURIComponent(token)}&select=id,status&limit=1`);
+      const rows = await sb('GET', `/pec_change_order_signatures?token=eq.${encodeURIComponent(token)}&select=id,status,amount&limit=1`);
       const co = Array.isArray(rows) && rows[0] ? rows[0] : null;
       if (!co) return json(404, { ok: false, error: 'Not found' });
       if (co.status === 'signed') return json(409, { ok: false, error: 'This change order is already signed.' });
+      // Stale-page guard (2026-08-28, pending COs became editable): the page
+      // embeds the amount it RENDERED; if staff edited the CO after this page
+      // loaded, the signature would record approval of a document the
+      // customer never saw. Amount mismatch = refresh and re-review. A
+      // missing field (old cached page) skips the check, backward compatible.
+      const seenAmount = Number(body.amount);
+      if (Number.isFinite(seenAmount) && Math.abs(seenAmount - Number(co.amount || 0)) > 0.005) {
+        return json(409, { ok: false, error: 'This change order was updated after this page was opened. Please refresh the page to review the current version, then sign.' });
+      }
       const ip = (event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim() || null;
       const ua = String(event.headers['user-agent'] || '').slice(0, 300) || null;
       await sb('PATCH', `/pec_change_order_signatures?id=eq.${encodeURIComponent(co.id)}&status=eq.pending`, {

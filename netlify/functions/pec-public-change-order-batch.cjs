@@ -250,7 +250,7 @@ ${(signed || !hasPending) ? '' : `<script>
     btn.disabled = true; btn.textContent = 'Signing\\u2026';
     fetch('/api/co/batch/sign', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: ${JSON.stringify(String(batch.token))}, name: name, signature: canvas.toDataURL('image/png') })
+      body: JSON.stringify({ token: ${JSON.stringify(String(batch.token))}, name: name, signature: canvas.toDataURL('image/png'), total: ${JSON.stringify(Number(total) || 0)} })
     }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
         if (!res.ok) throw new Error((res.j && res.j.error) || 'Could not record the signature.');
@@ -295,9 +295,19 @@ exports.handler = async (event) => {
       if (batch.status === 'signed') return json(409, { ok: false, error: 'These change orders are already signed.' });
 
       // The covered set: the job's currently-pending COs, captured now.
-      const pending = await sb('GET', `/pec_change_order_signatures?job_id=eq.${encodeURIComponent(batch.job_id)}&status=eq.pending&select=id&order=created_at.asc`);
+      const pending = await sb('GET', `/pec_change_order_signatures?job_id=eq.${encodeURIComponent(batch.job_id)}&status=eq.pending&select=id,amount&order=created_at.asc`);
       const ids = (Array.isArray(pending) ? pending : []).map(r => r.id);
       if (!ids.length) return json(409, { ok: false, error: 'Nothing is awaiting approval on this link anymore.' });
+      // Stale-page guard (2026-08-28, pending COs became editable): the page
+      // embeds the grand total it RENDERED; if the pending set or any amount
+      // changed since (a CO edited, added, deleted, or signed singly), the
+      // recomputed total differs and the customer must re-review. A missing
+      // field (old cached page) skips the check, backward compatible.
+      const seenTotal = Number(body.total);
+      const liveTotal = (Array.isArray(pending) ? pending : []).reduce((s, r) => s + Number(r.amount || 0), 0);
+      if (Number.isFinite(seenTotal) && Math.abs(seenTotal - liveTotal) > 0.005) {
+        return json(409, { ok: false, error: 'These change orders were updated after this page was opened. Please refresh the page to review the current versions, then sign.' });
+      }
 
       const ip = (event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim() || null;
       const ua = String(event.headers['user-agent'] || '').slice(0, 300) || null;
