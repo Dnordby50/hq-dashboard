@@ -1,5 +1,58 @@
 [
   {
+    "id": "co-edit-before-signed",
+    "date": "2026-08-28",
+    "title": "Edit, delete, or manually accept a change order before it is signed.",
+    "summary": "A pending change order now has Edit, Delete, and Mark accepted buttons on its box. Edit changes the title, description, square footage, or amount, and the invoice total follows automatically; the customer's approval link stays the same and shows the updated version. Delete removes it and takes it off the invoice. Mark accepted records a verbal ok (by phone or in person) so the change order counts as approved without a signature. Signed change orders stay locked. If you edit while the customer has the old page open, their signature is refused with a message to refresh, so nobody ever signs a version they did not see.",
+    "howto": [
+      "Open the invoice or job page and find the change order box.",
+      "Use Edit or Delete on any change order still pending; the invoice updates with it.",
+      "If the customer approved it over the phone, click Mark accepted and note who said yes and how."
+    ]
+  },
+  {
+    "id": "payment-request-tracking",
+    "date": "2026-08-28",
+    "title": "Track payment requests from the Invoicing tab.",
+    "summary": "The Invoicing tab has a new Payment requested section listing every job with money asked for but not yet paid: the amount, when it was requested (red after a week), how many line items are done, and the balance. In-progress jobs with a request out show a blue Requested chip, and the header shows how much is requested beyond what counts in AR. The completed-work strip on an invoice now also shows an open request instead of letting you create the same one twice.",
+    "howto": [
+      "Open the Invoicing tab; the Payment requested section sits above In progress whenever a request is out.",
+      "Red dates mean the request has waited more than a week; use View Invoice to chase it.",
+      "On the invoice itself, the completed-work strip shows Requested with a View request button while a request is out."
+    ]
+  },
+  {
+    "id": "pay-right-after-signing",
+    "date": "2026-08-28",
+    "title": "Customers land on the pay page right after signing.",
+    "summary": "When a customer signs an estimate, they now go straight to their invoice page with the deposit front and center, instead of staying on the estimate where the pay buttons were easy to miss. Anyone returning to a signed estimate later also sees a Pay your deposit button right next to the signature.",
+    "howto": [
+      "Nothing to set up: signing an estimate now ends on the pay page.",
+      "If a customer reopens their signed estimate, the pay button is next to their signature."
+    ]
+  },
+  {
+    "id": "legacy-touchup",
+    "date": "2026-08-28",
+    "title": "Log a touch-up for a job that predates TopCoat.",
+    "summary": "The New touch-up window can now add a touch-up without linking it to an original job, for work done before TopCoat existed. Click the escape link under the job search, type the customer's name and address, and it lands in the Touch-ups list like any other.",
+    "howto": [
+      "On the Job Schedule, click + Touch-up.",
+      "Click 'Job predates TopCoat? Add without linking' under the search box.",
+      "Enter the customer name (address optional) and save; schedule it from the Touch-ups list when ready."
+    ]
+  },
+  {
+    "id": "flake-in-quick-look",
+    "date": "2026-08-28",
+    "title": "Flake color shows in the job schedule popup.",
+    "summary": "Clicking a job on the Job Schedule now shows its flake color in the first popup, pulled from the job's area picks, so the crew-facing glance answers the most-asked question without opening the job.",
+    "howto": [
+      "Click any job bar or pending card on the Job Schedule.",
+      "The Flake row lists the picked blend when the job's areas carry one."
+    ]
+  },
+  {
     "id": "portion-complete",
     "date": "2026-08-27",
     "title": "Mark part of a job complete.",
