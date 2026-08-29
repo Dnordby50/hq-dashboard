@@ -10,7 +10,7 @@
 const {
   resolveCurrentAsk, computeInstallmentCharge, computeInstallmentAmount,
   installmentVoidReason, prepareDepositInstallment, runInstallmentTriggers,
-  settleInstallments,
+  settleInstallments, outstandingRequested,
 } = require('../netlify/functions/_pec-installments.cjs');
 const { makeDb, makeChecker } = require('./_drip-test-kit.cjs');
 
@@ -489,6 +489,49 @@ function stubProviders(log = { sms: [], email: [], enrolls: [] }) {
     ok(charge && charge.amount === 400, 'request: pending ACH nets against the requested ask');
     const noCharge = computeInstallmentCharge({ job: j, installments: rows, payments: [pay(8000)], pendingSum: 999.9 });
     ok(noCharge === null, 'request: an ask fully covered by pending ACH is not chargeable');
+  }
+
+  console.log('outstandingRequested: uncovered manual requests, from the resolved schedule');
+  {
+    // A queued unpaid request counts in full.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [inst({ seq: 1, computed_amount: 2000, trigger_kind: 'manual', status: 'queued' })];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [] });
+    ok(outstandingRequested(ask.schedule) === 2000, 'outstanding: a queued unpaid request counts in full');
+  }
+  {
+    // A sent, partially covered request counts only its remainder.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [inst({ seq: 1, computed_amount: 3000, trigger_kind: 'manual', status: 'sent' })];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [pay(1000)] });
+    ok(outstandingRequested(ask.schedule) === 2000, 'outstanding: a partially covered request counts its remainder');
+  }
+  {
+    // A money-settled request contributes nothing.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [inst({ seq: 1, computed_amount: 2000, trigger_kind: 'manual', status: 'sent' })];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [pay(2000)] });
+    ok(outstandingRequested(ask.schedule) === 0, 'outstanding: a settled request contributes nothing');
+  }
+  {
+    // Non-manual rows are never counted, whatever their status: the strip is
+    // netting REQUESTS, not the whole schedule.
+    const j = job({ status: 'in_progress', price: 10000 });
+    const rows = [
+      inst({ seq: 1, computed_amount: 2500, trigger_kind: 'on_start', status: 'sent' }),
+      inst({ seq: 2, computed_amount: 1500, trigger_kind: 'manual', status: 'queued' }),
+    ];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [] });
+    ok(outstandingRequested(ask.schedule) === 1500, 'outstanding: milestone rows are excluded, manual rows count');
+  }
+  {
+    // Planned (never pushed) manual rows do not count; neither does an
+    // empty or missing schedule.
+    const j = job({ status: 'signed', price: 10000 });
+    const rows = [inst({ seq: 1, computed_amount: 2000, trigger_kind: 'manual', status: 'planned' })];
+    const ask = resolveCurrentAsk({ job: j, installments: rows, payments: [] });
+    ok(outstandingRequested(ask.schedule) === 0, 'outstanding: a planned manual row was never asked, so it is 0');
+    ok(outstandingRequested([]) === 0 && outstandingRequested(null) === 0, 'outstanding: empty or missing schedule is 0');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

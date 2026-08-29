@@ -10724,6 +10724,43 @@ async function renderInvoicing() {
   const closed = rows.filter(r => r.balance <= EPS && r.last_payment_date && invDaysBetween(r.last_payment_date, today) <= 60)
     .sort((a, b) => (b.last_payment_date || '').localeCompare(a.last_payment_date || ''));
 
+  // Outstanding payment requests (2026-08-28, Dylan: "track those payments
+  // down as the work gets done"): ONE batched pec_invoice_installments read
+  // over the open-balance rows (the Last-invoiced / ACH pattern, never
+  // per-row). queued/sent manual rows approximate "asked for and not yet
+  // covered": settleInstallments stamps covered rows 'paid' once payments
+  // land, so this list self-heals, and the invoice detail holds exact money
+  // truth. Missing table or errored read degrades to no section; the page
+  // never breaks.
+  const reqByJob = {};
+  {
+    const reqJobIds = rows.filter(r => r.balance > EPS).map(r => r.id);
+    if (reqJobIds.length) {
+      try {
+        const rres = await withFreshSession(() => supabase
+          .from('pec_invoice_installments')
+          .select('job_id,label,computed_amount,status,queued_at,sent_at')
+          .eq('trigger_kind', 'manual')
+          .in('status', ['queued', 'sent'])
+          .in('job_id', reqJobIds), { label: 'renderInvoicing:requests' });
+        for (const i of (rres.error ? [] : rres.data || [])) {
+          const a = (reqByJob[i.job_id] ||= { total: 0, count: 0, label: null, oldest: null });
+          a.total = invRound2(a.total + invNum(i.computed_amount));
+          a.count++;
+          const at = i.sent_at || i.queued_at || null;
+          if (at && (!a.oldest || at < a.oldest)) { a.oldest = at; a.label = i.label || a.label; }
+          if (!a.label) a.label = i.label || null;
+        }
+      } catch (e) { console.warn('[pec] payment request lookup skipped:', e); }
+    }
+  }
+  const requested = rows.filter(r => reqByJob[r.id] && r.balance > EPS)
+    .sort((a, b) => String(reqByJob[a.id].oldest || '').localeCompare(String(reqByJob[b.id].oldest || '')));
+  const requestedTotal = requested.reduce((s, r) => s + reqByJob[r.id].total, 0);
+  // Only requests on NOT-yet-completed jobs are money the AR headline cannot
+  // see (a completed job's whole balance already counts in AR).
+  const requestedNotAr = requested.filter(r => r.status !== 'completed').reduce((s, r) => s + reqByJob[r.id].total, 0);
+
   const completedOwed = completed.reduce((s, r) => s + r.balance, 0);
   const depositOwed = r => pecDepositOwed(r.deposit_amount, r.price);
   const pendingDeposits = signedNoDep.reduce((s, r) => s + depositOwed(r), 0);
@@ -10878,9 +10915,37 @@ async function renderInvoicing() {
     <td style="white-space:nowrap"><button class="pec-btn sm primary" data-dep="${r.id}">Mark Deposit Paid</button> ${viewBtn(r)}</td></tr>`).join('')
     || '<tr class="nohover"><td colspan="8" class="pec-empty">No pending deposits.</td></tr>';
 
+  // Blue "Requested $X" chip (the ACH chip pattern): an in-progress job with
+  // a payment request out is visibly being collected on, right in its bucket.
+  const reqChip = r => reqByJob[r.id]
+    ? `<div style="margin-top:3px"><span class="pec-badge" style="--pec-badge-bg:#2563eb" title="A payment request is out for this job. Details in the Payment requested section.">Requested ${invUSD(reqByJob[r.id].total)}</span></div>` : '';
+  const reqProgress = r => {
+    const its = Array.isArray(r.line_items) ? r.line_items : [];
+    const done = its.filter(it => it && it.completed).length;
+    return its.length ? `${done} of ${its.length} line${its.length === 1 ? '' : 's'} done` : '—';
+  };
+  const reqWhen = r => {
+    const at = reqByJob[r.id].oldest;
+    if (!at) return '—';
+    const day = String(at).slice(0, 10);
+    const d = invParse(day);
+    if (!d) return '—';
+    const days = invDaysSince(day);
+    const label = `${MON[d.getUTCMonth()]} ${d.getUTCDate()} (${days === 0 ? 'today' : days + 'd ago'})`;
+    return days >= 7 ? `<span style="color:var(--rd-danger,#ef4444);font-weight:600" title="Requested over a week ago and still unpaid">${esc(label)}</span>` : esc(label);
+  };
+  const requestedRows = requested.map(r => { const a = reqByJob[r.id]; return `<tr class="nohover">
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
+    <td><strong>${invUSD(a.total)}</strong><div class="pec-ar-sub">${esc(a.label || 'Payment request')}${a.count > 1 ? ' +' + (a.count - 1) + ' more' : ''}</div></td>
+    <td>${reqWhen(r)}</td>
+    <td>${reqProgress(r)}</td>
+    <td>${invUSD(r.balance)}</td>
+    <td>${esc(r.salesperson || '—')}</td>
+    <td style="white-space:nowrap">${viewBtn(r)}</td></tr>`; }).join('');
+
   const activeRows = active.map(r => `<tr class="nohover">
     <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
-    <td>${invUSD(r.price)}</td><td>${invUSD(r.paid_to_date)}</td>
+    <td>${invUSD(r.price)}</td><td>${invUSD(r.paid_to_date)}${reqChip(r)}</td>
     <td>${r.install_date ? invFmtDate(r.install_date) : '—'}</td>
     <td>${esc(r.salesperson || '—')}</td><td><span class="pec-badge ${esc(r.status)}">${esc(String(r.status).replace('_', ' '))}</span></td>
     <td style="white-space:nowrap"><button class="pec-btn sm" data-complete="${r.id}">Mark Complete</button> ${payBtn(r)} ${viewBtn(r)}</td></tr>`).join('')
@@ -10898,6 +10963,7 @@ async function renderInvoicing() {
       <div>
         <div class="pec-ar-headline">Total AR: ${invUSD(totalAR)}</div>
         <div class="pec-ar-sub">${arJobs} job${arJobs === 1 ? '' : 's'} due now · completed unpaid + deposits owed (Prescott Epoxy)</div>
+        ${requestedNotAr > EPS ? `<div class="pec-ar-sub">${invUSD(requestedNotAr)} more requested on jobs still in progress, not counted in AR</div>` : ''}
       </div>
       <button class="pec-btn" id="pecArRefresh">Refresh</button>
     </div>
@@ -10929,6 +10995,13 @@ async function renderInvoicing() {
         <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Deposit owed</th><th>Age</th><th>Salesperson</th><th>Signed</th><th></th></tr></thead>
         <tbody>${signedRows}</tbody></table></div>
     </details>
+
+    ${requested.length ? `<details class="pec-card pec-ar-sec" open>
+      <summary>Payment requested, awaiting payment <span class="pec-ar-meta">${requested.length} job${requested.length === 1 ? '' : 's'} · ${invUSD(requestedTotal)} requested</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Requested</th><th>Requested when</th><th>Progress</th><th>Balance</th><th>Salesperson</th><th></th></tr></thead>
+        <tbody>${requestedRows}</tbody></table></div>
+    </details>` : ''}
 
     <details class="pec-card pec-ar-sec">
       <summary>In progress (deposit paid — not yet AR) <span class="pec-ar-meta">${active.length} job${active.length === 1 ? '' : 's'} · ${invUSD(activeBalance)} not due until complete</span></summary>
@@ -12089,6 +12162,17 @@ function pecInstallmentAsk(job, installments, payments) {
   if (amount <= PEC_INST_EPS) return { mode: 'paid', amount: 0, installment: inst, schedule, totals };
   return { mode: 'installment', amount, label: inst.label || (inst.is_deposit ? 'Deposit' : 'Installment'), installment: inst, schedule, totals };
 }
+// Client mirror of outstandingRequested in _pec-installments.cjs (keep in
+// lockstep): dollars asked via manual payment requests that money has not yet
+// covered. Feeds the completed-work strip (a second Request click must not
+// stack a duplicate) and the Invoicing tab's Payment requested section.
+// Tolerates both schedule shapes: the client ask nests the raw row as s.inst,
+// the server flattens trigger_kind/status onto the schedule row.
+function pecOutstandingRequested(schedule) {
+  return invRound2((schedule || [])
+    .filter(s => { const i = (s && s.inst) || s || {}; return i.trigger_kind === 'manual' && !s.settled && (i.status === 'queued' || i.status === 'sent'); })
+    .reduce((sum, s) => sum + Math.max(0, invRound2((Number(s.amount) || 0) - (Number(s.applied) || 0))), 0));
+}
 function pecInstStatusChip(s) {
   const map = {
     planned: ['var(--muted)', 'Planned'],
@@ -12843,10 +12927,19 @@ async function renderJobInvoice(jobId) {
   const doneCount = items.filter(it => it.completed).length;
   const allDone = items.length > 0 && doneCount === items.length;
   const doneUnbilled = invRound2(Math.max(0, Math.min(doneValue - invNum(row.paid_to_date), invNum(row.balance_remaining))));
+  // Net what has already been ASKED for: a second Request click used to
+  // prefill the same amount again and stack a duplicate queued installment.
+  const outstandingReq = ask ? pecOutstandingRequested(ask.schedule) : 0;
+  const doneUnrequested = invRound2(Math.max(0, doneUnbilled - outstandingReq));
+  const portionAction = doneUnrequested >= 0.5
+    ? `<button class="pec-btn sm" id="pecPortionRequest" title="Opens Request payment prefilled with the completed value not yet requested or covered by payments">Request payment for completed work</button>`
+    : (outstandingReq >= 0.5
+      ? `<span style="display:inline-flex;align-items:center;gap:8px"><span class="pec-ar-sub">Requested ${invUSD(outstandingReq)}, awaiting payment.</span><button class="pec-btn ghost sm" id="pecPortionViewReq" title="Opens the payment schedule where the request, its sent stamp, and Cancel live">View request</button></span>`
+      : '<span class="pec-ar-sub">Payments already cover the completed value.</span>');
   const portionStrip = (!jobDone && doneCount && !allDone) ? `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #16a34a;border-radius:8px">
       <span style="font-size:.82rem">Work completed so far: <strong>${invUSD(doneValue)}</strong> of ${invUSD(invNum(row.price))} (${doneCount} of ${items.length} line${items.length === 1 ? '' : 's'})</span>
-      ${doneUnbilled >= 0.5 ? `<button class="pec-btn sm" id="pecPortionRequest" title="Opens Request payment prefilled with the completed value not yet covered by payments">Request payment for completed work</button>` : '<span class="pec-ar-sub">Payments already cover the completed value.</span>'}
+      ${portionAction}
     </div>` : '';
   const allDoneStrip = (!jobDone && allDone) ? `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #16a34a;border-radius:8px">
@@ -13134,9 +13227,13 @@ async function renderJobInvoice(jobId) {
   const portionReqB = $('pecPortionRequest');
   if (portionReqB) portionReqB.addEventListener('click', () => openRequestPaymentModal(row, installments, payments, {
     onDone: () => renderInvoicing(),
-    suggestAmount: doneUnbilled,
+    // Prefill nets the amount ALREADY requested (queued/sent manual rows), so
+    // a second click cannot stack a duplicate ask for the same work.
+    suggestAmount: doneUnrequested,
     suggestLabel: 'Completed work',
   }));
+  const portionViewReqB = $('pecPortionViewReq');
+  if (portionViewReqB) portionViewReqB.addEventListener('click', () => setInvTab('settings'));
   const portionCompleteB = $('pecPortionComplete');
   if (portionCompleteB) portionCompleteB.addEventListener('click', () => markJobComplete(row));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));

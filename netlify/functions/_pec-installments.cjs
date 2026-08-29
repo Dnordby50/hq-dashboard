@@ -172,6 +172,19 @@ function resolveCurrentAsk({ job, installments, payments, today }) {
   };
 }
 
+// Dollars asked for via MANUAL payment requests that money has not yet
+// covered: queued/sent manual rows in a resolved ask's schedule, unsettled,
+// each contributing its uncovered remainder. Feeds the completed-work strip's
+// "Requested, awaiting payment" state (so a second click cannot stack a
+// duplicate request) and the Invoicing tab's Payment requested section.
+// index.html carries a client mirror (pecOutstandingRequested); THIS file is
+// the fixture-tested authority -- keep the two in lockstep.
+function outstandingRequested(schedule) {
+  return round2((schedule || [])
+    .filter(s => s && s.trigger_kind === 'manual' && !s.settled && (s.status === 'queued' || s.status === 'sent'))
+    .reduce((sum, s) => sum + Math.max(0, round2((Number(s.amount) || 0) - (Number(s.applied) || 0))), 0));
+}
+
 // Stripe amount (locked decision 9): computed here, server-side, from the
 // token-resolved rows -- never from anything the client sent. Returns null
 // when there is nothing chargeable (checkout redirects back to the invoice).
@@ -511,7 +524,7 @@ module.exports = {
   EPS, round2, usd, phoenixTodayIso,
   computeInstallmentAmount, orderInstallments, allocatePayments,
   askTriggerFired, queueTriggerFired,
-  resolveCurrentAsk, computeInstallmentCharge, installmentVoidReason,
+  resolveCurrentAsk, computeInstallmentCharge, installmentVoidReason, outstandingRequested,
   prepareDepositInstallment, runInstallmentTriggers, autoSendInstallment,
   settleInstallments,
 };
