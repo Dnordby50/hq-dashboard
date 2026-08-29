@@ -587,12 +587,24 @@ function estimatePage(est, brand, opts) {
       <div id="actionErr" style="margin-top:12px;font-size:13.5px;font-weight:600;color:#dc2626"></div>
     </div>`;
 
+  // Pay CTA next to the signature (Kyle Kirby fix): a returning signer lands
+  // near where they signed, which used to be a dead end while the full pay
+  // chooser sat in the top banner. A plain link-button, NOT a second copy of
+  // acceptedPayChooserHtml (its inline script element ids are not unique, so
+  // it must render exactly once per page). Gated on the same loadAcceptedPay
+  // result as the banner, so it only shows when something is actually due.
+  const signedPay = (opts && opts.acceptedPay) || null;
+  const signedPayHtml = !signedPay ? '' : `
+      <div class="noprint" style="margin-top:16px;padding-top:14px;border-top:1px solid #e5e7eb">
+        <a href="${esc(signedPay.url)}" style="display:inline-block;background:${primary};color:#fff;font-weight:700;font-size:15px;padding:12px 22px;border-radius:10px;text-decoration:none">${signedPay.isDeposit ? 'Pay your ' + usd(signedPay.amount) + ' deposit' : 'Pay ' + usd(signedPay.amount) + ' now'}</a>
+        <div style="margin-top:8px;font-size:13px;color:#6b7280">Card or bank transfer (ACH), secured by Stripe. Your full invoice is there too.</div>
+      </div>`;
   const signedBlock = est.status !== 'accepted' ? '' : `
     <div class="card pad" style="margin-top:18px">
       <div class="eyebrow">Signature</div>
       <h3 class="sec">Signed</h3>
       <div style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:28px;border-bottom:1.5px solid #94a3b8;max-width:360px;padding:2px 6px">${esc(est.signed_name || '')}</div>
-      <div style="color:#6b7280;font-size:13px;margin-top:8px">${esc(est.signed_name || '')}${est.signed_at ? ' &middot; ' + esc(fmtStamp(est.signed_at)) : ''}</div>
+      <div style="color:#6b7280;font-size:13px;margin-top:8px">${esc(est.signed_name || '')}${est.signed_at ? ' &middot; ' + esc(fmtStamp(est.signed_at)) : ''}</div>${signedPayHtml}
     </div>`;
 
   // Financing (prompt 58 Part F): between the total and the accept panel,
@@ -915,7 +927,8 @@ ${interactive ? `
       .then(function(r){return r.json().then(function(j){return {ok:r.ok, j:j};});})
       .then(function(res){
         if(!res.ok) throw new Error((res.j && res.j.error)||'Something went wrong. Please try again.');
-        location.reload();
+        if(res.j && res.j.pay_url){ location.href = res.j.pay_url; }
+        else { location.reload(); }
       })
       .catch(function(e){
         err.textContent=e.message;
@@ -1940,13 +1953,23 @@ async function ensureJobCreated(est) {
 // Actions
 // ---------------------------------------------------------------------------
 
+// Where the signer should land next: the /pay page URL when there is
+// something to pay, else null (client falls back to a reload). Best-effort:
+// a failed lookup must never fail the accept it rides on.
+async function acceptPayUrl(est, jobId) {
+  try {
+    const pay = await loadAcceptedPay({ ...est, status: 'accepted', job_id: jobId || est.job_id });
+    return pay ? pay.url : null;
+  } catch (_) { return null; }
+}
+
 async function handleAccept(est, body, event) {
   // Already accepted: heal any half-finished job creation, then confirm. This
   // is the double-click / refresh / retry path; it must not 409, and thanks to
   // deterministic ids + existence checks it cannot double-create anything.
   if (est.status === 'accepted') {
-    await ensureJobCreated(est);
-    return json(200, { ok: true, already: true });
+    const healed = await ensureJobCreated(est);
+    return json(200, { ok: true, already: true, pay_url: await acceptPayUrl(est, healed && healed.jobId) });
   }
   if (est.status === 'rejected' || est.status === 'lost') {
     return json(409, { ok: false, error: 'This estimate is no longer open. Please contact us at (928) 800-8154.' });
@@ -2039,8 +2062,8 @@ async function handleAccept(est, body, event) {
     const rows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(est.id)}&select=*&limit=1`);
     const now = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (now && now.status === 'accepted') {
-      await ensureJobCreated(now);
-      return json(200, { ok: true, already: true });
+      const healed = await ensureJobCreated(now);
+      return json(200, { ok: true, already: true, pay_url: await acceptPayUrl(now, healed && healed.jobId) });
     }
     return json(409, { ok: false, error: 'This estimate is no longer open. Please contact us at (928) 800-8154.' });
   }
@@ -2054,7 +2077,10 @@ async function handleAccept(est, body, event) {
   // Notify only from the request that won the CAS, so a retry storm sends one
   // notification, not five. Best-effort by construction.
   await notifyOffice(fresh, 'accepted', `Signed by ${name}. Total: ${usd(total)}.`);
-  return json(200, { ok: true, job_id: result.jobId });
+  // pay_url sends the signer straight to the deposit ask on the /pay page
+  // (Kyle Kirby fix: a reload used to strand them at the bottom of the
+  // estimate with the pay chooser out of sight at the top).
+  return json(200, { ok: true, job_id: result.jobId, pay_url: await acceptPayUrl(fresh, result.jobId) });
 }
 
 async function handleChange(est, body) {
