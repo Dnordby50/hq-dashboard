@@ -1,3 +1,25 @@
+## [2026-09-02 MST] Cowork: agency guide for Meta Lead Ads -> Zapier -> pec-lead-intake (Google Doc, no code)
+
+By: Cowork
+
+Changed: No repo code. Wrote a Google Doc "Meta Lead Ads into TopCoat through Zapier (Agency Guide)" (Drive id 12LduHnt8DMVdjNp8kcDn25bjkajAMrAPMCFInhGDnmY) for Dylan and the marketing agency. Scope per Dylan: Meta only, built in Dylan's Zapier account, agency builds and tests, Dylan holds the secret and publishes.
+
+Grounded in code, not memory: pec-lead-intake.cjs header contract (x-webhook-secret, required name + phone-or-email, accepted fields incl. ad_meta keys adset/ad_name/form_name/form_id/ad_id/utm_*), the two dedupe rules (source+source_ref, same-human 90 days), the 2026-08-21 implied-consent policy (the Zap's hardcoded sms_consent=true is now redundant), and the 2026-07-20 entry for the live Zap (id 373273604, Page Prescott Epoxy Company, Form = Any Form).
+
+KEY POINT the guide is built around: because the trigger is Any Form, new forms flow automatically; the agency does NOT build a Zap per form. The recurring failure mode is label-matched custom questions: only "Which Service Are You Interested In" is mapped to notes, so a renamed question silently drops the answer, and a form using custom questions for name/phone instead of Meta's standard fields gets a 400. The guide's per-form checklist guards both and ends with a Lead Ads Testing Tool submission that Dylan verifies in Slack / Leads board / Sync Health / Zap History.
+
+Gaps restated for the agency: brand hardcoded PEC (FTP lead ads need a code change), Facebook connection expiry in Zapier, SMS-consent posture.
+
+Files touched: PROJECT-LOG.md (this entry). External: the Google Doc above.
+
+Next steps: Dylan shares the Doc with the agency. If the agency needs a differently labeled project question, that is a Zap edit (second notes mapping), not a code change.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: Share the Google Doc with the agency. Optional: decide whether to remove the redundant sms_consent literal from the Zap (harmless either way).
+
+---
+
 ## [2026-09-02 MST] Dylan's three: mobile popup cutoff fixed, Flake row pinned into the quick look, and the change-order ask confirmed already live
 
 By: Claude Code
