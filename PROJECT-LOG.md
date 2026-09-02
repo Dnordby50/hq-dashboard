@@ -10,7 +10,9 @@ KEY POINT the guide is built around: because the trigger is Any Form, new forms 
 
 Gaps restated for the agency: brand hardcoded PEC (FTP lead ads need a code change), Facebook connection expiry in Zapier, SMS-consent posture.
 
-Files touched: PROJECT-LOG.md (this entry). External: the Google Doc above.
+UPDATE (same session): Dylan asked for the agency-facing version to be stripped to what the agency needs. Replaced by a second Google Doc "PEC Meta Lead Forms: Agency Guide" (Drive id 1BHM7P6NdzBdPMoGDvA57swsT0CjYL6xVPN19s_wcjOA): form rules, the testing-tool procedure, when to tell Dylan, plus a short internal section. Dylan's question "full name or first/last?" answered from code: the endpoint resolves full_name, then name, then first_name+last_name, then business_name; the live Zap sends full_name only. Recommendation recorded in the doc's internal section: add first_name/last_name rows to the Zap so split-name forms are not rejected (Zap edit, no code). The first, longer doc is kept in Drive until Dylan says to trash it.
+
+Files touched: PROJECT-LOG.md (this entry). External: the two Google Docs above.
 
 Next steps: Dylan shares the Doc with the agency. If the agency needs a differently labeled project question, that is a Zap edit (second notes mapping), not a code change.
 
