@@ -613,7 +613,12 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-row-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .pec-row-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 @media (max-width:720px){.pec-row-2,.pec-row-3{grid-template-columns:1fr}}
-.pec-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px}
+/* overflow-y:auto + the modal's margin:auto (below) are the mobile-cutoff fix:
+   a flex-CENTERED child taller than the viewport clips at the TOP with no way
+   to scroll to it (title + ✕ unreachable on phones). Auto margins absorb the
+   free space first, so centering is pixel-identical when the modal fits; when
+   it does not, the margins collapse to 0 and the backdrop scrolls from the top. */
+.pec-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto}
 /* Present mode (prompt 64): full-screen, rep-facing, iPad-first. Sits below
    the modal layer (10000) so nothing here can trap a modal underneath it. */
 .pec-present{position:fixed;inset:0;z-index:9995;background:#14181C;color:#fff;display:flex;flex-direction:column}
@@ -642,7 +647,12 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-present-dot{width:11px;height:11px;border-radius:50%;background:rgba(255,255,255,.25);border:0;padding:0;cursor:pointer}
 .pec-present-dot.on{background:#D8531C}
 .pec-present-jump{background:#22262b;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:9px 10px;font-family:inherit;font-size:.86rem;max-width:220px}
-.pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:92vh;overflow-y:auto}
+/* max-height twice on purpose: mobile Safari's 100vh is the LARGE viewport
+   (URL bar hidden), so 92vh can exceed what is actually visible and the modal
+   bottom (Got it / Save buttons) sat below the browser chrome. 100dvh tracks
+   the visible viewport; browsers without dvh ignore the min() line and keep
+   the 92vh fallback (the scrollable backdrop above still makes it reachable). */
+.pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:92vh;max-height:min(92vh,calc(100dvh - 24px));overflow-y:auto;margin:auto}
 .pec-modal-wide{max-width:760px}
 /* Compose-style modals: the action row rides the bottom of the scrollport so
    Send is reachable without scrolling past the editor. */
@@ -1460,7 +1470,7 @@ body.pec-portal-mode #pecHelp { display: none !important; }
    markup, so the phone media query below can reshape it. Width and height are
    viewport-clamped at EVERY size, so the panel can never run off-screen and a
    long notification list scrolls inside it. */
-#pecBellPanel { position: absolute; top: calc(100% + 8px); right: 0; width: min(340px, calc(100vw - 24px)); max-height: min(440px, calc(100vh - 120px)); overflow-y: auto; background: var(--rd-card, #fff); color: var(--rd-ink, #0f1420); border: 1px solid var(--rd-line, var(--border)); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,.2); z-index: 10001; text-align: left; }
+#pecBellPanel { position: absolute; top: calc(100% + 8px); right: 0; width: min(340px, calc(100vw - 24px)); max-height: min(440px, calc(100vh - 120px)); max-height: min(440px, calc(100dvh - 120px)); overflow-y: auto; background: var(--rd-card, #fff); color: var(--rd-ink, #0f1420); border: 1px solid var(--rd-line, var(--border)); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,.2); z-index: 10001; text-align: left; }
 @media (max-width: 720px) {
   body { padding: 10px; }
   #rdMain { padding: 16px; }
@@ -6634,9 +6644,19 @@ function wireBell() {
   const positionPanel = () => {
     if (window.matchMedia && window.matchMedia('(max-width:720px)').matches) {
       const r = btn.getBoundingClientRect();
-      panel.style.top = Math.max(12, Math.round(r.bottom + 8)) + 'px';
+      const top = Math.max(12, Math.round(r.bottom + 8));
+      panel.style.top = top + 'px';
+      // Cap the height to the VISIBLE viewport below the computed top.
+      // The CSS max-height uses 100vh/100dvh from the top of the screen, but
+      // on a wrapped phone topbar the panel starts lower than that budget
+      // assumes, and mobile Safari's 100vh ignores the URL bar entirely, so
+      // the panel bottom could sit under the browser chrome (Dylan's
+      // cut-off report, 2026-09-02). window.innerHeight is the real visible
+      // height at open time, chrome included.
+      panel.style.maxHeight = Math.max(160, window.innerHeight - top - 12) + 'px';
     } else {
       panel.style.top = '';
+      panel.style.maxHeight = '';
     }
   };
   btn.addEventListener('click', (e) => {
@@ -38590,12 +38610,17 @@ function openJobQuickLook(jobId) {
           : dash);
       })()}
       ${row('System', systemHtml)}
+      ${/* Flake sits right under System and ALWAYS renders (dash when no pick,
+          2026-09-02): hiding the empty row made "where's the flake color?"
+          indistinguishable from "this job has none picked yet". */''}
+      ${row('Flake', flakePicks.length
+        ? esc(flakePicks.join(', ')) + (flakeSizes.length ? ` <span style="color:var(--muted)">(${esc(flakeSizes.join(', '))})</span>` : '')
+        : dash)}
       ${crewNames.length ? row('Crew', esc(crewNames.join(', '))) : ''}
       ${datesHtml ? row('Scheduled', datesHtml) : ''}
       ${phone ? row('Phone', `<a href="tel:${esc(String(phone).replace(/[^\d+]/g, ''))}" style="color:var(--rd-accent,var(--accent))">${esc(phone)}</a>`) : ''}
       ${row('Total sqft', sqft ? sqft.toLocaleString() + ' sqft' : dash)}
       ${row('Est. hours', factsHrs ? esc(factsHrs) + ' hrs' : dash)}
-      ${flakePicks.length ? row('Flake', esc(flakePicks.join(', ')) + (flakeSizes.length ? ` <span style="color:var(--muted)">(${esc(flakeSizes.join(', '))})</span>` : '')) : ''}
       ${basecoatPicks.length ? row('Basecoat', esc(basecoatPicks.join(', '))) : ''}
       ${topcoatPicks.length ? row('Topcoat', esc(topcoatPicks.join(', '))) : ''}
       ${row('Sales team', job.sales_team ? esc(job.sales_team) : dash)}
