@@ -1,3 +1,32 @@
+## [2026-09-02 MST] Dylan's three: mobile popup cutoff fixed, Flake row pinned into the quick look, and the change-order ask confirmed already live
+
+By: Claude Code
+
+Changed: index.html, help/whats-new.json (2 entries), features.json. No migration, no settings.
+
+Dylan's list: (1) notification popup cut off on mobile, (2) flake color in the Job Schedule's first popup modal, (3) edit change orders after sent, before signed.
+
+**1. Mobile popup cutoff (commit 883990c).** Two mechanisms, both rooted in mobile Safari's 100vh being the LARGE viewport (URL bar hidden), so anything sized by vh can extend under the browser chrome:
+
+- The bell panel (#pecBellPanel) budgets its max-height as calc(100vh - 120px) from the top of the screen, but on a wrapped phone topbar the panel opens LOWER than that budget assumes, and the vh number overshoots the visible height anyway. wireBell's positionPanel now also caps maxHeight to window.innerHeight (the real visible height, chrome included) minus the computed top, cleared on desktop; the CSS gained a 100dvh fallback line.
+- Every .pec-modal (What's New at sign-in, quick look, all of them) was max-height:92vh inside a flex-CENTERED fixed backdrop. 92vh can exceed the visible viewport, and the nastier half: a flex-centered child taller than its container clips at the TOP with no way to scroll to it, so the title and the sticky X were unreachable while the bottom buttons sat under the browser bar. Fix: max-height:min(92vh, calc(100dvh - 24px)) with the plain 92vh kept as the no-dvh fallback, plus overflow-y:auto on .pec-modal-bg and margin:auto on .pec-modal. Auto margins absorb free space before flex alignment, so centering is pixel-identical when the modal fits; when it does not, margins collapse to 0 and the backdrop scrolls from the top. Applied once in CSS, which covers BOTH modal roots (#pecModalRoot and #prodModalRoot share .pec-modal-bg/.pec-modal), satisfying the two-root gotcha without a second edit.
+
+**2. Flake in the schedule's first popup.** The first popup IS the quick look (every calendar bar, day-list row, run-sheet card, and pending card routes to openJobQuickLook), and 8/28 already wired real flake data into it. The remaining gap was presentational: the Flake row hid itself when a job had no pick, which most jobs do not, so "the feature is missing" and "this job has no color picked" looked identical. The row now ALWAYS renders, moved up to sit directly under System (a dash when nothing is picked). Housekeeping note: this edit shipped inside commit 883990c alongside the modal fix (same file, staged together); the commit message only names the modal work.
+
+**3. Change orders editable after send, before signature: already shipped 2026-08-28** (commit 4523013, live on main). A change order is 'pending' from creation until signed, i.e. the whole sent-but-unsigned window, and pending COs carry Edit / Delete / Mark accepted buttons (index.html ~12141, ~12203) with customer-wins CAS guards. Nothing to build; Dylan's note likely predates that ship. What's New entry co-edit-before-signed describes it.
+
+Verified: script-block parse check on index.html shows the identical failure set as HEAD (the 3 known module/non-JS blocks, nothing new); both JSON files reload valid; whats-new diff is a clean 20-line prepend.
+
+Files touched: index.html, help/whats-new.json, features.json, PROJECT-LOG.md. Commits: 883990c (mobile popups + flake row), plus the docs commit carrying this entry.
+
+Next steps: none required. Worth knowing: .pec-help-panel still sizes with plain 100vh on phones (height: calc(100vh - 92px)); nobody has reported it cut off, but it has the same latent overshoot if that ever comes up.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: All three items are done or were already live. Popups on your phone now fit the visible screen (bell list, What's New, quick look, everything). The quick look's Flake row is always there now, right under System; a dash means no color picked yet. Change orders: the Edit / Delete / Mark accepted buttons you asked for have been on every pending (sent, unsigned) change order since 8/28; open any invoice's change order box to see them.
+
+---
+
 ## [2026-08-28 MST] Six fixes: post-sign pay redirect, legacy touch-ups, payment-request tracking, follow-up threshold, flake in the quick look, and editable change orders
 
 By: Claude Code

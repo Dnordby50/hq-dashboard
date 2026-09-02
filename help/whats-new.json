@@ -1,5 +1,25 @@
 [
   {
+    "id": "mobile-popups-fit-screen",
+    "date": "2026-09-02",
+    "title": "Popups fit the screen on phones.",
+    "summary": "On mobile browsers, tall popups (like the What's New window and the notification bell list) could run past the bottom of the screen or clip their title at the top, hiding buttons behind the browser bar. Every popup now sizes itself to the part of the screen you can actually see, and anything longer scrolls inside the popup.",
+    "howto": [
+      "Nothing to set up: open any popup on your phone and the whole thing, buttons included, stays on screen.",
+      "Long content scrolls inside the popup instead of pushing the buttons off the bottom."
+    ]
+  },
+  {
+    "id": "flake-always-in-quick-look",
+    "date": "2026-09-02",
+    "title": "Flake color always shows in the job quick look.",
+    "summary": "Tapping a job on the Job Schedule opens the quick look, and the Flake row now sits right under System on every job. Jobs without a flake pick show a dash instead of hiding the row, so you can tell at a glance that the color still needs to be chosen.",
+    "howto": [
+      "Tap any job bar on the Job Schedule (or a pending job card) to open the quick look.",
+      "The Flake row is right under System; a dash means no color has been picked yet."
+    ]
+  },
+  {
     "id": "co-edit-before-signed",
     "date": "2026-08-28",
     "title": "Edit, delete, or manually accept a change order before it is signed.",
