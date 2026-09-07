@@ -1,3 +1,29 @@
+## [2026-09-07 MST] Cowork: agent handover document for GPT Codex (CODEX-HANDOVER.md) plus AGENTS.md entry point
+
+By: Cowork
+
+Changed: Two new files at the repo root, no code, no schema, no settings. `CODEX-HANDOVER.md` (about 520 lines) is the complete operating picture for a second coding agent joining the repo alongside Claude Code: agent roster and lanes, repo anatomy with sizes and the never-read-wholesale rules, infrastructure (Netlify build, 14 scheduled functions, env var NAMES only, Supabase project, buckets, third-party services, the mcp.cjs connector), the startup procedure, all 14 standing rules transcribed from CLAUDE.md, the session loop end to end, the Cowork handoff format and /handoff skill checks, the bug diagnosis workflow, PROJECT-LOG conventions, Cowork's own project instructions, the Obsidian HQ vault layout and SOP Hub sync, the ops layer (Cowork VA, Coach, Radar, the Sheets registry and access rules, people), key resource IDs, a new multi-agent coordination contract (one agent per task, By: Codex, prompt numbering from HEAD, never push, lock-file cleanup, no edits to the shared contract files, tool-parity rule for migrations), the scar-tissue list compiled from Cowork project memory and CLAUDE.md gotchas, and an honest weaknesses section. `AGENTS.md` is the file Codex reads automatically; it mirrors the rules in checklist form and points at the handover. CLAUDE.md wins on any disagreement.
+
+Why: Dylan is adding GPT Codex as a second coding agent (running alongside Claude Code, not replacing it) and wanted everything in one document so Codex does not guess from the GitHub history or the vault. Scope, format, and identifier policy confirmed with Dylan this session: full picture including the ops layer, Markdown in the repo plus AGENTS.md, IDs included, no secret values.
+
+Grounded in: CLAUDE.md, the /handoff skill, .claude/settings*.json, netlify.toml, package.json, features.json (99 entries), SCHEMA.md header, the top 3 log entries, git log, the vault (Master Context.md, Cowork VA instructions, Cowork Output Standards, Coach and Radar project instructions, Obsidian Git config), and 20 Cowork project-memory feedback files.
+
+Found while surveying, for Dylan (not fixed, none in scope):
+1. main is [ahead 2] of origin (the two 2026-09-02 Cowork log commits). Docs only, but push it.
+2. `SOP Hub/.git/config` has a GitHub personal access token embedded in the remote URL in plain text. Revoke it and switch the remote to SSH or a credential helper. Deliberately NOT reproduced anywhere in the new documents. The SOP Hub checkout has also not committed since 2026-04-14 despite the Obsidian Git 10-minute schedule.
+3. `00 - HQ/Master Context.md` still lists Aron as PEC salesperson and the Classic/Signature/Showroom tiers; both retired.
+4. Prompt 102 Part C (FTP booking form) is still open per the 2026-08-20 entry.
+
+Files touched: CODEX-HANDOVER.md (new), AGENTS.md (new), PROJECT-LOG.md (this entry).
+
+Next steps: Dylan reviews the weaknesses section (17) and decides which, if any, to act on; the no-CI / no-branches point matters more with two agents. If Codex's rules ever diverge from CLAUDE.md, update AGENTS.md in the same commit as CLAUDE.md.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: Push main (2 commits waiting before this one, 3 after). Revoke the PAT in the SOP Hub git remote. Point Codex at AGENTS.md on its first run.
+
+---
+
 ## [2026-09-02 MST] Cowork: agency guide for Meta Lead Ads -> Zapier -> pec-lead-intake (Google Doc, no code)
 
 By: Cowork
