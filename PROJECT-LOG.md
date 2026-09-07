@@ -1,3 +1,33 @@
+## [2026-09-07 12:05 MST] Cowork: applied the days-off / audit-trail migration to prod and verified Days off blocks online booking end to end
+
+By: Cowork
+
+Changed: Applied `supabase/migrations/2026-09-21_appt_blocked_days_audit_trail.sql` to Supabase project zdfpzmmrgotynrwkeakd through the Supabase MCP `apply_migration` (recorded in the project's migration history as `appt_blocked_days_audit_trail`). The SQL statements were sent exactly as in the file; only the long WHY/WHAT comment block in the file header was trimmed from the pasted text (the @artifacts header and every statement are verbatim). The migration file itself was not edited. No other code or data change.
+
+Why: Commit 81e5501 shipped with the migration unapplied because the Claude Code permission classifier blocked `apply_migration`. Until it landed, the Days off and Appointment activity cards showed a "run the migration" note and online booking still ignored days off and holidays.
+
+Acceptance checks, all passed on prod:
+- Triggers on pec_appointments (non-internal): trg_pec_appointments_audit, trg_pec_appointments_stamp_actor, trg_pec_appointments_touch.
+- `pg_get_function_arguments(book_appointment_slot)` ends in `p_actor text DEFAULT NULL::text`; exactly one overload of the function exists (the 4-arg version is gone).
+- settings: booking_block_crew_holidays = true, appt_default_duration_minutes = 45.
+- pec_appointments.created_by_label column present; pec_appointment_blocked_days created with 0 rows.
+
+End-to-end verification, two passes, both against the live deploy:
+1. Endpoint pass (before Dylan signed in): baseline POST /api/booking/slots with an in-area address (201 N Cortez St, Prescott 86301) returned 21 open days, Sept 16 with 5 slots. Inserted a company-wide block on 2026-09-16 via SQL; the same call returned 20 days with exactly 2026-09-16 removed and nothing else changed. Called `book_appointment_slot` directly for a 2026-09-07 (Labor Day, pec_prod_holidays) slot: `{ok:false, taken:true, blocked:true}`, no row written. Deleted the SQL block; the endpoint went back to 21 days with Sept 16 offered again.
+2. UI pass (Dylan signed the browser pane in): Appointments > Days off > blocked Wed Sep 16 for Everyone with a test reason. Row landed with created_by set and created_by_label = "Dylan Nordby" (the auth.uid() path of pec_appt_actor works from the dashboard). Calendar immediately shaded Sept 16 with the "Day off: ..." label, and the Labor Day holiday already renders as "Holiday: Labor Day - Closed". /api/booking/slots again dropped Sept 16 (20 days). Clicked Remove in the modal: table back to 0 rows, shading gone, modal lists "No upcoming days off."
+
+Not done: the optional header-path check (cancel a test online booking from its manage link and read admin_email in audit_log). That requires creating a real online booking, which fires customer and staff notifications, so it was skipped. audit_log has 0 pec_appointments rows so far, which is expected: nothing has written to pec_appointments since the migration landed a few minutes ago. The first real staff edit, Routemize booking, or Google pull will populate it; check `select admin_email, action from audit_log where entity_type='pec_appointments' order by created_at desc limit 5;` after a day of normal use. If Routemize or Google rows read "System" instead of "Routemize booking" / "Google Calendar sync", the x-topcoat-actor header is not reaching PostgREST and the derived-from-source label is doing the work.
+
+Files touched: PROJECT-LOG.md (this entry). External: Supabase prod schema (migration above); one test row inserted and deleted in pec_appointment_blocked_days (twice, both removed).
+
+Next steps: Block the next real day off from the Appointments toolbar. Review the audit trail after a day of use (query above).
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: None. The "run the migration" notes on the Days off and Appointment activity cards should be gone on next load.
+
+---
+
 ## [2026-09-07 10:58 MST] appointments: days off block online booking, audit trail of who booked/changed each appointment, 45-minute default with end-follows-start
 
 By: Claude Code
