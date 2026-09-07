@@ -1483,7 +1483,7 @@
     {
       "name": "Cockpit and JARVIS",
       "area": "platform",
-      "description": "A separate Cockpit workspace reached from the sidebar's Daily flow card, with Dashboard, Execution, and JARVIS tabs. JARVIS is an AI strategy assistant, and the Dashboard gives a quick read on the current state of the business including booked sales.",
+      "description": "A separate Cockpit workspace reached from the sidebar's Daily flow card, with Dashboard, Execution, and JARVIS tabs. JARVIS is an AI strategy assistant, and the Dashboard gives a quick read on the current state of the business including booked sales. Owner MBP foundation (2026-09-07): production/owner-mbp.js separately calculates the source-shaped weekly Sales Plan and Revenue Produced grids, weighted business-line totals, seasonality, actuals, cumulative gaps, and explicit missing-input coverage. This internal foundation is not connected to Cockpit, authentication, persistence, CRM queries, or AI yet; it does not make the existing staff-accessible Cockpit owner-private.",
       "code": {
         "indexHtml": [
           "sendCoach",
@@ -1491,6 +1491,11 @@
           "startVoice",
           "saveCoachSession",
           "renderBrainDumps"
+        ],
+        "other": [
+          "production/owner-mbp.js",
+          "production/owner-mbp.test.js",
+          "production/owner-mbp.md"
         ]
       },
       "tables": [],

@@ -1,3 +1,31 @@
+## [2026-09-07 10:59 MST] owner: isolated MBP sales and production calculation foundation
+
+By: Codex
+
+Changed: Added the pure owner MBP calculation module and 13 synthetic-data tests. It calculates the six source-shaped weekly Sales Plan and Revenue Produced grids, business-line and TOTAL plans/actuals, seasonal weights, optional sales conversion overrides, cumulative gaps, annual summaries, weekly-average versus aggregate ratios, and explicit missing/partial/complete actual-input coverage. Added the input/source-cell contract and remaining integration/security requirements. Registered the internal foundation under Cockpit in features.json and included the suite in npm test through a posttest hook. No running UI or data changes.
+
+Why: Dylan approved the orange/blue owner workspace preview and asked to preserve the MBP tabs almost exactly. He authorized parallel work while Claude Code is active, with no merge or push until he reports Claude finished. This foundation can be prepared without touching Claude's checkout or live systems.
+
+Isolation: Separate local clone on codex/mbp-owner-workspace, based on 2340f00, with independent Git metadata and a deliberately disabled push URL. The original main checkout remained untouched by Codex. Claude's in-progress booking/calendar/schema edits were observed but not inspected, staged, stashed, overwritten, or committed. Existing maintenance locks were left alone. No live Supabase migration, calendar event, network deploy, merge, or push was performed. Existing estimator dependencies were copied into the isolated clone for offline testing, not symlinked or changed at the source.
+
+Source fidelity: A private local reconciliation passed 7,177 comparisons against the previously extracted workbook snapshot, covering six grids, 312 week rows, top assumptions/ratios/trends and annual footers within source-export precision. Original workbook and snapshot were not changed or committed. Missing actuals remain separately identified even where the source TOTAL formula produces zero. The source TOTAL Custom Option is independent of brand custom fields and stays that way. Two explicitly documented boundaries: inactive hidden claims are unsupported; retired Name-tab override markers are not recreated. The original literal-zero custom actual footer is calculated as a sum when custom entries exist, an intentional correction to disclose before exposing that input in the UI.
+
+Verified: npm test PASS including all existing suites and all 13 owner MBP tests. The first run stopped on absent estimator esbuild dependencies in the fresh clone; after copying the existing dependency directory, the full suite passed, then passed again after final changes. node --check on production/owner-mbp.js and production/owner-mbp.test.js PASS. JSON.parse of package.json, features.json and help/whats-new.json PASS. index.html is byte-identical to base; its three pre-existing classic-script parse exclusions/failures (JSON, module import, module await) match HEAD exactly. Private source-cell reconciliation PASS. git diff --check PASS. No browser/live-account validation is claimed because the new module is not wired into the app.
+
+Files touched: production/owner-mbp.js (new), production/owner-mbp.test.js (new), production/owner-mbp.md (new), package.json, features.json, PROJECT-LOG.md. No What's New entry: internal calculation foundation only, no user-facing behavior changed.
+
+Next steps: When Dylan reports Claude finished, inspect Claude's final commits and reconcile shared documentation/manifest changes before integration. Confirm workbook company mapping and metric recognition/cutover rules, implement and rehearse genuinely owner-private persistence, then connect the approved UI, morning completion gate, weekly review, calendar planning and private AI. Those capabilities are not implemented by this commit.
+
+## Handoff to Cowork
+
+None for this isolated foundation. No live migration or configuration change is requested.
+
+## Handoff to Dylan
+
+Tell Codex when Claude's task is finished. This branch is committed locally only and is not yet a deployable owner workspace. Do not publish raw workbook data in the static app.
+
+---
+
 ## [2026-09-07 10:58 MST] appointments: days off block online booking, audit trail of who booked/changed each appointment, 45-minute default with end-follows-start
 
 By: Claude Code
