@@ -12,6 +12,29 @@ const select = (label,name,value,options,extra='') => `<label class="tc-field">$
 const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const NAV=[['focus','Morning focus'],['sales','Sales Plan'],['revenue','Revenue Produced'],['review','Weekly review'],['rocks','Q4 big rocks'],['problems','Problem solving'],['insights','AI insights'],['settings','Routine settings']];
 
+export function checkinSaveMessage(status) {
+  if(status==='completed') return 'Check-in completed and saved. You can continue to TopCoat.';
+  if(status==='bypassed') return 'Emergency bypass saved. You can continue to TopCoat.';
+  return status==='draft' ? 'Draft saved. Complete every answer, then choose Complete check-in.' : 'Your answers are private. Save before leaving.';
+}
+
+export function showCheckinSaving(root, target, action) {
+  const label=action==='complete-focus'?'Completing check-in…':action==='bypass-focus'?'Recording bypass…':'Saving draft…';
+  const originalLabel=target.textContent;
+  const controls=[...root.querySelectorAll('button,input,textarea,select')].map(el=>[el,el.disabled]);
+  root.setAttribute('aria-busy','true');
+  root.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent=label);
+  controls.forEach(([el])=>el.disabled=true);
+  target.textContent=label;
+  // The request body has already been captured. Prevent edits from being
+  // overwritten by the response, without clearing or replacing any answers.
+  return ()=>{
+    root.removeAttribute('aria-busy');
+    controls.forEach(([el,disabled])=>el.disabled=disabled);
+    target.textContent=originalLabel;
+  };
+}
+
 export function mbpGroups(kind) {
   const week=(label,cols,type='number')=>({label,cols,type,heads:['Plan','Actual','Plan','Actual','Gap'].slice(0,cols.length),sub:cols.length===5?[['Per week',2],['Cumulative',3]]:[['Per week',2],['Cumulative',2]]});
   const group=(label,cols,heads,type,sub)=>({label,cols,heads,type,sub:[[sub,cols.length]]});
@@ -96,9 +119,9 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   function focusPage() {
     const doc=docs.get(focusKey()), answers=doc.body.answers||{}, items=docs.get(planKey())?.body.items||[];
     return head('DAILY ALIGNMENT', 'Start with what matters.', `${DAYS[status.routine.weekday]} · ${status.routine.day} · ${status.config.morningMinutes}-minute target`)+
-      `<div class="tc-notice ${due()?'tc-warning':''}">${due()?'Your morning check-in is due. Save every answer to unlock the rest of TopCoat, or record an emergency bypass.':doc.body.status==='completed'?'Check-in completed and saved. Your priorities are set.':doc.body.status==='bypassed'?'Emergency bypass recorded for today. You can still complete your check-in.':'Your private morning alignment. Saving all answers completes it; there is no minimum timer.'}</div>`+
+      `<div class="tc-notice ${due()?'tc-warning':''}">${due()?'Your morning check-in is due. Answer every prompt and choose Complete check-in to unlock the rest of TopCoat, or record an emergency bypass.':doc.body.status==='completed'?'Check-in completed and saved. Your priorities are set.':doc.body.status==='bypassed'?'Emergency bypass recorded for today. You can still complete your check-in.':'Your private morning alignment. Answer every prompt, then choose Complete check-in. There is no minimum timer.'}</div>`+
       `<div class="tc-focus-context"><section class="tc-panel"><h3>Q4 focus</h3><p>Lead flow · Cash flow · Sales</p><p class="tc-muted tc-small">September preparation, then Q4 execution. Team morale, mission, and core values stay central.</p>${items.slice(0,3).map(i=>`<p class="tc-small">${e(i.title)} · ${e(i.checkpoint||'Set a weekly checkpoint')}</p>`).join('')}</section><section class="tc-panel"><h3>Today’s standard</h3><p>One clear commitment. One protected block. One problem addressed.</p><p class="tc-muted tc-small">Monday includes both morning focus and the ${e(status.config.weeklyTime)} weekly review.</p></section></div>`+
-      `<form data-form="focus" class="tc-panel">${FOCUS_FIELDS.map(([key,label],i)=>field(`${String(i+1).padStart(2,'0')} · ${label}`,key,answers[key],'textarea')).join('')}<div class="tc-actionbar"><span class="tc-small tc-muted">Answers are private. Save before leaving.</span><div class="tc-row">${button('Save draft','save-focus')}${button('Complete check-in','complete-focus',true)}</div></div><details class="tc-mbp-sources"><summary>Emergency bypass</summary><p>Only use this when something truly cannot wait. Your reason remains in the private check-in history.</p>${field('Why do you need to bypass today?','bypassReason',doc.body.bypassReason,'textarea')}${button('Record bypass and continue','bypass-focus')}</details></form>`+
+      `<form data-form="focus" class="tc-panel">${FOCUS_FIELDS.map(([key,label],i)=>field(`${String(i+1).padStart(2,'0')} · ${label}`,key,answers[key],'textarea')).join('')}<div class="tc-focus-save-status" role="status" aria-live="polite">${e(message||checkinSaveMessage(doc.revision?doc.body.status:null))}</div><div class="tc-actionbar"><span class="tc-small tc-muted">${doc.body.status==='completed'?'Your saved check-in is complete.':'Saving a draft does not complete the check-in.'}</span><div class="tc-row">${button('Save draft','save-focus')}${button('Complete check-in','complete-focus',true)}</div></div><details class="tc-mbp-sources"><summary>Emergency bypass</summary><p>Only use this when something truly cannot wait. Your reason remains in the private check-in history.</p>${field('Why do you need to bypass today?','bypassReason',doc.body.bypassReason,'textarea')}${button('Record bypass and continue','bypass-focus')}<div class="tc-focus-save-status" role="status" aria-live="polite">${e(message)}</div></details></form>`+
       `<div class="tc-actionbar">${button('Recent check-ins','recent-focus')}${button('Back to TopCoat','leave')}</div><div data-recent></div>`;
   }
   function summary(sheet) {
@@ -157,7 +180,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     if(!mount?.isConnected||!allowed) return;
     const content=page==='focus'?focusPage():['sales','revenue'].includes(page)?workbookPage(page):page==='assumptions'?assumptionsPage():page==='review'?reviewPage():['rocks','problems'].includes(page)?listPage(page):page==='insights'?insightsPage():settingsPage();
     mount.innerHTML=`<div id="topcoat-owner-studio"><div class="tc-shell"><aside class="tc-sidebar"><div class="tc-logo"><span class="tc-logo-mark">T</span>TopCoat</div><div class="tc-private">My Eyes Only · Private</div><nav class="tc-nav" aria-label="Owner workspace">${NAV.map(([id,label])=>`<button type="button" data-page="${id}" ${page===id?'aria-current="page"':''}>${label}</button>`).join('')}</nav><div class="tc-side-note"><strong>Direction before distraction.</strong>One priority. A protected block. Progress you can measure.</div></aside><main class="tc-main"><div class="tc-topbar"><strong>Owner workspace</strong><span class="tc-beta">UI BETA</span><span>${e(status.routine.day)}</span></div><div class="tc-content"><div class="tc-save-status" role="status">${e(message)}</div>${content}</div></main></div></div>`;
-    mount.oninput=event=>{if(!mount||event.target.dataset.change||page==='insights')return;dirty=true; const el=mount.querySelector('.tc-save-status'); if(el)el.textContent='Unsaved changes. Save before leaving.';};
+    mount.oninput=event=>{if(!mount||event.target.dataset.change||page==='insights')return;dirty=true; mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent='Unsaved changes. Save before leaving.');};
     mount.onchange=event=>{const change=event.target.dataset.change; if(change){ if(dirty&&!confirm('Discard unsaved edits and change this view?')) {event.target.value=change==='week'?week:quarter;return;} dirty=false; if(change==='quarter')quarter=event.target.value; if(change==='week')week=event.target.value; draw(); }};
     mount.onclick=click;
   }
@@ -185,7 +208,13 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(action==='jump') { const scroller=mount.querySelector('.tc-mbp-scroll'), group=mount.querySelector(`[data-mbp-group="${target.dataset.group}"]`);scroller.scrollTo({left:group.offsetLeft-130,behavior:'smooth'});return; }
       if(action==='assumptions') { await navigate('assumptions');return; }
       if(action==='back-workbook'||action==='go-sales'||action==='go-revenue') {await navigate(action==='go-revenue'?'revenue':'sales');return;}
-      if(['save-focus','complete-focus','bypass-focus'].includes(action)) {const data=formData('focus');await save(focusKey(),{status:action==='complete-focus'?'completed':action==='bypass-focus'?'bypassed':'draft',answers:Object.fromEntries(FOCUS_FIELDS.map(([k])=>[k,data[k]||''])),bypassReason:data.bypassReason||''});}
+      if(['save-focus','complete-focus','bypass-focus'].includes(action)) {
+        const data=formData('focus'), release=showCheckinSaving(mount,target,action);
+        try {
+          const doc=await save(focusKey(),{status:action==='complete-focus'?'completed':action==='bypass-focus'?'bypassed':'draft',answers:Object.fromEntries(FOCUS_FIELDS.map(([k])=>[k,data[k]||''])),bypassReason:data.bypassReason||''});
+          message=checkinSaveMessage(doc.body.status);
+        } finally {release();}
+      }
       if(action==='save-week') {
         const data=formData('weekly'), doc=docs.get(`mbp:${year()}`), body=structuredClone(doc.body), selected=brand==='total'?'painting':brand;
         const row=body.mbp.lines.find(l=>l.id===selected)[page].weekly.find(r=>r.weekEnding===week);
@@ -209,7 +238,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(action==='generate-insights') { const region=mount.querySelector('[data-insight]');region.textContent='Analyzing your saved goals and selected information…';const result=await api('insights',{requested:true,year:year(),includeFocus:mount.querySelector('[name="includeFocus"]').checked,includeProblems:mount.querySelector('[name="includeProblems"]').checked});insight=result.text;dirty=false; }
       if(action==='crm-preview') {const result=await api('crm-week',undefined,{week});crmPreview=result;const region=mount.querySelector('[data-crm-preview]');region.innerHTML=`<div class="tc-notice"><strong>CRM preview only</strong><p>${e(result.description)}</p>${Object.entries(result.actual).map(([k,v])=>`<p>${e(k)}: ${fmt(v)}</p>`).join('')}<p>${e(result.warnings.join(' '))}</p><p>Review these values before entering them above. This does not overwrite your workbook.</p></div>`;return;}
       if(generation===epoch) draw();
-    } catch(err) {if(generation===epoch&&mount?.isConnected){message=err.message;const el=mount.querySelector('.tc-save-status');if(el)el.textContent=message;}}
+    } catch(err) {if(generation===epoch&&mount?.isConnected){message=err.message;mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent=message);}}
     finally {if(generation===epoch)busy=false;}
   }
   const render=async(root)=>{

@@ -1,5 +1,15 @@
 [
   {
+    "id": "owner-checkin-save-feedback",
+    "date": "2026-09-07",
+    "title": "Clear confirmation when your check-in saves.",
+    "summary": "Morning focus now shows saving progress, success, and errors beside the buttons, with a clear distinction between a saved draft and a completed check-in.",
+    "howto": [
+      "Choose Save draft to keep partial answers, or answer every prompt and choose Complete check-in to finish.",
+      "Watch the message beside the buttons. The form briefly pauses while saving, then shows confirmation or an error without clearing your answers."
+    ]
+  },
+  {
     "id": "owner-mbp-workspace-beta",
     "date": "2026-09-07",
     "title": "A private MBP workspace for the owner.",

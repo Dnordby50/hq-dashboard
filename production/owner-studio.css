@@ -176,6 +176,9 @@
 #topcoat-owner-studio .tc-panel{margin-bottom:16px}
 #topcoat-owner-studio .tc-panel p+p{margin-top:8px}
 #topcoat-owner-studio .tc-save-status{min-height:24px;color:var(--tc-accent);margin-bottom:10px;overflow-wrap:anywhere}
+#topcoat-owner-studio .tc-focus-save-status{margin:14px 0 8px;padding:12px 14px;background:var(--tc-tint);color:var(--tc-accent);border-radius:8px;overflow-wrap:anywhere}
+#topcoat-owner-studio .tc-focus-save-status:empty{display:none}
+[aria-busy=true] #topcoat-owner-studio button{cursor:wait}
 #topcoat-owner-studio .tc-incomplete{color:var(--tc-alert);padding-left:3px}
 #topcoat-owner-studio .tc-sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 #topcoat-owner-studio .tc-items{display:grid;gap:16px}

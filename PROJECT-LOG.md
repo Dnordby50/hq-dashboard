@@ -1,3 +1,22 @@
+## [2026-09-07 13:12 MST] owner: make check-in saves visible and confirm live completion
+
+By: Codex
+
+Changed: Morning focus now immediately labels the clicked action as saving/completing/recording, pauses form controls during the request, and displays the outcome beside Save draft / Complete check-in and the emergency-bypass button. Draft and completion messages explicitly distinguish the two actions. Failed saves restore controls without redrawing or clearing typed answers. Added regression tests for all three pending labels, restored control states, answer preservation, and result wording.
+
+Why: Dylan reported that filled answers would not save or complete. The signed-in live screen already showed completion when inspected. A read-only metadata query independently confirmed focus:2026-09-07 at revision 5, completed, eight nonempty answers, five saved revisions, updated at 20:01:44 UTC (13:01 Arizona). No persistence failure was demonstrated. The confirmed UI defect was that the old busy guard silently ignored further clicks with no progress label, while results appeared only above the long form. No real answer text was copied to logs, replayed, or changed, and the user's live browser was not reloaded.
+
+Verified: npm test green including all 33 owner tests; node --check on both touched JS files; all eight index.html inline script blocks match HEAD's parse failure set (only existing importmap JSON); features.json, help/whats-new.json and package.json parse; git diff --check clean. Separate local browser fixture, synthetic answers only: immediate pending label and disabled controls, missing-answer rejection beside buttons, successful partial draft, successful eight-answer completion, simulated network failure with exact input preservation and restored controls. Browser warning/error log empty. No API, schema, auth, AI-provider call, production data, or routine-setting change.
+
+Files touched: production/owner-studio.js, production/owner-studio.css, production/owner-studio.test.js, features.json, help/whats-new.json, PROJECT-LOG.md. Main was clean and matched origin before these scoped edits; existing .git/objects/maintenance.lock left alone.
+
+Next steps: Publish the scoped fix under Dylan's existing feature-push authorization and verify served assets. The required-routine switch remains off; this bugfix does not activate it. Existing broader MBP follow-up scope is unchanged.
+
+Handoff to Cowork: None.
+Handoff to Dylan: No re-entry needed. Today's check-in is already saved and completed; refresh when ready after the fix is deployed to load the improved feedback.
+
+---
+
 ## [2026-09-07 12:52 MST] owner: MBP beta published, live signed-out boundary verified
 
 By: Codex
