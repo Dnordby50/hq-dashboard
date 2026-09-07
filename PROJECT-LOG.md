@@ -1,3 +1,28 @@
+## [2026-09-07 14:43 MST] owner: top navigation, month filters, and weekly rock milestones
+
+By: Codex
+
+Changed: Replaced the owner-only left sidebar with a horizontal top navigation bar, retaining all eight destinations and keeping the active tab visible on narrow screens. Charts now use the full owner-content width. Period offers full year, all four source quarters, and all twelve months; month membership follows each weekly row's week-ending date, while source cumulative cells and annual summaries/footers stay unchanged. Existing frozen headers and removed override columns remain intact.
+
+Q4 rocks: Replaced the single checkpoint input with editable milestone rows, completion checkboxes, add/remove controls, a progress indicator, and This week selection. Existing checkpoint text becomes the first milestone only when no milestone array exists; the original checkpoint/notes remain stored. Empty arrays do not resurrect removed milestones. Selecting This week uses the current Phoenix Monday. Morning focus displays that week's selected milestones plus unfinished older selections, retains completed items through their completion week, and records weekly rock progress in the existing alignment answer key. On Monday the panel prompts week setup; subsequent days show the same commitments. The owner explicitly chooses and saves milestones; no synthetic goals or selections were written on Dylan's behalf.
+
+Save boundary: Check-in saves first persist changed rock completion, then save daily answers, through the existing revision/request-ID mechanism. This is intentionally two sequential document writes, not a cross-document transaction. A rock conflict stops the check-in save. A later check-in failure keeps typed answers and checkbox state; retrying unchanged completion does not write the rock a second time. Milestone IDs, titles, booleans, Monday date keys, and list bounds are validated by the existing endpoint. No new table, migration, entitlement, or setting. Routine switch remains unchanged. AI is still explicitly requested only.
+
+Verified: npm test green including all 42 owner tests. node --check passed for production/owner-studio.js, owner-routine.js, owner-studio.test.js, owner-studio-api.test.cjs and netlify/functions/pec-owner-studio.cjs. Eight index.html blocks match HEAD's parse-failure set (existing importmap only); features.json, help/whats-new.json and package.json parse; git diff --check clean. Tests cover navigation destinations/selection, all monthly partitions across six sheets, source preservation, checkpoint conversion, explicit empty lists, weekly rollover/year boundary, retained completion, malformed input rejection, and revision-checked round-trip payloads.
+
+Browser QA (synthetic local data only): owner shell and main both 1248px, navigation above main, no owner sidebar; March shows five expected Sunday rows, persists into revenue, Q4 shows 13 rows. Legacy checkpoint became one milestone, add/remove and This week controls worked, original notes survived saving. A simulated rock conflict kept all typed answers. Simulated check-in failure after successful rock save kept answers; retry saved only the check-in. Tuesday retained 1/2 completion, next Monday carried only the unfinished milestone. Desktop console clear. Visually verified top tabs, active-tab visibility, and editable milestone controls in a 360px iframe. Live user's browser was not changed or refreshed.
+
+Supabase verification: Read current changelog/JSON documentation and checked the unchanged private document/security contract. Metadata-only query found no saved plan:2026-q4 document at verification time; no private text was queried, migrated, or written. The existing JSONB revision store needs no schema change. Production owner writes remain owner-authorized and private/no-store; regression tests retain those checks.
+
+Files touched: production/owner-studio.js/.css/.test.js, production/owner-routine.js, production/owner-studio-api.test.cjs, production/owner-mbp.md, netlify/functions/pec-owner-studio.cjs, features.json, help/whats-new.json, PROJECT-LOG.md. Startup main clean and matched origin; no untracked files. Existing maintenance.lock left alone. No customer/job data, calendar event, or AI-provider call changed.
+
+Next steps: Publish under Dylan's standing authorization for this feature and verify live assets. Remaining CRM-import/calendar/other-workbook-tab scope is unchanged.
+
+Handoff to Cowork: None.
+Handoff to Dylan: Save any open edits before refreshing. In Q4 big rocks, add milestones, choose This week, and Save changes. Morning focus then tracks those milestones alongside the written daily update.
+
+---
+
 ## [2026-09-07 14:17 MST] owner: freeze MBP headers and remove override columns
 
 By: Codex

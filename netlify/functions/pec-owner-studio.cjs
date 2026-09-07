@@ -148,6 +148,20 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         if (!['draft','completed'].includes(body.status)) throw error(400, 'Choose a valid review status.');
         if (body.status === 'completed' && (body.numbersReviewed !== true || !present(body.notes) || !present(body.commitment))) throw error(400, 'Review the numbers, record your findings, and set the next commitment.');
       } else if (!Array.isArray(body.items) || body.items.length > 250) throw error(400, 'Use a list of up to 250 records.');
+      if(key.startsWith('plan:')) for(const item of body.items) {
+        if(!object(item)) throw error(400, 'Each rock must be a record.');
+        if(item.milestones===undefined) continue; // Earlier clients keep their checkpoint text.
+        if(!Array.isArray(item.milestones)||item.milestones.length>100) throw error(400, 'Use up to 100 milestones per rock.');
+        const ids=new Set();
+        for(const m of item.milestones) {
+          if(!object(m)||typeof m.id!=='string'||!m.id||m.id.length>100||ids.has(m.id)||typeof m.title!=='string'||!m.title.trim()||m.title.length>6000||typeof m.done!=='boolean') throw error(400, 'Each milestone needs a unique ID, a title, and a completion checkbox.');
+          for(const field of ['focusWeek','completedWeek']) if(m[field]!==undefined&&m[field]!=='') {
+            const date=typeof m[field]==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(m[field])?new Date(`${m[field]}T00:00:00Z`):new Date(NaN);
+            if(!Number.isFinite(date.getTime())||date.getUTCDay()!==1||date.toISOString().slice(0,10)!==m[field]) throw error(400, 'Milestone weeks must start on a valid Monday.');
+          }
+          ids.add(m.id);
+        }
+      }
       const result = await db('/rpc/pec_owner_save_document', { method:'POST', body:{ p_auth_user_id:user.id, p_doc_key:key, p_expected_revision:payload.revision, p_request_id:payload.requestId, p_body:body } });
       if (result.conflict) return reply(409, { error:'This record changed in another window. Reload it before saving; your draft has not overwritten it.', conflict:true });
       return reply(200,{ ok:true, document:await read(key), replayed:result.replayed });

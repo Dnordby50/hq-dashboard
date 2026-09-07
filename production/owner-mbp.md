@@ -4,6 +4,14 @@ Status: calculation engine connected to the My Eyes Only beta through `owner-stu
 
 `owner-mbp.js` is a pure ESM calculation engine shared by future UI and server adapters. Run `npm run test:owner-mbp`; the suite also runs through `npm test`'s posttest hook. Tests use synthetic data only. The site's publish directory is the repository root, so never commit the source workbook, actuals, private plans, journal records, or import snapshots here.
 
+## Owner UI and weekly rock workflow
+
+The owner navigation is a horizontal top bar; narrow screens scroll it sideways and keep the active destination visible. Sales and revenue grids offer full-year, quarter, and calendar-month row filters. Quarter grouping remains the source fiscal grouping; monthly membership uses the week-ending date. Filtering does not recalculate source cumulative cells, annual summaries, or full-year footers. Frozen headers and the week-ending column remain intact.
+
+Q4 plan items accept `milestones: [{ id, title, done, focusWeek?, completedWeek? }]`. The two week fields are ISO Monday dates or empty strings. Selecting This week assigns the current Phoenix Monday; unfinished selections from earlier weeks remain visible in morning focus. Completed selections remain visible through their completion week, then leave that weekly view without being removed from the rock. A legacy `checkpoint` is shown as one unchecked milestone only when `milestones` is absent; an explicit empty array never resurrects a removed checkpoint. Existing checkpoint and note fields are retained on save. The endpoint validates unique per-rock IDs, boolean completion, nonempty titles, Monday dates, and at most 100 milestones per rock. Existing private JSON document/revision storage is reused; there is no migration or bulk rewrite.
+
+The first morning answer (`alignment`, same stable key) now records weekly quarterly-rock progress. Saving a check-in first saves any changed milestone completion in its Q4 plan using the existing revision/request-ID boundary, then saves the daily answers. These are two explicit, sequential document saves, not an atomic cross-document transaction. A plan conflict stops completion and keeps typed answers. If the plan saves but the check-in fails, the draft stays visible; retrying unchanged milestone selections does not write the plan again. No background milestone write or AI request is triggered by checkbox changes.
+
 ## Input contract
 
 `calculateMbp(input)` requires:

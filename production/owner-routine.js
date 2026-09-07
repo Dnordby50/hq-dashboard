@@ -1,7 +1,7 @@
 // Pure shared schedule and saved-response validation. Ten minutes is a target,
 // not an idle-time requirement. Only a successfully saved response closes a day.
 export const FOCUS_FIELDS = Object.freeze([
-  ['alignment', 'What goal or quarterly rock needs your attention today?'],
+  ['alignment', 'What progress have you made on this week’s quarterly-rock milestones? On Monday, what will you complete?'],
   ['yesterday', 'What happened with your last workday\'s commitments and calendar blocks?'],
   ['signals', 'What do the numbers say, and what information is still missing?'],
   ['difficulty', 'What difficulty or repeating problem will you address?'],

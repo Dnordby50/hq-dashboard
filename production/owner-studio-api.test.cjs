@@ -66,6 +66,24 @@ test('stale revision conflicts are surfaced without automatic retry',async()=>{
   assert.equal(r.statusCode,409); assert.equal(JSON.parse(r.body).conflict,true);
   assert.equal(f.calls.filter(call=>call.url.endsWith('/rpc/pec_owner_save_document')).length,1);
 });
+test('rock milestone checkboxes and weekly assignments save with original notes and revision protection',async()=>{
+  const body={items:[{id:'rock',title:'Synthetic rock',checkpoint:'Original checkpoint',notes:'Keep this note',milestones:[{id:'legacy-checkpoint',title:'Original checkpoint',done:true,focusWeek:'2026-09-07',completedWeek:'2026-09-07'}]}]};
+  const f=fixture({docMap:{'plan:2026-q4':{revision:4,body}}});
+  const r=await f.handler(event('save',{key:'plan:2026-q4',revision:3,requestId,body}));
+  assert.equal(r.statusCode,200);
+  assert.deepEqual(JSON.parse(r.body).document.body,body);
+  const write=JSON.parse(f.calls.find(c=>c.url.endsWith('/rpc/pec_owner_save_document')).opts.body);
+  assert.deepEqual(write.p_body,body);assert.equal(write.p_expected_revision,3);assert.equal(write.p_request_id,requestId);
+  assert.equal((await fixture().handler(event('save',{key:'plan:2026-q4',revision:0,requestId,body:{items:[{checkpoint:'Legacy, no milestones yet'}]}}))).statusCode,200);
+});
+test('malformed milestones and invalid weekly assignments never reach the save RPC',async()=>{
+  const valid={id:'a',title:'A step',done:false,focusWeek:'2026-09-07'};
+  for(const milestones of ['bad',[null],[{...valid,done:'true'}],[{...valid,title:' '}],[valid,valid],Array.from({length:101},(_,i)=>({...valid,id:String(i)})),[{...valid,focusWeek:'2026-09-08'}],[{...valid,completedWeek:'bad'}]]) {
+    const f=fixture();
+    assert.equal((await f.handler(event('save',{key:'plan:2026-q4',revision:0,requestId,body:{items:[{title:'Rock',milestones}]}}))).statusCode,400);
+    assert.ok(!f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
+  }
+});
 test('settings are allowlisted, validated, and written under the owner JWT',async()=>{
   const f=fixture();
   assert.equal((await f.handler(event('settings',{values:{owner_morning_time:'07:00'}}))).statusCode,200);

@@ -1,5 +1,16 @@
 [
   {
+    "id": "owner-top-tabs-months-weekly-milestones",
+    "date": "2026-09-07",
+    "title": "More room for your MBP, with weekly rock milestones.",
+    "summary": "My Eyes Only now uses top navigation for wider tables, adds month filtering alongside quarters, and turns Q4 checkpoints into milestones that stay in your morning focus until completed.",
+    "howto": [
+      "Use the tabs across the top. In Sales Plan or Revenue Produced, choose Full year, a quarter, or a month under Period. Monthly rows follow their week-ending dates; the annual summary and footer remain unchanged.",
+      "Open Q4 big rocks, add measurable milestones, and select This week on Monday. Save changes. Existing checkpoint text appears as the first milestone.",
+      "In Morning focus, check off weekly milestones and log your progress in the first prompt. Save draft or Complete check-in saves the progress and answers. Unfinished milestones carry forward; completed ones remain visible through their completion week."
+    ]
+  },
+  {
     "id": "owner-mbp-frozen-headers",
     "date": "2026-09-07",
     "title": "MBP headers stay in view.",
