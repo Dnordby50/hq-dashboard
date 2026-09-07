@@ -1,3 +1,24 @@
+## [2026-09-07 14:55 MST] owner: DripJobs history imported into both MBP lines (revisions 3 and 4)
+
+By: Cowork
+
+Changed: mbp:2026 saved twice more through public.pec_owner_save_document. Revision 3 = Epoxy line sales actuals for weeks ending 2026-01-04 through 2026-08-02 from the PEC DripJobs branch (Reports page, This Year): leads = Leads report by Created date, estimates = Total Proposals Sent by Sent Date, jobsBooked/bookedDollars = Closed Deals by Date Accepted / Total Value. Test contacts excluded. Week ending 08-02 now reads DripJobs (11 leads, 13 proposals, 2 sold, $23,345) instead of the revision-2 TopCoat-only zeros, and its producedDollars was reset to null (pre-cutover; Dylan fills revenue from bank statements). Epoxy revenue actuals from the workbook import (Jan-Jul) untouched. Revision 4 = Painting line sales actuals for weeks ending 01-04 through 09-06 entirely from the FTP DripJobs branch (switched via /tenantadmin, switched back to PEC afterward), same definitions. This REPLACED the 19 hand-entered Painting weeks (01-04 through 05-10) that came with the workbook import; those used appointments as the estimates measure and differ slightly from DripJobs on leads and dollars. Revision 3 still holds them if Dylan wants them back.
+
+Source-of-truth decision (Dylan, in chat, after pushback): DripJobs for PEC sales through July, TopCoat from August 3 on. Dylan first said TopCoat from April, but public.jobs has no PEC row signed before 05-06 and its May signed_dates are backfill dates (TopCoat: 16 jobs/$78k wk 05-24 and 17/$103k wk 05-31 vs DripJobs 8/$55,865 and 3/$21,371); June-July agree within a job or two. TopCoat leads start 07-12, estimates 07-16, appointments 07-20, and it holds zero FTP jobs, so FTP is DripJobs end to end. Estimates measure for pre-August = proposals sent (Dylan's pick over appointments), matching what estimates.sent_at counts post-cutover.
+
+Readback totals at revision 4: Epoxy 36 weeks filled, 158 jobs, $801,817.37, 488 leads, 350 estimates (DripJobs 144/$763,147.37 + TopCoat 14/$38,670). Painting 36 weeks, 148 jobs, $762,151.04, 262 leads, 308 estimates; equals the DripJobs report totals. Epoxy cash collected total $557,360.25 includes workbook-era revenue actuals plus the five TopCoat weeks.
+
+Caveats: DripJobs Closed Deals values are proposal totals at acceptance (change orders not reflected); FTP has a few $1 placeholder deals in DripJobs that count as jobs. Week ending 01-04 has partial-week data in both lines. Weekly figures per line are in the pec_owner_revisions bodies, not repeated here.
+
+Files touched: PROJECT-LOG.md. External: pec_owner_documents/pec_owner_revisions mbp:2026 revisions 3 and 4; DripJobs read-only (reports run, no edits); browser left on the PEC branch.
+
+Next steps: Dylan fills pre-August revenue for both lines from bank statements. A recurring TopCoat-to-MBP weekly import for PEC (Aug onward definitions) would remove the Cowork dependency; FTP will stay manual or DripJobs until FTP moves into TopCoat.
+
+Handoff to Cowork: None.
+Handoff to Dylan: Open My Eyes Only, review both lines. If you want the original hand-entered Painting Jan-May rows back, say so and revision 3 can be restored.
+
+---
+
 ## [2026-09-07 14:05 MST] owner: import PEC TopCoat actuals (Aug 1 onward) into the MBP working plan
 
 By: Cowork
