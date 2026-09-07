@@ -1,5 +1,15 @@
 [
   {
+    "id": "owner-mbp-frozen-headers",
+    "date": "2026-09-07",
+    "title": "MBP headers stay in view.",
+    "summary": "Sales Plan and Revenue Produced keep their column headers visible while you scroll through the weeks. The two weekly-override columns and their entry fields have been removed.",
+    "howto": [
+      "Open My Eyes Only > Sales Plan or Revenue Produced, then scroll inside the weekly table. All three header rows stay together, and week-ending dates remain visible when scrolling sideways.",
+      "Use Weekly entry for actuals and Plan assumptions for targets. Your stored workbook values and calculations are unchanged."
+    ]
+  },
+  {
     "id": "owner-checkin-save-feedback",
     "date": "2026-09-07",
     "title": "Clear confirmation when your check-in saves.",

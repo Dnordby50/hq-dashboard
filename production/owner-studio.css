@@ -139,8 +139,9 @@
     #topcoat-owner-studio .tc-mbp-bar select{border:1px solid var(--tc-line);border-radius:7px;background:var(--tc-panel);padding:7px 10px;max-width:100%;font-size:12px}
     #topcoat-owner-studio .tc-mbp-jumps{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 14px;align-items:center;font-size:11px;color:var(--tc-muted)}
     #topcoat-owner-studio .tc-mbp-jumps button{background:none;border:0;padding:3px 0;color:var(--tc-accent);font-size:12px;text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--tc-line)}
-    #topcoat-owner-studio .tc-mbp-scroll{overflow-x:auto;max-width:100%;border:1px solid var(--tc-line);border-radius:10px;background:var(--tc-panel)}
+    #topcoat-owner-studio .tc-mbp-scroll{overflow:auto;max-height:70vh;max-height:70dvh;max-width:100%;scrollbar-gutter:stable;border:1px solid var(--tc-line);border-radius:10px;background:var(--tc-panel)}
     #topcoat-owner-studio .tc-mbp-table{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;font-variant-numeric:tabular-nums}
+    #topcoat-owner-studio .tc-mbp-table thead{position:sticky;top:0;z-index:3;background:var(--tc-sidebar);box-shadow:0 2px 0 var(--tc-line)}
     #topcoat-owner-studio .tc-mbp-table th{font-weight:500;background:var(--tc-sidebar);white-space:nowrap;padding:7px 10px;text-align:center;border-bottom:1px solid var(--tc-line)}
     #topcoat-owner-studio .tc-mbp-table thead tr:first-child th{color:var(--tc-accent);background:var(--tc-tint);font-size:11px;letter-spacing:.3px;padding:10px}
     #topcoat-owner-studio .tc-mbp-table thead tr:first-child th[data-mbp-group]{text-align:left}

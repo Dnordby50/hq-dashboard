@@ -6,8 +6,23 @@ import { ownerConfig, routineStatus } from './owner-routine.js';
 import { renderMbpGrid, mbpGroups, escapeHtml, createOwnerStudio, checkinSaveMessage, showCheckinSaving } from './owner-studio.js';
 test('six rendered grids retain original source groups, 52 weeks, quarter filters and missing markers',()=>{
   for(const sheet of calculateMbp(ownerFixture()).sheets){const html=renderMbpGrid(sheet);assert.equal((html.match(/data-action="edit-week"/g)||[]).length,52);assert.equal((renderMbpGrid(sheet,'4').match(/data-action="edit-week"/g)||[]).length,13);assert.ok(html.includes('Missing inputs'));assert.ok(html.includes(sheet.sourceTabName));}
-  assert.equal(mbpGroups('sales').flatMap(g=>g.cols).length,28);
+  assert.equal(mbpGroups('sales').flatMap(g=>g.cols).length,26);
   assert.equal(mbpGroups('revenue').flatMap(g=>g.cols).length,18);
+});
+test('sales grids omit both override columns without changing source calculations or header alignment',()=>{
+  const input=ownerFixture();
+  input.lines[0].sales.weekly[0].leadConversionOverride=.75;
+  input.lines[0].sales.weekly[0].salesRatioOverride=.65;
+  const computed=calculateMbp(input), before=structuredClone(computed);
+  for(const sheet of computed.sheets.filter(s=>s.kind==='sales')) {
+    const html=renderMbpGrid(sheet), groups=mbpGroups(sheet.kind);
+    assert.doesNotMatch(html,/Weekly override|!AL\d|!AO\d/);
+    assert.ok(html.includes('LEAD CONVERSION')&&html.includes('SALES RATIO'));
+    for(const g of groups) {assert.equal(g.cols.length,g.heads.length);assert.equal(g.cols.length,g.sub.reduce((n,s)=>n+s[1],0));}
+  }
+  assert.deepEqual(computed,before);
+  assert.equal(input.lines[0].sales.weekly[0].leadConversionOverride,.75);
+  assert.equal(input.lines[0].sales.weekly[0].salesRatioOverride,.65);
 });
 test('owner and AI text is escaped, never injected as markup',()=>{assert.equal(escapeHtml('<script>"x" & \'y\'</script>'),'&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');});
 test('check-in feedback distinguishes draft, completed and bypassed results beside the action',()=>{

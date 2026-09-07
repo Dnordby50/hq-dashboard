@@ -1,3 +1,22 @@
+## [2026-09-07 14:17 MST] owner: freeze MBP headers and remove override columns
+
+By: Codex
+
+Changed: All six Sales Plan / Revenue Produced grids now scroll within a viewport-height-bounded region with their complete three-row header stack pinned at the top. Existing horizontal week-ending pinning remains intact. Removed the two sales weekly-override columns (AL and AO) and their entry fields; normal weekly saves preserve existing stored overrides instead of clearing hidden values. Workbook formulas, historical data, source snapshots, actuals, assumptions, and all revenue columns are unchanged.
+
+Why: Dylan requested locked headers while scrolling and removal of manual-override columns. This is a presentation and input-surface change, not a deletion of workbook history or a change in KPI definitions.
+
+Verified: npm test green, including 34 owner tests; node --check on both touched JS files; index.html's eight script blocks match HEAD's existing parse-failure set (importmap JSON only); features.json, help/whats-new.json, and package.json parse; git diff --check clean. Regression tests cover all six grids, 52 weeks / 13 quarter rows, 26 sales data columns / 18 revenue data columns, removed AL/AO headers/cells, matching header spans, and unchanged calculation objects. Synthetic browser checks: header top remained exactly 1px inside the scroll-region border after vertical scrolling; header and date pinning remained at 1px after horizontal scrolling; weekly editor exposes only the four sales actual fields; a synthetic weekly save preserved both stored overrides across all rows. Visually verified desktop and 360px iframe revenue scrolling. Desktop browser logs clear; the iframe test emitted an automation MutationObserver diagnostic, but layout/scroll checks completed. No production-data writes, settings, API, auth, or schema changes. Live owner tab left untouched.
+
+Files touched: production/owner-studio.js, production/owner-studio.css, production/owner-studio.test.js, features.json, help/whats-new.json, PROJECT-LOG.md. Startup was clean, ahead 2 with Cowork's committed import-log updates 403e1d3 / 39d5334; both are preserved. Existing .git/objects/maintenance.lock left alone.
+
+Next steps: Publish under Dylan's existing feature-push authorization and verify served assets. Scope and KPI caveats from Cowork's imports remain unchanged.
+
+Handoff to Cowork: None.
+Handoff to Dylan: Refresh after deployment, then scroll inside the weekly table to keep its headers in view. Stored workbook values were not removed.
+
+---
+
 ## [2026-09-07 14:55 MST] owner: DripJobs history imported into both MBP lines (revisions 3 and 4)
 
 By: Cowork
