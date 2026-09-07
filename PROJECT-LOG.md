@@ -1,3 +1,25 @@
+## [2026-09-07 12:52 MST] owner: MBP beta published, live signed-out boundary verified
+
+By: Codex
+
+Changed: Preserved Cowork's 12be7c0 migration-verification log commit during branch integration, fast-forwarded main to 461f371, and pushed to the verified GitHub origin under Dylan's explicit authorization to push after Claude finished. No force push, unrelated edits, or lock-file removal. Main was clean before integration and matches origin after push. The owner beta is now deployed, not merely a local preview.
+
+Verified live: production/owner-studio.js returns application/javascript and its SHA-256 exactly matches the integrated source. pec-owner-studio returns 401 to signed-out and synthetic-invalid-token requests, with Cache-Control private,no-store,max-age=0 and no private content. /?v=owner-studio opens TopCoat's staff sign-in gate; no startup warnings/errors in the browser. The in-app browser is not signed in, so owner-authenticated rendering, live persistence and AI-provider availability have NOT been verified. No actual AI call or live check-in answer was submitted. The real source and working MBP documents remain independently verified at revision 1, reference and draft respectively.
+
+Current access: https://prescottepoxy.netlify.app/?v=owner-studio, or Overview > My Eyes Only for the entitled owner account. The required-routine setting remains OFF until signed-in owner verification; this does not hide the beta. Default schedule is weekday 6:20, Monday weekly review at 8:00, America/Phoenix. Imported historical targets remain draft.
+
+Remaining scope: full automatic PEC actual imports (first-estimate dates and dated/brand-qualified hours need reconciliation), recurring Google goal blocks and adherence, cash-flow source integration, remaining workbook tabs, and live signed-in owner acceptance. The beta and What's New explicitly disclose these limits.
+
+Files touched: PROJECT-LOG.md only for this release-status entry. External: GitHub main push and resulting Netlify deployment.
+
+Next steps: Dylan signs in to the owner link, then verify the real private sheets and save flow before enabling the morning requirement. Do not add synthetic answers to his production check-in or activate imported goals on his behalf.
+
+Handoff to Cowork: None. No schema operation is blocked and Codex can continue the signed-in checks once the session is available.
+
+Handoff to Dylan: Sign in to TopCoat in the opened owner-workspace browser. The routine is not enabled yet.
+
+---
+
 ## [2026-09-07 12:44 MST] owner: connect private MBP beta, saved check-ins and on-request insights
 
 By: Codex
