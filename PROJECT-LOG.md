@@ -1,3 +1,24 @@
+## [2026-09-07 14:05 MST] owner: import PEC TopCoat actuals (Aug 1 onward) into the MBP working plan
+
+By: Cowork
+
+Changed: Dylan confirmed the numbers in chat, then mbp:2026 was saved as revision 2 through public.pec_owner_save_document (owner uid from pec_owner_documents, expected revision 1, fresh request id). Only the Epoxy line's weekly rows for weeks ending 2026-08-02 through 2026-09-06 changed; Painting rows, the plan, weights and source:2026 are untouched (readback verified: 2 lines, 52 sales and 52 revenue rows on Epoxy, Painting actuals unchanged). Per Dylan's definitions: sales actuals = jobs by jobs.signed_date (PEC customers, not archived/voided) with bookedDollars = sum(price); revenue producedDollars = CASH COLLECTED = sum(pec_payments.amount) by received_date, all PEC jobs regardless of when they sold (Dylan chose this over TopCoat-era-only). leads = leads.brand='PEC' by Phoenix created date; estimates = estimates.brand='PEC' by sent_at (resend caveat applies). laborHours and custom left null.
+
+Values written (week ending: leads / est / sold / sold $ / cash): 08-02: 1/0/0/$0/$0; 08-09: 6/3/1/$250/$41,450; 08-16: 5/9/5/$7,150/$45,965; 08-23: 2/4/1/$5,250/$14,818.75; 08-30: 1/10/5/$15,325/$17,017.50; 09-06: 1/2/2/$10,695/$16,045.
+
+Caveats for whoever reads the Epoxy revenue tab: the column is labeled produced dollars but now holds cash collected, by Dylan's instruction; charge-rate cells stay unavailable because hours are null. Week ending 08-02 is mostly pre-TopCoat (Aug 1-2 only) and was written as zeros for sold/cash; the DripJobs-era jobs table shows one PEC job signed 07-28 ($10,700) in that week, so 08-02 sold should become 1/$10,700 if pre-August history is imported (see next steps).
+
+Investigation for pre-August (DripJobs era), not written: no leads or estimates history exists in Supabase (leads table has 26 TopCoat-native rows; no DripJobs API integration in the repo). Jobs sold + dollars can be reconstructed from the Booked Jobs sheet (PEC rows 03-23 through 07-12, 84 rows, $459,970.75 after removing the Kathy Carmack duplicate) plus public.jobs for 07-13 onward. Weekly (sold / $): 03-29 2/8,116; 04-05 7/30,001; 04-12 3/9,651; 04-19 2/5,995; 04-26 8/40,632.50; 05-03 8/28,640; 05-10 10/43,953.75; 05-17 4/16,375; 05-24 7/53,065; 05-31 3/21,371.50; 06-07 3/15,010; 06-14 8/35,535; 06-21 6/78,965; 06-28 8/29,140; 07-05 1/17,250; 07-12 3/21,730 (jobs table; sheet says 4/26,270 because Westfall lands 07-13 in jobs); 07-19 1/4,790; 07-26 6/26,860; 08-02 1/10,700. Nothing before 03-23 anywhere accessible. Topcoat MCP get_sales_summary reports 92 PEC rows / $511,125.75 for Jan-Jul, which does not reconcile with the deduped tabs (85 rows incl. the duplicate); it appears to count rows across more than one tab. Worth a look before anyone quotes that tool for MBP actuals.
+
+Files touched: PROJECT-LOG.md only. External: pec_owner_documents/pec_owner_revisions mbp:2026 revision 2 (Supabase prod).
+
+Next steps: Dylan decides whether to write the DripJobs-era sold/dollars above into weeks 03-29 through 08-02 (leads/estimates would stay null unless exported from the DripJobs UI). Dylan fills pre-August revenue from bank statements by hand. Consider a settings-driven weekly job that repeats the Aug-onward import so the Epoxy line stays current without Cowork.
+
+Handoff to Cowork: None.
+Handoff to Dylan: Confirm the pre-August sales import, and open My Eyes Only > Epoxy tabs to check the six weeks look right.
+
+---
+
 ## [2026-09-07 13:12 MST] owner: make check-in saves visible and confirm live completion
 
 By: Codex
