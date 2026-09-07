@@ -1,6 +1,6 @@
 # Owner MBP calculation foundation
 
-Status: internal, not connected to the running app. This module contains no owner data, authentication, storage, calendar integration, or AI. It does not change the current Cockpit. The approved private workspace UI remains a separate local preview.
+Status: calculation engine connected to the My Eyes Only beta through `owner-studio.js` and `pec-owner-studio.cjs`. The engine itself remains pure and contains no owner data. Private persistence and on-request AI live in the endpoint, not this module or the existing staff-accessible Cockpit. Calendar accountability and full automatic PEC import remain pending; the initial CRM adapter is a read-only, caveated weekly preview.
 
 `owner-mbp.js` is a pure ESM calculation engine shared by future UI and server adapters. Run `npm run test:owner-mbp`; the suite also runs through `npm test`'s posttest hook. Tests use synthetic data only. The site's publish directory is the repository root, so never commit the source workbook, actuals, private plans, journal records, or import snapshots here.
 
@@ -9,7 +9,7 @@ Status: internal, not connected to the running app. This module contains no owne
 `calculateMbp(input)` requires:
 
 - `schemaVersion: 1`, numeric `year`, explicit `weekEndings` (52 or 53 consecutive Sunday dates), and `asOfWeekEnding` selected from that calendar. Dates are ISO `YYYY-MM-DD`; calculations never consult the wall clock.
-- `lines`: separate business lines with stable unique `id` and display `label`. `total` is reserved. Labels are not authorization or company-source mappings. Painting/Epoxy to FTP/PEC mapping still needs confirmation before CRM import.
+- `lines`: separate business lines with stable unique `id` and display `label`. `total` is reserved. Labels are not authorization. Dylan confirmed Painting = FTP manual and Epoxy = PEC CRM on September 7, 2026.
 - Each line's `sales`: `newSales`, optional `carryOver` and `recurring`, `leadConversion`, `salesRatio`, `averageJobSize`, and `weekly`.
 - Each line's `revenue`: `annualProduced`, `chargeRate`, and `weekly`.
 - Every `weekly` array contains exactly one keyed row per source week, with `weekEnding`, `weight` and optional `actual`. Order can vary; duplicate/unknown/missing dates fail validation. Weights must add to 1 within floating-point tolerance and are never normalized silently.

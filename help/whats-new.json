@@ -1,5 +1,16 @@
 [
   {
+    "id": "owner-mbp-workspace-beta",
+    "date": "2026-09-07",
+    "title": "A private MBP workspace for the owner.",
+    "summary": "My Eyes Only brings the original weekly sales and revenue planning tabs into TopCoat, alongside morning focus, weekly reviews, Q4 rocks, and problem solving. It is available only to the entitled owner account.",
+    "howto": [
+      "Open Overview > My Eyes Only. Choose Sales Plan or Revenue Produced, then the original TOTAL, Painting, or Epoxy tab.",
+      "Use Weekly entry for your working plan, or Plan assumptions to adjust goals and seasonal allocations. The original snapshot stays unchanged. PEC CRM preview shows available numbers and clearly flags estimates and hours that still need reconciliation.",
+      "Use Morning focus and Weekly review to save commitments. Routine settings controls the morning requirement. AI insights run only when you request them; calendar accountability and the remaining workbook tabs are still being developed."
+    ]
+  },
+  {
     "id": "appointments-days-off",
     "date": "2026-09-07",
     "title": "Block days off so nobody can book them.",

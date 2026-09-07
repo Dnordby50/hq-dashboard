@@ -1,3 +1,27 @@
+## [2026-09-07 12:44 MST] owner: connect private MBP beta, saved check-ins and on-request insights
+
+By: Codex
+
+Changed: Added the authenticated pec-owner-studio endpoint and orange/blue owner UI, linked from Overview > My Eyes Only and ?v=owner-studio. Six original Sales Plan / Revenue Produced tabs, 52 Sunday rows, quarter filters, cumulative columns, source-cell labels, missing-input markers, weekly entry, assumptions and seasonal-weight editing are connected to private revision-checked storage. Morning check-ins save all eight answers or a reasoned emergency bypass; ten minutes is a target. Monday weekly review remains separate. Q4 rocks, problem-solving records, recent check-ins and private routine settings are editable. Owner identity changes clear private memory/DOM and cancel requests; unmount detaches handlers so ordinary CRM forms are unaffected. Same-route mandatory redirects preserve unsaved answers. Temporary discovery failures expose a retry link and retry read-only with bounded backoff. Entitlement/session enforcement remains server-side and in RLS, not the general admin role.
+
+Owner import actually performed: source:2026 and mbp:2026 both at revision 1. Source is immutable, working plan is draft. The input was reconciled against 7,177 source cells across six grids and 312 weekly rows, then read back from Supabase and deep-compared successfully. Workbook/source payloads stay outside the public repository. No customer or job records changed.
+
+AI consent: Dylan explicitly approved sending saved goals/KPI summaries and selected check-in/problem notes to Anthropic only when requested. Implemented POST insights with explicit requested=true and separate note selectors, generic errors, no automatic trigger, no shared cache or prompt logging. Tests use a stub; no real Anthropic request was made by Codex.
+
+PEC read-only preview: counts new PEC CRM opportunities by Phoenix created date, jobs/dollars by signed_date, produced revenue by completed_date. It does not overwrite the MBP. Current contract prices can restate history; missing prices remain unknown and duplicate deal IDs warn. Estimates remain unknown because sent_at changes on resend. Labor remains unknown until dated-hours/brand coverage is reconciled; manual job labor totals have no work date. Calendar blocks/adherence, full automatic PEC imports, cash balances, and the other workbook tabs are NOT implemented in this beta.
+
+Verified: npm test green including 31 owner tests; all touched CJS parse; esbuild bundles endpoint successfully; all eight inline script blocks match HEAD's parse failure set (only existing importmap JSON); JSON manifests parse; git diff --check clean. Browser QA via Codex browser against synthetic local fixtures: incomplete check-in refused, all answers saved/completed, sales and revenue tabs, 52 full-year / 13 Q4 rows, FTP entry recalculation, saved rock, explicit AI button, 360px focus and grid with no page overflow, no browser warnings/errors. Browser launcher from shell was unavailable, so browser QA used the supported in-app browser instead. No live owner login/save test or deploy yet at this commit.
+
+Files touched: index.html, production/owner-studio.js/.css/.test.js, production/owner-routine.js/.test.js, production/owner-studio-api.test.cjs, production/owner-test-fixture.js, netlify/functions/pec-owner-studio.cjs, production/owner-mbp.md, package.json, features.json, help/whats-new.json, PROJECT-LOG.md. External: two private owner documents and their initial revisions in Supabase.
+
+Next steps: Preserve Cowork's newer main log commit, integrate the beta, publish under Dylan's explicit push authorization, and verify live access. owner_studio_enabled remains false until live owner verification; this is the mandatory routine switch, not the owner entitlement or beta navigation visibility.
+
+Handoff to Cowork: None at this step. No migration is waiting on access.
+
+Handoff to Dylan: None at this step. Beta is not live yet.
+
+---
+
 ## [2026-09-07 11:59 MST] owner: private storage rehearsed and applied, feature remains disabled
 
 By: Codex

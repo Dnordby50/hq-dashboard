@@ -2730,6 +2730,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <div class="pec-subnav-group">Overview</div>
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="metrics">Metrics</button>
+          <button data-pec-view="owner-studio" style="display:none">My Eyes Only</button>
           <!-- Personal, private per-user checklist (build 28). Deliberately NO
                pec-role-admin class and no capability gate: every signed-in
                user has their own list, and the DB's owner-only RLS is the
@@ -5893,7 +5894,9 @@ if (document.readyState === 'loading') {
      is never a third-party CDN dependency on the critical path. It sets
      window.supabase; the module below reads createClient off it. -->
 <script src="./vendor/supabase-js-2.106.2.umd.js"></script>
+<link rel="stylesheet" href="./production/owner-studio.css">
 <script type="module">
+import { createOwnerStudio } from './production/owner-studio.js';
 const { createClient } = window.supabase;
 
 const CFG = window.CONFIG || {};
@@ -6057,6 +6060,9 @@ function wireAuthListener() {
   const { data } = supabase.auth.onAuthStateChange(async (ev, session) => {
     const prevUid = state.session?.user?.id;
     state.session = session;
+    // Clear private DOM and in-flight owner requests immediately on identity
+    // changes, including the initial auth event. Never await auth in this hook.
+    ownerStudio.sessionChanged();
     if (!sawInitialAuthEvent) { sawInitialAuthEvent = true; return; }
     // IDEMPOTENT GUARD (the fix for the mid-session "re-boot/reset to dashboard"):
     // supabase-js emits SIGNED_IN / USER_UPDATED / TOKEN_REFRESHED for the SAME
@@ -7292,6 +7298,26 @@ const state = {
   apptView: 'dayGridMonth', apptDate: null, openAppointmentId: null,
 };
 window.pecState = state;
+const ownerStudio = createOwnerStudio({
+  getSession: () => state.session,
+  onAccess: allowed => {
+    const button = document.querySelector('#pecSubnav [data-pec-view="owner-studio"]');
+    if (button) {
+      button.style.display = allowed !== false ? '' : 'none';
+      button.textContent = allowed === null ? 'My Eyes Only · Retry' : 'My Eyes Only';
+    }
+  },
+  openOwner: () => {
+    // Activate directly; the check-in guard intercepts legacy navigation clicks.
+    document.querySelectorAll('.tab-content.active').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-prescott-crm')?.classList.add('active');
+    const app = document.getElementById('pecApp');
+    if (app) app.style.display = '';
+    document.querySelectorAll('.tab-nav:not(.employee-nav) .tab-btn').forEach(el => el.classList.toggle('active', el.dataset.tab === 'prescott-crm'));
+    switchView('owner-studio');
+  },
+});
+window.pecSwitchView = switchView;
 // Bridge for the topbar Refresh button. That button lives in renderRoot's plain
 // <script> (around index.html:4703), which cannot see this module's switchView /
 // refreshBell. This re-renders the CURRENT CRM view with fresh data: it drops the
@@ -8310,6 +8336,7 @@ function setAuthGateState(stateName) {
 // owner/employee shell. Called after initAuth() and on every auth change.
 // Mirrors renderAuthUI's session/pending/approved branches but at the app level.
 function renderGlobalAuthGate() {
+  ownerStudio.sessionChanged();
   console.log('[crm] global auth gate', { hasSession: !!state.session, hasAdmin: !!state.adminUser });
   if (!state.session) { setAuthGateState('signin'); return; }
   if (!state.adminUser) {
@@ -8319,6 +8346,8 @@ function renderGlobalAuthGate() {
     return;
   }
   setAuthGateState('hidden');
+  // Direct fetch outside the auth lock; all entitlement checks are server-side.
+  void ownerStudio.bootstrap();
   try { window.applyAuthShell(deriveAuthShell(state.adminUser)); }
   catch (e) { console.error('[crm] applyAuthShell failed', e); }
   // What's New popup (prompt 14): fire-and-forget AFTER the gate hides, so a
@@ -8488,7 +8517,7 @@ function pecReadNavUrl(search) {
 // view falls back to the dashboard; a permission-gated view lands on the
 // dashboard WITH a toast (mirrors notifTarget's gating), never a blank panel.
 function pecApplyNavParams(p) {
-  const KNOWN = new Set(['dashboard', 'customers', 'jobs', 'messages', 'email-log', 'appointments', 'invoicing', 'commission', 'metrics', 'docs', 'schedule', 'nextday', 'pipeline', 'leads', 'drips', 'drip-approvals', 'estimates', 'costing', 'completed-costing', 'crew-bonus', 'dripjobs-sync-health', 'schema-drift', 'todos', 'ops', 'settings', 'ordering', 'catalog']);
+  const KNOWN = new Set(['dashboard', 'owner-studio', 'customers', 'jobs', 'messages', 'email-log', 'appointments', 'invoicing', 'commission', 'metrics', 'docs', 'schedule', 'nextday', 'pipeline', 'leads', 'drips', 'drip-approvals', 'estimates', 'costing', 'completed-costing', 'crew-bonus', 'dripjobs-sync-health', 'schema-drift', 'todos', 'ops', 'settings', 'ordering', 'catalog']);
   const v = KNOWN.has(p.view) ? p.view : 'dashboard';
   const ADMIN_ONLY = new Set(['ops', 'drips', 'drip-approvals', 'crew-bonus', 'settings', 'dripjobs-sync-health', 'schema-drift']);
   const gated =
@@ -8581,6 +8610,14 @@ window.addEventListener('popstate', (e) => {
 // View switching
 // ============================================================
 function switchView(v) {
+  if (v !== 'owner-studio' && ownerStudio.due()) v = 'owner-studio';
+  // A blocked navigation must not erase in-progress morning answers by
+  // replacing the same owner's DOM with a spinner and saved responses.
+  if (v === 'owner-studio' && state.view === v && document.getElementById('topcoat-owner-studio')) return;
+  if (state.view === 'owner-studio' && v !== 'owner-studio') {
+    if (!ownerStudio.canLeave()) return;
+    ownerStudio.unmount();
+  }
   // Boot diagnostic: pairs with the [crm] auth: dispatching log in
   // renderAuthUI. If the auth log fires but this one does NOT, the call is
   // being intercepted between renderAuthUI and switchView (unlikely).
@@ -8648,6 +8685,7 @@ function switchView(v) {
     // re-enters switchView for the same view. Mirrors the prod-side pattern at
     // `window.prodSwitchView` (search "[prod] switchView error:").
     const renderFn = ({
+      'owner-studio': () => ownerStudio.render(pecRoot),
       dashboard: renderDashboard,
       customers: renderCustomers,
       jobs: renderJobs,
