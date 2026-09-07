@@ -1,5 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
+Refreshed 2026-09-07 (Codex, owner workspace private storage): applied `20260907185049_owner_workspace_private.sql` after a rolled-back production rehearsal. Three owner tables verified live with RLS and one owner-only SELECT policy each, eight protected `owner_*` settings, private membership/session helper, and service-role-only revision-save RPC. One verified owner entitlement; documents and revisions empty. Owner Studio remains disabled. Other sections are unchanged, including Claude's separately pending appointment migration.
+
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
 Refreshed 2026-08-26 (Claude Code, required fields + warranty PDF) after applying `2026-09-18_estimate_lead_source.sql` and `2026-09-19_warranty_pdf.sql` live via MCP: `estimates.lead_source` (text nullable; the estimator's picked source, see the estimates note), storage bucket `pec-docs` (public, PDF-only, 10 MB, four pec_docs_* policies; company documents, the warranty PDF today) and settings key `estimate_warranty_pdf_path` ('' = none; the uploaded warranty's object path, shown at the BOTTOM of customer estimates and frozen into warranty_snapshot.pdf_path at send). Settings 216 rows live. Only those sections changed.
 Refreshed 2026-08-24 (Claude Code, Instant Pricing) after applying `2026-09-15_instant_pricing.sql` live via MCP: two new tables `pec_pricing_project_types` (the public /pricing price book: manual $/sqft low/high per project type, photo path in the new public `pec-pricing` Storage bucket, `priceable` false = call-us type, optional soft link to pec_prod_system_types; staff-ALL RLS, touch trigger owns updated_at) and `pec_pricing_requests` (every quote attempt: status priced/out_of_area/call_us/rejected/error, rate + price snapshots of exactly what the visitor saw, lead/customer links, `booked_appointment_id` when the same-visit booking landed; staff SELECT with the booking-style column grant that EXCLUDES `ip_hash`, so staff reads must name columns and select=* errors by design). New storage bucket `pec-pricing` (public read, staff write, 5 MB, image mimes). One `pec_lead_sources` row 'Instant Pricing' (alias instant_pricing). Thirteen `pricing_*` settings keys (Settings > Instant Pricing): `pricing_enabled` ('false', ships dark) and `pricing_url` ('', auto-fills on first enable) front-of-card; `pricing_headline`, `pricing_intro_text`, `pricing_reveal_copy`, `pricing_round_to` ('50'), `pricing_min_sqft` ('50'), `pricing_max_sqft` ('20000'), `pricing_rate_limit_per_hour` ('10'), `pricing_min_fill_seconds` ('2'), `pricing_duplicate_window_hours` ('24'), `pricing_out_of_area_copy`, `pricing_call_us_copy` behind Advanced. Same day, `2026-09-16_pricing_instant_touch_delay.sql`: fourteenth key `pricing_instant_touch_delay_minutes` ('10'; pec-pricing enrolls the lead with next_send_at pushed this many minutes out and skips the inline instant touch, so the drip runner delivers it under quiet hours unless a same-visit booking pauses the enrollment first; '0' restores inline-immediate). Settings 199 rows live. And `2026-09-17_pricing_sqft_tiers.sql`: `pec_pricing_project_types.tiers` (jsonb default '[]'; size brackets, see the table note) with the rates CHECK relaxed to rates-or-brackets. Only those sections changed.
@@ -1256,6 +1258,46 @@ Policies (4, on THIS table only, reusing existing helpers with no new permission
 RPC: `pec_ops_item_notify(p_item_id uuid, p_title text, p_assignee text default null)` returns void, SECURITY DEFINER, `search_path = public`, EXECUTE granted to `authenticated`. Raises `admin only` unless `is_admin_role()`; otherwise inserts exactly ONE `pec_notifications` row (type 'ops_item', target_view 'ops', target_id = the item id). It exists because staff sessions cannot insert into pec_notifications directly (that table grants SELECT/UPDATE only), the same pattern as `log_costing_submitted`. Derived Ops Queue checks NEVER call it: they re-derive on every render and would re-fire the bell forever.
 WHAT THIS TABLE IS NOT: it is not the queue. The ten Ops Queue checks are DERIVED at render time from tables that already exist, so they self-clear when the underlying data is fixed. This table stores only the two things that cannot be derived — manual items (source='manual') and dismissals of a single derived row (source='auto', keyed by check_key such as 'job_missing_revenue:<uuid>').
 
+### pec_owner_access
+RLS: enabled. One SELECT policy, authenticated current owner only; no browser writes.
+
+| column | type | nullable | default |
+|---|---|---|---|
+| auth_user_id | uuid | no | |
+| enabled | boolean | no | true |
+| created_at | timestamptz | no | now() |
+
+PK: auth_user_id. FK: auth_user_id -> auth.users.id (on delete cascade). Entitlements are managed through trusted service/database access, never user metadata or the general admin role.
+
+### pec_owner_documents
+RLS: enabled. Authenticated SELECT requires matching auth_user_id AND current owner entitlement/session. No browser INSERT/UPDATE/DELETE grants.
+
+| column | type | nullable | default |
+|---|---|---|---|
+| auth_user_id | uuid | no | |
+| doc_key | text | no | |
+| revision | integer | no | |
+| body | jsonb | no | |
+| updated_at | timestamptz | no | now() |
+
+PK: (auth_user_id, doc_key). FK: auth_user_id -> pec_owner_access.auth_user_id (on delete cascade). doc_key is a bounded identifier; body must be an object <= 2 MB; revision > 0. All app writes go through validated owner endpoints and `pec_owner_save_document`, not a direct table update.
+
+### pec_owner_revisions
+RLS: enabled. Same owner-only SELECT boundary; immutable to browser roles.
+
+| column | type | nullable | default |
+|---|---|---|---|
+| auth_user_id | uuid | no | |
+| doc_key | text | no | |
+| revision | integer | no | |
+| request_id | uuid | no | |
+| body | jsonb | no | |
+| created_at | timestamptz | no | now() |
+
+PK: (auth_user_id, doc_key, revision). FK: (auth_user_id, doc_key) -> pec_owner_documents (on delete cascade). Unique index pec_owner_revisions_request_idx on (auth_user_id, request_id). Service role has SELECT/INSERT only, not UPDATE/DELETE. Private journal/review contents never enter shared audit_log or settings.
+
+Owner functions: `topcoat_owner_private.allowed()` is SECURITY DEFINER, fixed empty search_path, non-exposed schema, explicit grants only to authenticated/service_role. Checks auth.uid(), entitlement, non-revoked admin_users linkage, confirmed/non-banned auth.users, and a currently valid auth.sessions ID matching the signed JWT. `public.pec_owner_authorized()` is a SECURITY INVOKER boolean wrapper callable only by authenticated users. `public.pec_owner_save_document(uuid,text,integer,uuid,jsonb)` is SECURITY INVOKER and callable only by service_role: per-owner advisory lock, compare-and-swap revision, request-id deduplication, immutable history, and immutable existing source:* documents. Owner endpoints must derive the owner UID from a validated JWT and call the authorization wrapper before any service-role access.
+
 ### pec_payments
 RLS: enabled · rows: 123
 
@@ -2395,6 +2437,8 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
+Owner workspace settings (2026-09-07): owner_studio_enabled ('false' until release), owner_morning_time ('06:20'), owner_morning_days ('[1,2,3,4,5]'), owner_morning_target_minutes ('10'), owner_weekly_time ('08:00'), owner_weekly_day ('1'), owner_weekly_target_minutes ('30'), owner_timezone ('America/Phoenix'). Restrictive owner_settings_boundary applies to authenticated SELECT/INSERT/UPDATE/DELETE for owner_* keys, in addition to existing policies. Non-owner users retain normal access to other keys. These rows contain configuration only, never private state or AI caches.
+
 RLS: enabled · rows: 184 (live count 2026-08-19, after the prompt-101 online-booking migration)
 
 | column | type | nullable | default |

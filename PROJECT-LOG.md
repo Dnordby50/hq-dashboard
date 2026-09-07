@@ -1,3 +1,23 @@
+## [2026-09-07 11:59 MST] owner: private storage rehearsed and applied, feature remains disabled
+
+By: Codex
+
+Changed: Rebased the isolated MBP foundation onto Claude's completed/pushed 81e5501 appointment changes, preserving both top log entries. Applied the new owner-workspace storage migration after a successful rolled-back production rehearsal. Added trusted owner entitlements, owner-only document/revision reads, a live-session check, service-role-only atomic/revision-checked saves with request deduplication, immutable source documents, and protected configuration. Eight owner_* settings seeded with the feature disabled. SCHEMA.md refreshed from live columns/policies/counts, migration manifest regenerated. No UI or owner-content import yet.
+
+Why: Dylan said go after Claude finished, confirmed Painting = FTP manual and Epoxy = PEC CRM, and confirmed saved answers may finish the morning check-in early (ten minutes is the target). Existing admin access includes other people, so the new workspace cannot use the admin role as its privacy boundary.
+
+Verified: Free-plan project has no separate test branch. Rehearsal ran in a transaction ending with intentional OWNER_REHEARSAL_PASS exception, then a separate query confirmed complete rollback. Tests covered owner read, other-admin/anonymous denial, no entitlement self-grant, no direct document writes or direct write-RPC calls from authenticated users, no reading/changing owner settings by another admin, nonexistent-session denial, disabled-entitlement denial, two immutable revisions, idempotent replay, and stale-revision conflict. apply_migration returned success. Live verification: all three tables RLS enabled, one SELECT policy each, one entitlement, zero documents/revisions, eight settings with owner_studio_enabled=false. Supabase security advisors returned 55 existing findings and none referencing the owner objects. No existing advisor finding was changed. The pending appointment migration remains untouched.
+
+Files touched: supabase/migrations/20260907185049_owner_workspace_private.sql (new), SCHEMA.md, netlify/functions/_migration-manifest.json, PROJECT-LOG.md.
+
+Next steps: Build and validate the private endpoint/UI, import the workbook as an immutable private source plus a separate draft working plan, and enable only after verification. No public workbook data, real calendar writes, or mandatory navigation gate has been introduced in this step.
+
+Handoff to Cowork: None. This migration was actually applied and verified by Codex.
+
+Handoff to Dylan: None for this storage step. Owner Studio remains disabled while integration continues.
+
+---
+
 ## [2026-09-07 10:59 MST] owner: isolated MBP sales and production calculation foundation
 
 By: Codex

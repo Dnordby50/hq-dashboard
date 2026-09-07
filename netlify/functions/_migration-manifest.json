@@ -3452,6 +3452,62 @@
           "name": "appt_default_duration_minutes"
         }
       ]
+    },
+    {
+      "file": "20260907185049_owner_workspace_private.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_owner_access"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_owner_documents"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_owner_revisions"
+        },
+        {
+          "kind": "index",
+          "name": "pec_owner_revisions_request_idx"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_studio_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_morning_time"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_morning_days"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_morning_target_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_weekly_time"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_weekly_day"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_weekly_target_minutes"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_timezone"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3500,6 +3556,9 @@
     "pec_lead_sources",
     "pec_notifications",
     "pec_ops_items",
+    "pec_owner_access",
+    "pec_owner_documents",
+    "pec_owner_revisions",
     "pec_payments",
     "pec_portal_views",
     "pec_presentation_sections",
