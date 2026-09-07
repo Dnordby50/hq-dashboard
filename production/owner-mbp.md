@@ -82,7 +82,7 @@ To match the workbook, the top YTD actual ratios and annual footer include all e
 
 ## Integration work before release
 
-1. Confirm the owner entitlement and enforce record ownership in database policies and every endpoint, including another admin account. Cockpit's `OWNER_ROLES` includes admin, office, and pm; its label is not a privacy boundary. `pec_user_todos` demonstrates a useful per-user ownership pattern, not a table to overload.
+1. Confirm the owner entitlement and enforce record ownership in database policies and every endpoint, including another admin account. the former Cockpit's `OWNER_ROLES` includes admin, office, and pm; its label is not a privacy boundary. `pec_user_todos` demonstrates a useful per-user ownership pattern, not a table to overload.
 2. Persist versioned private plans, weekly inputs, immutable import/review snapshots, check-in responses, and correction history. Keep all private content out of shared `settings`, generic AI caches, staff logs, notifications, and public assets. Use settings only for appropriate configuration, not records or caches.
 3. Reconcile PEC booking and production recognition dates, job/estimate identity, callback/cancellation/change-order handling, hour attribution, fiscal boundaries and historical cutover. Existing Metrics has distinct signed-date sales, completed-date revenue, and payment-date collections; legacy Cockpit sales/revenue share a source and cannot be reused as distinct MBP actuals.
 4. Connect the approved orange/blue workspace and exact six grids. Test data edits, validation, freshness indicators, source drills, keyboard navigation, narrow screens and private-account isolation.

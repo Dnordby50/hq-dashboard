@@ -50,7 +50,7 @@ Currently set to `dylannordby` — change if your GitHub username is different.
 
 The Netlify Function at `netlify/functions/sop-chat.js` reads this env var. The key never ships to the browser.
 
-**Important:** The JARVIS tab still uses the client-side key for backward compatibility. You can remove it from client code once you migrate JARVIS to the function too. Until then, the key remains in `index.html` — that's fine, it was already exposed.
+**Note:** The JARVIS tab that once used a client-side key was removed on 2026-09-07 (with the Cockpit); no client-side Anthropic key remains.
 
 ## 5. Verify the Netlify Function deploys
 

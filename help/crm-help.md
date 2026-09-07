@@ -18,8 +18,6 @@ The left sidebar is the main menu. Views are grouped into sections:
 - **Finance**: Invoicing, Job Costing, Bonus Report, Commission
 - **Admin**: Price & Material Catalog, DripJobs Sync Health, Settings, Help
 
-The **Cockpit** (the "Daily flow" card at the bottom of the sidebar, button "Open Cockpit") is a separate workspace with three tabs: Dashboard, Execution, and JARVIS (an AI strategy assistant). It is reached only from that card, not from the menu list.
-
 The **top bar** has global search (search jobs by customer, address, or phone), a Refresh button (re-renders the current view with fresh data), a notification bell, and your account menu (logout).
 
 Some views are admin only (Job Costing, Bonus Report, Commission, Price & Material Catalog, DripJobs Sync Health, Settings). If you do not see one, your account does not have access; ask Dylan.

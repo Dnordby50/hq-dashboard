@@ -1,3 +1,27 @@
+## [2026-09-07 12:40 MST] shell: remove the Cockpit / Daily flow workspace (Dashboard, Execution, JARVIS); My Eyes Only replaces it
+
+By: Claude Code
+
+Changed: index.html loses about 2,600 lines: the sidebar "Daily flow / Cockpit" promo card, the Cockpit sub-nav, the three hidden tab buttons and their sections (#tab-command booked-sales revenue cards + scorecard + rocks + weekly rhythm + Claude projects + the Why banner; #tab-execution Google-Sheet task list + Cowork status cards; #tab-jarvis chat with Web Speech input, ElevenLabs voice output, brain dump, coach-session log), the whole three.js module script (tesseract background + Siri-style voice orb) and its importmap, the legacy JS for all of it (revenue/goals/tasks/cowork/coach/voice/brain-dump blocks), the Cockpit-only CONFIG keys (Sheets API key + sheet ids + monthly targets + the ElevenLabs key + coach-log script + sheets-proxy URL), the "Import Data" / "+ Add Project" topbar buttons, and every CSS block that only those sections used (kept every shared rule: .btn*, .filter-btn, .card*, .progress-*, .sop-*, .setup-notice's siblings). Deleted outright: netlify/functions/sheets-proxy.cjs (its only callers were Cockpit loaders), sync-braindump.sh, coach-log-setup.md. features.json drops four entries (Cockpit and JARVIS, Google Sheets bridge, Revenue goals home, Owner task list) and reattaches production/owner-mbp.test.js + owner-mbp.md to the My Eyes Only entry; help/crm-help.md, SOP-SETUP.md, production/owner-mbp.md lose their Cockpit paragraphs; one What's New entry.
+
+Why: Dylan: "remove the daily flow/cockpit. the new my eyes only takes care of all of that." My Eyes Only (the owner workspace, prompt from 2026-09-07 earlier today) now carries the morning focus, MBP plan, rocks, and reviews that the Cockpit used to approximate from Google Sheets, so the staff-visible Cockpit was a second, stale copy of the same ground.
+
+How it was cut safely (the non-obvious parts): (1) An Explore pass mapped every symbol in the legacy classic-script block first, because that block also defines things the surviving app needs: `CONFIG` (SOP chat, help widget, Supabase client), `$`, `esc`, `sheetsAuthHeaders` (still used by the BusyBusy export POST in Settings, despite its name), `timeAgo` (the Messages/drip table), `applyAuthShell`, `logout`, `init`, `refreshAll`, and the SOP hub + employee shell. All of those stay; `timeAgo` was lifted out of the deleted Cowork block and re-homed with a comment. (2) `init()` and `refreshAll()` were rewritten rather than deleted: `init()` now only sets the header date (it used to await the Sheets loaders, which would have thrown on the missing elements), and `refreshAll()` is just the status-dot blink the header Refresh, the topbar Refresh, and the 5-minute interval still call; the CRM refreshes its own view through window.pecRefreshCurrentView from the same click. (3) The unguarded `#rdPromoBtn` listener in the redesign shell was the one line that would have aborted the whole shell build if the card went and the JS stayed; it went with the card, along with the cockpit-child button collection, the TITLES entries, the sub-nav wiring, and the Add/Import button visibility logic. (4) The redesign-skin CSS overrides mix Cockpit and SOP selectors on the same lines, so those were edited selector-by-selector (.sop-card, .sop-dept-tag, .sop-company-tag, .email-tag, .sop-typing kept). (5) OWNER_ROLES, which My Eyes Only's entitlement reads, lives in the CRM module, not the deleted block (checked before cutting).
+
+Side effect worth knowing: the hardcoded ElevenLabs API key and the Google Sheets browser key that lived in CONFIG are gone from the client bundle. The ElevenLabs key was live in source; rotating it in the ElevenLabs dashboard is still the right move since it shipped in git history.
+
+Verified: `npm test` exit 0 (30 suites, 0 failed); per-script-block parse of index.html: 6 blocks, 0 failures (the importmap block that used to fail is gone); features.json and help/whats-new.json reload through JSON.parse; grep for cockpit / jarvis / braindump / sheets-proxy / rd-promo / tesseract / voice-orb / the deleted function names finds nothing live in index.html (three explanatory comments remain on purpose).
+
+Files touched: index.html, features.json, help/whats-new.json, help/crm-help.md, SOP-SETUP.md, production/owner-mbp.md, PROJECT-LOG.md; deleted netlify/functions/sheets-proxy.cjs, sync-braindump.sh, coach-log-setup.md.
+
+Next steps: None required. The Booked Jobs / Dashboard Data / MBP sheet ids stay listed in CLAUDE.md as resource ids (Cowork still uses them); nothing in the app reads them now.
+
+Handoff to Cowork: None.
+
+Handoff to Dylan: (1) Hard-reload after deploy; the sidebar no longer has the bottom Daily flow card, and the top bar no longer shows Import Data / Add Project. (2) CLAUDE.md File Layout still lists sync-braindump.sh and coach-log-setup.md (lines 138 and 141); those files are deleted, so drop the two lines when convenient (CLAUDE.md edits are yours). (3) Rotate the ElevenLabs key that was in the old client bundle if the account is still active.
+
+---
+
 ## [2026-09-07 14:43 MST] owner: top navigation, month filters, and weekly rock milestones
 
 By: Codex

@@ -1,5 +1,16 @@
 [
   {
+    "id": "cockpit-removed",
+    "date": "2026-09-07",
+    "title": "The Cockpit (Daily flow) is gone; My Eyes Only takes its place.",
+    "summary": "The Daily flow card at the bottom of the sidebar, and the Cockpit workspace behind it (Dashboard, Execution, JARVIS), have been removed. The owner planning and daily routine now live in My Eyes Only, so there is one place for that work instead of two.",
+    "howto": [
+      "Open Overview and choose My Eyes Only for the owner workspace (morning focus, weekly plan, rocks, and reviews).",
+      "Everything in the main menu (Customers, Jobs, Schedule, Appointments, Invoicing, and so on) is unchanged.",
+      "The Refresh button in the top bar still refreshes whatever view you are on."
+    ]
+  },
+  {
     "id": "owner-top-tabs-months-weekly-milestones",
     "date": "2026-09-07",
     "title": "More room for your MBP, with weekly rock milestones.",

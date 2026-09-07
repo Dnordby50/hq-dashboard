@@ -6,12 +6,47 @@
       "area": "dashboard",
       "description": "Owner-entitled private workspace reached from Overview > My Eyes Only or ?v=owner-studio. Orange and blue UI beta, separate from the staff Cockpit, with horizontal top navigation and full-width content. Six source-shaped MBP Sales Plan / Revenue Produced tabs retain original weeks, formulas, annual assumptions, weekly allocations, actuals, cumulative gaps and missing-input markers. A grouped Period picker filters by full year, source quarter, or month of the week-ending date without changing cumulative or annual values. All three weekly-table header rows stay pinned in a bounded two-axis scroll area; week-ending dates remain pinned horizontally. Weekly-override columns and entry fields are omitted, while stored source overrides and their calculation effects are preserved. Uploaded 2026 workbook is an immutable private reference plus a separate draft working plan, never a static published asset. Painting maps to FTP manual, Epoxy to PEC. Authenticated read-only PEC weekly preview supplies new CRM opportunities, booked jobs/dollars and completed-job revenue; estimates and labor stay unknown pending date/coverage reconciliation. Morning focus shows pending saves and results beside its buttons, preserves answers after errors, and distinguishes draft from completed. It requires saved answers or a recorded emergency reason when enabled, ten minutes is a target, with 6:20 weekday and Monday 8:00 weekly-review defaults. Private Q4 rocks, weekly reviews, problem-solving notes and recent check-ins persist with revision conflict protection. Rocks have editable milestone checklists; legacy checkpoints become the first milestone when saved, with original notes retained. Monday This week selections appear in morning focus all week and carry forward unfinished; completion is saved with the check-in, whose first answer logs weekly rock progress. Plan and check-in saves are sequential, preserve drafts on failure, and do not claim cross-document atomicity. AI is manual only: explicit Generate sends saved goals/KPI summaries to Anthropic and includes check-in/problem notes only when selected, with no shared cache. Calendar scheduling/adherence, automatic complete PEC import, cash balances and additional workbook tabs remain follow-up work. Required-routine switch remains off until live owner verification; owner can still open the beta.",
       "code": {
-        "indexHtml": ["ownerStudio", "renderGlobalAuthGate", "switchView", "wireAuthListener"],
-        "netlifyFunctions": ["pec-owner-studio.cjs"],
-        "other": ["production/owner-studio.js", "production/owner-studio.css", "production/owner-routine.js", "production/owner-mbp.js", "production/owner-studio.test.js", "production/owner-studio-api.test.cjs", "production/owner-routine.test.js", "supabase/migrations/20260907185049_owner_workspace_private.sql"]
+        "indexHtml": [
+          "ownerStudio",
+          "renderGlobalAuthGate",
+          "switchView",
+          "wireAuthListener"
+        ],
+        "netlifyFunctions": [
+          "pec-owner-studio.cjs"
+        ],
+        "other": [
+          "production/owner-mbp.js",
+          "production/owner-mbp.md",
+          "production/owner-mbp.test.js",
+          "production/owner-routine.js",
+          "production/owner-routine.test.js",
+          "production/owner-studio-api.test.cjs",
+          "production/owner-studio.css",
+          "production/owner-studio.js",
+          "production/owner-studio.test.js",
+          "supabase/migrations/20260907185049_owner_workspace_private.sql"
+        ]
       },
-      "tables": ["pec_owner_access", "pec_owner_documents", "pec_owner_revisions", "settings", "leads", "jobs", "customers"],
-      "settings": ["owner_studio_enabled", "owner_morning_time", "owner_morning_days", "owner_morning_target_minutes", "owner_weekly_time", "owner_weekly_day", "owner_weekly_target_minutes", "owner_timezone"],
+      "tables": [
+        "pec_owner_access",
+        "pec_owner_documents",
+        "pec_owner_revisions",
+        "settings",
+        "leads",
+        "jobs",
+        "customers"
+      ],
+      "settings": [
+        "owner_studio_enabled",
+        "owner_morning_time",
+        "owner_morning_days",
+        "owner_morning_target_minutes",
+        "owner_weekly_time",
+        "owner_weekly_day",
+        "owner_weekly_target_minutes",
+        "owner_timezone"
+      ],
       "since": "2026-09"
     },
     {
@@ -1494,27 +1529,6 @@
       "since": "2026-05"
     },
     {
-      "name": "Cockpit and JARVIS",
-      "area": "platform",
-      "description": "A separate Cockpit workspace reached from the sidebar's Daily flow card, with Dashboard, Execution, and JARVIS tabs. JARVIS is an AI strategy assistant, and the Dashboard gives a quick read on the current state of the business including booked sales. Owner MBP foundation (2026-09-07): production/owner-mbp.js separately calculates the source-shaped weekly Sales Plan and Revenue Produced grids, weighted business-line totals, seasonality, actuals, cumulative gaps, and explicit missing-input coverage. This internal foundation is not connected to Cockpit, authentication, persistence, CRM queries, or AI yet; it does not make the existing staff-accessible Cockpit owner-private.",
-      "code": {
-        "indexHtml": [
-          "sendCoach",
-          "jarvisSpeak",
-          "startVoice",
-          "saveCoachSession",
-          "renderBrainDumps"
-        ],
-        "other": [
-          "production/owner-mbp.js",
-          "production/owner-mbp.test.js",
-          "production/owner-mbp.md"
-        ]
-      },
-      "tables": [],
-      "since": "2026-05"
-    },
-    {
       "name": "Claude-facing MCP server",
       "area": "integrations",
       "description": "A Model Context Protocol server exposing read-only tools (sales summary, customers, jobs, schedule, pipeline) so Claude can answer questions about the business directly against live data. Sixth tool get_sales_recordings (2026-07-28): read-only list of SalesAsk sales visit recordings from pec_salesask_recordings (AI summary, action items, process score, recording link; filters customer/rep/date window; transcripts excluded to keep payloads small).",
@@ -1750,21 +1764,6 @@
       "since": "2026-08"
     },
     {
-      "name": "Google Sheets bridge",
-      "area": "integrations",
-      "description": "The original data bridge using Google Sheets (Booked Jobs and Dashboard Data sheets) via an Apps Script proxy to feed the dashboard's booked-sales and revenue figures, since migrated toward Supabase-native reads.",
-      "code": {
-        "indexHtml": [
-          "loadRevenue"
-        ],
-        "netlifyFunctions": [
-          "sheets-proxy.cjs"
-        ]
-      },
-      "tables": [],
-      "since": "2026-04"
-    },
-    {
       "name": "Slack notifications",
       "area": "integrations",
       "description": "Outbound Slack alerts to the #epoxysales channel for key sales and production events: estimate accepted or declined, costings sent back with their reason, and (prompt 75) every customer open of a sent estimate with the price, salesperson, which open it is, and time since sent (switchable via estimate_view_slack_enabled in Settings > Estimates). Prompt 87: the accept post is a celebration message (customer, estimate number, total, salesperson, celebratory emoji) with its own switch, estimate_accept_slack_enabled, a checkbox inside the Slack card in Settings > Estimates; change/decline posts keep the plain informational shape. All posts share the SLACK_OFFICE_WEBHOOK Netlify env var; if NOTHING TopCoat posts to #epoxysales (accepts and view opens both missing), that env var is unset or its incoming webhook is dead, diagnosed 2026-08-12.",
@@ -1794,45 +1793,6 @@
         "settings"
       ],
       "since": "2026-08"
-    },
-    {
-      "name": "Revenue goals home",
-      "area": "dashboard",
-      "description": "Owner home screen tracking booked-sales revenue pace plus the annual scorecard, rocks, meeting rhythm, and projects cards, sourced from Google Sheets.",
-      "code": {
-        "indexHtml": [
-          "loadRevenue",
-          "renderJobsTable",
-          "renderScorecard",
-          "renderRocks",
-          "renderRhythm",
-          "renderProjects"
-        ],
-        "netlifyFunctions": [
-          "sheets-proxy.cjs"
-        ]
-      },
-      "tables": [],
-      "since": null
-    },
-    {
-      "name": "Owner task list",
-      "area": "dashboard",
-      "description": "Owner personal task list synced through a Google Sheet, separate from crew tasks and the private per-user to-dos.",
-      "code": {
-        "indexHtml": [
-          "loadTasks",
-          "syncAllTasks",
-          "addTask",
-          "toggleTask",
-          "renderTasks"
-        ],
-        "netlifyFunctions": [
-          "sheets-proxy.cjs"
-        ]
-      },
-      "tables": [],
-      "since": null
     },
     {
       "name": "Staff authentication",
@@ -2220,14 +2180,13 @@
     {
       "name": "Security hardening & monitoring",
       "area": "security",
-      "description": "Server-side authorization and monitoring from the 2026-07-25 security review. requireStaff() (in _pec-supabase.cjs) validates a caller's Supabase JWT AND confirms an admin_users row before any service-role endpoint acts (send-sms/email, blast-run, metrics-ai, estimate-*, lead-ai, drip-approve, appt-notify, sheets-proxy, sync-stuck, sop-chat, log-signin, notify-costing-sendback, migration-drift manual). safeEqual() gives constant-time secret compares. DB-side: log_* notification RPCs guard on is_admin_staff and anon EXECUTE revoked; RLS RBAC via has_permission() on commissions/costing/catalog; audit_log made append-only. pec-security-monitor.cjs (scheduled every 15m) Slacks an alert on a staff sign-in from a never-before-seen IP, gated by security_alerts_enabled.",
+      "description": "Server-side authorization and monitoring from the 2026-07-25 security review. requireStaff() (in _pec-supabase.cjs) validates a caller's Supabase JWT AND confirms an admin_users row before any service-role endpoint acts (send-sms/email, blast-run, metrics-ai, estimate-*, lead-ai, drip-approve, appt-notify, sheets-proxy, sync-stuck, sop-chat, log-signin, notify-costing-sendback, migration-drift manual). safeEqual() gives constant-time secret compares. DB-side: log_* notification RPCs guard on is_admin_staff and anon EXECUTE revoked; RLS RBAC via has_permission() on commissions/costing/catalog; audit_log made append-only. pec-security-monitor.cjs (scheduled every 15m) Slacks an alert on a staff sign-in from a never-before-seen IP, gated by security_alerts_enabled. 2026-09-07: sheets-proxy.cjs was deleted outright with the Cockpit (its only caller), so the JWT gate on it is moot.",
       "code": {
         "indexHtml": [
           "sheetsAuthHeaders"
         ],
         "other": [
           "netlify/functions/_pec-supabase.cjs",
-          "netlify/functions/sheets-proxy.cjs",
           "netlify/functions/pec-security-monitor.cjs",
           "supabase/migrations/2026-07-25_security_hardening_rpcs.sql",
           "supabase/migrations/2026-07-25_rbac_helper_and_audit_appendonly.sql",
