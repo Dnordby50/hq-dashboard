@@ -1,5 +1,38 @@
 [
   {
+    "id": "appointments-days-off",
+    "date": "2026-09-07",
+    "title": "Block days off so nobody can book them.",
+    "summary": "You can now close the Appointments calendar for a day or a range of days, for the whole company or for one salesperson. Online booking stops offering those days, the calendar shades them, and staff get a warning before scheduling onto one by hand. Company holidays from the crew schedule close online booking too.",
+    "howto": [
+      "Open Appointments and tap Days off (or Settings > Appointments > Days off > Block days).",
+      "Pick the first and last day, choose Everyone or one salesperson, add a reason, and tap Block these days.",
+      "Remove a block from the same list when plans change. Existing appointments are never moved."
+    ]
+  },
+  {
+    "id": "appointments-who-booked",
+    "date": "2026-09-07",
+    "title": "Every appointment now shows who booked and changed it.",
+    "summary": "Open any appointment and expand History to see who booked it, moved it, canceled it, or reassigned it, with the time of each change. Bookings from the online page show as the customer, and Routemize or Google Calendar changes are labeled too. Settings > Appointments has an Appointment activity list of the last 40 changes across the calendar.",
+    "howto": [
+      "Open an appointment from the calendar and expand History at the bottom of the popup.",
+      "For a company-wide view, open Settings > Appointments and scroll to Appointment activity.",
+      "Click an appointment title in that list to jump straight to it."
+    ]
+  },
+  {
+    "id": "appointments-default-length",
+    "date": "2026-09-07",
+    "title": "Appointments default to 45 minutes, and the end time follows the start.",
+    "summary": "A new appointment starts out 45 minutes long, and changing the start time now moves the end time with it, so a reschedule is one change instead of two. If you set a custom end time yourself, that length is kept when you move the start.",
+    "howto": [
+      "Open an appointment and change the Start time. The End time updates on its own.",
+      "To make one longer or shorter, change the End time after the Start; that custom length sticks for that edit.",
+      "Change the default in Settings > Appointments > Days off > Default appointment length."
+    ]
+  },
+  {
     "id": "mobile-popups-fit-screen",
     "date": "2026-09-02",
     "title": "Popups fit the screen on phones.",

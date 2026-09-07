@@ -68,6 +68,9 @@ function baseTables(over = {}) {
     pec_drip_enrollments: [],
     pec_drip_campaigns: [],
     pec_email_senders: [],
+    // 2026-09-21: days off for the appointment calendar + crew holidays.
+    pec_appointment_blocked_days: [],
+    pec_prod_holidays: [],
     ...over,
   };
 }
@@ -279,6 +282,46 @@ const goodBody = (over = {}) => ({
     ok(fx.db.lead_events.some(e => /OUTSIDE the service area/.test((e.payload || {}).text || '')),
       'out of area: timeline note names the address and why');
     ok(fx.db.pec_notifications.some(n => n.type === 'booking_out_of_area'), 'out of area: bell rang');
+  }
+
+  // ---- Days off (2026-09-21): a blocked day or a crew holiday never offers,
+  // and the write path refuses the slot even when a client posts it directly.
+  {
+    const fx = makeDb(baseTables({ pec_appointment_blocked_days: [
+      { id: 'bd1', start_date: '2026-08-25', end_date: '2026-08-25', sales_member_id: null, reason: 'Off' },
+    ] }));
+    const { deps } = makeDeps(fx);
+    const slots = await processSlots(deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    ok(slots.status === 200 && !slots.body.days.some(d => d.date === '2026-08-25'), 'blocked day: Tuesday is not offered');
+    ok(slots.body.days.some(d => d.date === '2026-08-26'), 'blocked day: Wednesday still offers');
+    const book = await processBook(deps, goodBody(), { ipHash: 'ipBD' });
+    ok(book.status === 409 && book.body.taken === true, 'blocked day: a direct post for that slot is refused with fresh slots');
+    ok(fx.db.pec_appointments.length === 0, 'blocked day: nothing was written');
+  }
+  {
+    const fx = makeDb(baseTables({ pec_prod_holidays: [{ id: 'h1', holiday_date: '2026-08-25', name: 'Test holiday' }] }));
+    const { deps } = makeDeps(fx);
+    const slots = await processSlots(deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    ok(slots.status === 200 && !slots.body.days.some(d => d.date === '2026-08-25'), 'crew holiday: the day is closed for online booking by default');
+    // The switch off: holidays stop mattering, the blocked-days table still does.
+    const fx2 = makeDb(baseTables({
+      pec_prod_holidays: [{ id: 'h1', holiday_date: '2026-08-25', name: 'Test holiday' }],
+      settings: baseTables().settings.concat([{ key: 'booking_block_crew_holidays', value: 'false' }]),
+    }));
+    const slots2 = await processSlots(makeDeps(fx2).deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    ok(slots2.body.days.some(d => d.date === '2026-08-25'), 'crew holiday: booking_block_crew_holidays=false reopens the day');
+  }
+  {
+    // A rep-specific day off with a single active rep closes the day; the
+    // table missing entirely (migration pending) degrades to "no blocks".
+    const fx = makeDb(baseTables({ pec_appointment_blocked_days: [
+      { id: 'bd2', start_date: '2026-08-25', end_date: '2026-08-26', sales_member_id: REP, reason: 'PTO' },
+    ] }));
+    const slots = await processSlots(makeDeps(fx).deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    ok(!slots.body.days.some(d => d.date === '2026-08-25' || d.date === '2026-08-26'), 'rep day off: both days in the range are closed');
+    const t = baseTables(); delete t.pec_appointment_blocked_days; delete t.pec_prod_holidays;
+    const slotsNoTable = await processSlots(makeDeps(makeDb(t)).deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    ok(slotsNoTable.status === 200 && slotsNoTable.body.days.some(d => d.date === '2026-08-25'), 'missing tables (pre-migration): slots still compute');
   }
 
   // ---- Empty allowlist NEVER means everyone is out of area -----------------

@@ -3420,6 +3420,38 @@
       "hasHeader": true,
       "none": "extends the pec_prod_jobs_touchup_cause_check CHECK constraint with",
       "artifacts": []
+    },
+    {
+      "file": "2026-09-21_appt_blocked_days_audit_trail.sql",
+      "date": "2026-09-21",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_appointment_blocked_days"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.created_by_label"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_appt_blocked_days_range"
+        },
+        {
+          "kind": "index",
+          "name": "idx_audit_log_appointments"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_block_crew_holidays"
+        },
+        {
+          "kind": "setting",
+          "name": "appt_default_duration_minutes"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3438,6 +3470,7 @@
     "jobs",
     "lead_events",
     "leads",
+    "pec_appointment_blocked_days",
     "pec_appointment_reminder_rules",
     "pec_appointment_reminder_sends",
     "pec_appointments",

@@ -52,7 +52,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { sb, json, randomToken, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
+const { sb, withActor, json, randomToken, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
 const { pushApptById } = require('./_pec-appt-push.cjs');
 const {
   runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects,
@@ -97,7 +97,34 @@ const SETTING_KEYS = [
   'booking_home_base_address', 'booking_rate_limit_per_hour',
   'booking_min_fill_seconds', 'booking_duplicate_window_hours',
   'booking_sms_disclosure', 'booking_manage_link_text',
+  'booking_block_crew_holidays',
 ];
+
+// Audit-trail actor labels (2026-09-21). The customer never has a staff
+// session, so these ride the write (book_appointment_slot's p_actor, or the
+// x-topcoat-actor header on a plain PATCH) and land in audit_log.admin_email.
+const ACTOR_BOOK = 'Customer (online booking)';
+const ACTOR_MANAGE = 'Customer via manage link';
+
+// book_appointment_slot with the p_actor argument (2026-09-21 migration). If
+// the migration has not landed yet PostgREST answers PGRST202 (no function
+// matches these arguments), so fall back to the 4-argument call once: the
+// booking must never fail because the audit label could not be attached.
+function makeBookSlot(db) {
+  return async (row, bb, ba, resched, actor) => {
+    const base = { p_row: row, p_buffer_before_minutes: bb, p_buffer_after_minutes: ba, p_reschedule_id: resched || null };
+    try {
+      return await db('POST', '/rpc/book_appointment_slot', { ...base, p_actor: actor || ACTOR_BOOK });
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/PGRST202|Could not find the function|p_actor/i.test(msg)) {
+        console.warn('pec-booking: book_appointment_slot has no p_actor yet (migration pending); retrying without it');
+        return db('POST', '/rpc/book_appointment_slot', base);
+      }
+      throw e;
+    }
+  };
+}
 
 async function getBookingSettings(db) {
   const out = {};
@@ -176,6 +203,42 @@ async function loadBusy(db, now, horizonDays) {
   return Array.isArray(rows) ? rows : [];
 }
 
+// Days off for the horizon (2026-09-21): company-wide or per-rep blocks from
+// pec_appointment_blocked_days, plus crew holidays (pec_prod_holidays) while
+// booking_block_crew_holidays is not 'false'. Phoenix dates in, engine rows
+// out. Best-effort: a missing table (migration pending) or a read failure
+// yields [] with a warning, never a failed slot list.
+function phxDateOnly(d) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: PHX_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+async function loadBlockedDays(db, settings, now, horizonDays) {
+  const from = phxDateOnly(new Date(now.getTime() - 24 * 3600 * 1000));
+  const to = phxDateOnly(new Date(now.getTime() + (horizonDays + 2) * 24 * 3600 * 1000));
+  const out = [];
+  try {
+    const rows = await db('GET',
+      `/pec_appointment_blocked_days?end_date=gte.${from}&start_date=lte.${to}`
+      + '&select=id,start_date,end_date,sales_member_id&order=start_date.asc&limit=500');
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      out.push({ start_date: r.start_date, end_date: r.end_date, sales_member_id: r.sales_member_id || null });
+    }
+  } catch (e) {
+    console.warn('pec-booking: blocked days read failed (none applied):', e && e.message);
+  }
+  if (String(settings.booking_block_crew_holidays || 'true') !== 'false') {
+    try {
+      const rows = await db('GET',
+        `/pec_prod_holidays?holiday_date=gte.${from}&holiday_date=lte.${to}&select=holiday_date&limit=500`);
+      for (const r of (Array.isArray(rows) ? rows : [])) {
+        if (r && r.holiday_date) out.push({ start_date: r.holiday_date, end_date: r.holiday_date, sales_member_id: null });
+      }
+    } catch (e) {
+      console.warn('pec-booking: holidays read failed (none applied):', e && e.message);
+    }
+  }
+  return out;
+}
+
 function formApptType(form) {
   const list = Array.isArray(form && form.appt_types) ? form.appt_types : [];
   const first = list[0] || {};
@@ -195,6 +258,7 @@ async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId,
   let reps = await loadActiveReps(db);
   if (onlyRepId) reps = reps.filter(r => r.id === onlyRepId);
   const busy = await loadBusy(db, now, cfg.horizonDays);
+  const blockedDays = await loadBlockedDays(db, settings, now, cfg.horizonDays);
 
   // Drive times: distinct neighbor addresses across the horizon + home base,
   // one batch call, cache-first (Part C).
@@ -223,7 +287,7 @@ async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId,
   }
 
   const slots = computeSlots({
-    now, reps, busy, workingHours: workingHoursFrom(settings), config: cfg, driveTimes,
+    now, reps, busy, workingHours: workingHoursFrom(settings), config: cfg, driveTimes, blockedDays,
   });
   return { slots, cfg, apptType: t, reps };
 }
@@ -482,10 +546,7 @@ async function processBook(deps, body, meta = {}) {
   const db = deps.sb;
   const log = deps.logIngest || logIngest;
   const now = deps.now ? deps.now() : new Date();
-  const bookSlot = deps.bookSlot || ((row, bb, ba, resched) =>
-    db('POST', '/rpc/book_appointment_slot', {
-      p_row: row, p_buffer_before_minutes: bb, p_buffer_after_minutes: ba, p_reschedule_id: resched || null,
-    }));
+  const bookSlot = deps.bookSlot || makeBookSlot(db);
   const kickPush = deps.kickPush || (async (id) => {
     try { await pushApptById(db, id); }
     catch (e) { console.warn('pec-booking: google push kick failed (non-fatal):', e && e.message || e); }
@@ -668,7 +729,7 @@ async function processBook(deps, body, meta = {}) {
       customer_notes: routed.customer.join('\n'),
       booking_manage_token: manageToken,
       booking_request_id: requestId,
-    }, slot.buffer_before, slot.buffer_after, null);
+    }, slot.buffer_before, slot.buffer_after, null, ACTOR_BOOK);
 
     if (!res || res.ok !== true) {
       if (res && res.taken) {
@@ -864,7 +925,8 @@ async function processManage(deps, body, meta = {}) {
   try {
     if (action === 'cancel') {
       if (appt.status === 'canceled') return { status: 200, body: { ok: true, message: 'This appointment is already canceled.' } };
-      await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, { status: 'canceled' });
+      // The customer is the actor here; the header labels the audit row.
+      await withActor(db, ACTOR_MANAGE)('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, { status: 'canceled' });
       await kickPush(appt.id);
       await apptCancelLeadEffects(db, appt);
       if (appt.lead_id) {
@@ -912,14 +974,11 @@ async function processManage(deps, body, meta = {}) {
       const slot = slots.find(s => s.start === startIso);
       if (!slot) return { status: 409, body: { ok: false, taken: true, error: 'That time is no longer open. Here are the current options.', days: groupSlotsByDay(slots).slice(0, 14) } };
 
-      const bookSlot = deps.bookSlot || ((row, bb, ba, resched) =>
-        db('POST', '/rpc/book_appointment_slot', {
-          p_row: row, p_buffer_before_minutes: bb, p_buffer_after_minutes: ba, p_reschedule_id: resched || null,
-        }));
+      const bookSlot = deps.bookSlot || makeBookSlot(db);
       const res = await bookSlot({
         sales_member_id: appt.sales_member_id || '',
         start_at: slot.start, end_at: slot.end,
-      }, slot.buffer_before, slot.buffer_after, appt.id);
+      }, slot.buffer_before, slot.buffer_after, appt.id, ACTOR_MANAGE);
       if (!res || res.ok !== true) {
         if (res && res.taken) return { status: 409, body: { ok: false, taken: true, error: 'That time was just taken. Pick another.', days: groupSlotsByDay(slots).slice(0, 14) } };
         throw new Error(`book_appointment_slot reschedule: ${res && res.error ? res.error : 'no result'}`);

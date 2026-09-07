@@ -91,7 +91,7 @@
 //   - Every attempt writes pec_webhook_ingest_log (endpoint 'appt-intake')
 //     so the Sync Health view can answer "did the Zap fire?".
 
-const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
+const { sb, withActor, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { pushApptById } = require('./_pec-appt-push.cjs');
 const { enrollLead } = require('./_pec-drip.cjs');
 const { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
@@ -719,7 +719,9 @@ async function notifyIntakeStalled(db, text) {
 // now }) so the fixture test drives the REAL flow against the mini-PostgREST.
 // Returns { status, body }; the handler wraps it in json().
 async function processApptIntake(deps, body) {
-  const db = deps.sb;
+  // Every write from here is Routemize's doing; the x-topcoat-actor header
+  // labels the audit_log rows the pec_appointments trigger writes (2026-09-21).
+  const db = withActor(deps.sb, 'Routemize booking');
   const log = deps.logIngest || logIngest;
   const runReminders = deps.runReminders || ((d, o) => runApptReminders(d, o));
   const now = deps.now ? deps.now() : new Date();

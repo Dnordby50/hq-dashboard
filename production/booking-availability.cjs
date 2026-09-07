@@ -12,7 +12,7 @@
 // only a rendering/wall-clock concern, handled by adding/subtracting the
 // fixed offset.
 //
-// computeSlots({ now, reps, busy, workingHours, config, driveTimes })
+// computeSlots({ now, reps, busy, workingHours, config, driveTimes, blockedDays })
 //   -> [{ start, end, sales_member_id, buffer_before, buffer_after }]
 //      (start/end ISO strings, buffers in minutes, sorted by start)
 //
@@ -37,6 +37,15 @@
 //                buffer purposes). Missing key -> bufferDefaultMinutes.
 //                HOME_KEY is the home-base pair (rule B4: the first and last
 //                appointment of a rep's day measure against home base).
+//   blockedDays  [{ start_date, end_date, sales_member_id }] Phoenix calendar
+//                dates (YYYY-MM-DD, inclusive both ends). A row with
+//                sales_member_id NULL closes the day for EVERY rep (company
+//                day off, crew holiday); a rep-specific row closes only that
+//                rep's day. 2026-09-21: this is what makes "we are off that
+//                day" real for online booking. Before it, only an all-day
+//                pec_appointments row could close a day, and company
+//                holidays (pec_prod_holidays) were never consulted, which is
+//                how a customer booked onto a day off.
 //
 // Buffer rule (B4): a candidate must clear its NEAREST preceding busy block
 // by clamp(driveMinutes, bufferMin, bufferMax) and its nearest following
@@ -115,8 +124,37 @@ function toMs(v) {
   return isNaN(t) ? null : t;
 }
 
-function computeSlots({ now, reps, busy, workingHours, config, driveTimes }) {
+// Phoenix calendar date "YYYY-MM-DD" for the parts phxParts() returns.
+function phxDateKey(parts) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${parts.y}-${p(parts.m + 1)}-${p(parts.d)}`;
+}
+
+// Normalize blockedDays rows once: keep only well-formed date strings, so a
+// malformed row can never throw the whole slot computation away.
+function normalizeBlockedDays(rows) {
+  const out = [];
+  for (const r of (rows || [])) {
+    if (!r) continue;
+    const sd = String(r.start_date || '').slice(0, 10);
+    const ed = String(r.end_date || sd).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd) || !/^\d{4}-\d{2}-\d{2}$/.test(ed)) continue;
+    out.push({ start: sd, end: ed < sd ? sd : ed, member: r.sales_member_id == null ? null : String(r.sales_member_id) });
+  }
+  return out;
+}
+
+function isDayBlocked(blocked, dateKey, repId) {
+  for (const b of blocked) {
+    if (dateKey < b.start || dateKey > b.end) continue;
+    if (b.member == null || b.member === String(repId)) return true;
+  }
+  return false;
+}
+
+function computeSlots({ now, reps, busy, workingHours, config, driveTimes, blockedDays }) {
   const cfg = { ...DEFAULTS, ...(config || {}) };
+  const blocked = normalizeBlockedDays(blockedDays);
   const nowMs = toMs(now);
   const drive = driveTimes || {};
   const wh = workingHours || {};
@@ -178,10 +216,14 @@ function computeSlots({ now, reps, busy, workingHours, config, driveTimes }) {
     // re-derive parts: immune to any month-boundary arithmetic slips.
     const anchor = Date.UTC(firstDay.y, firstDay.m, firstDay.d + dayOff, 12) + PHX_OFFSET_MS;
     const parts = phxParts(anchor);
+    const dateKey = phxDateKey(parts);
 
     for (const rep of repList) {
       const hours = hoursFor(rep, parts.weekday);
       if (!hours) continue;
+      // Days off (company-wide or this rep's) close the day before any
+      // busy-row math: nothing is offered, whatever the calendar says.
+      if (blocked.length && isDayBlocked(blocked, dateKey, rep.id)) continue;
       const dayStart = phxWallToUtc(parts.y, parts.m, parts.d, hours[0]);
       const dayEnd = phxWallToUtc(parts.y, parts.m, parts.d, hours[1]);
       if (dayStart == null || dayEnd == null || dayEnd <= dayStart) continue;
@@ -251,4 +293,4 @@ function computeSlots({ now, reps, busy, workingHours, config, driveTimes }) {
   return out;
 }
 
-module.exports = { computeSlots, addrKey, busyAddrKey, clampBuffer, HOME_KEY, DEFAULTS, PHX_OFFSET_MS };
+module.exports = { computeSlots, addrKey, busyAddrKey, clampBuffer, normalizeBlockedDays, isDayBlocked, HOME_KEY, DEFAULTS, PHX_OFFSET_MS };

@@ -28,7 +28,7 @@
 // the private extendedProperty when it is one of ours, else 'other',
 // assigned to the calendar's member.
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, withActor } = require('./_pec-supabase.cjs');
 const {
   googleConfigured, getFreshAccessToken, getTokenRow, saveTokenRow, gcalFetch,
   stripGcalDescription,
@@ -129,12 +129,16 @@ function shouldSkipEcho(ev, existing) {
 
 // ctx (prompt 96): { calendarId, defaultType, readonlyReason } for the
 // multi-calendar loop; omitted, the TopCoat-calendar behavior is unchanged.
+// Writes to pec_appointments from the pull carry the actor label so the audit
+// trail reads "Google Calendar sync" instead of "System" (2026-09-21).
+const gsb = withActor(sb, 'Google Calendar sync');
+
 async function processEvent(member, ev, summary, ctx = null) {
   if (!ev || !ev.id) return;
   if (ev.status === 'cancelled') {
     // Cancel the mapped row if we still have one (a TopCoat-side cancel
     // already cleared the mapping, so this finds nothing and no-ops).
-    await sb('PATCH',
+    await gsb('PATCH',
       `/pec_appointments?google_event_id=eq.${encodeURIComponent(ev.id)}&status=neq.canceled`,
       { status: 'canceled' });
     summary.canceled++;
@@ -156,11 +160,11 @@ async function processEvent(member, ev, summary, ctx = null) {
     // still live on Google was already unmapped by the push, so this only
     // ever touches live mappings; un-cancel is intentional if Google edited
     // a still-mapped canceled row.
-    await sb('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(existing.id)}`, { ...row, status: 'scheduled' });
+    await gsb('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(existing.id)}`, { ...row, status: 'scheduled' });
     summary.updated++;
   } else {
     try {
-      await sb('POST', '/pec_appointments', {
+      await gsb('POST', '/pec_appointments', {
         ...row,
         appt_type: apptType,
         sales_member_id: member.id,

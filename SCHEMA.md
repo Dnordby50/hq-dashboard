@@ -122,6 +122,7 @@ RLS: enabled · rows: 754
 | created_at | timestamptz | no | now() |
 
 PK: id
+Note (2026-09-21): entity_type 'pec_appointments' rows are written by the trigger trg_pec_appointments_audit (see pec_appointments); admin_email holds the ACTOR LABEL for those rows (a staff name, or 'Customer (online booking)', 'Customer via manage link', 'Routemize booking', 'Google Calendar sync', 'System'), auth_user_id the staff uid when there was one, after_json the changed tracked fields plus actor_label / source / title. Partial index idx_audit_log_appointments (entity_id, created_at desc) where entity_type = 'pec_appointments'.
 
 ### colors
 RLS: enabled · rows: 21
@@ -593,6 +594,25 @@ PK: id
 FK: customer_id → customers.id
 CHECK leads_stage_check: stage in ('new','contacted','estimate_scheduled','estimate_sent','presented','accepted','lost')
 
+### pec_appointment_blocked_days
+RLS: enabled · rows: 0 (added 2026-09-21, migration 2026-09-21_appt_blocked_days_audit_trail.sql; UI seeds)
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| start_date | date | no |  |
+| end_date | date | no |  |
+| sales_member_id | uuid | yes |  |
+| reason | text | yes |  |
+| created_by | uuid | yes |  |
+| created_by_label | text | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: sales_member_id → pec_sales_team_members.id (on delete cascade)
+Note: days off for the APPOINTMENT calendar (sales), distinct from pec_prod_holidays (crew schedule). Inclusive date range in Phoenix calendar dates; sales_member_id NULL = the whole company, set = only that rep. CHECK end_date >= start_date. Index idx_pec_appt_blocked_days_range (start_date, end_date). Read by the online booking engine (pec-booking.cjs loadBlockedDays -> computeSlots blockedDays), re-checked inside book_appointment_slot (returns taken:true, blocked:true), shaded on the Appointments calendar, and warned about in the staff form. Policy pec_appt_blocked_days_staff (is_admin_staff, all). Trigger trg_pec_appt_blocked_days_touch (updated_at).
+
 ### pec_appointment_reminder_rules
 RLS: enabled · rows: 2
 
@@ -664,9 +684,11 @@ RLS: enabled · rows: 0
 | google_readonly_reason | text | yes |  |
 | booking_manage_token | text | yes |  |
 | booking_request_id | uuid | yes |  |
+| created_by_label | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
+Triggers (2026-09-21, migration 2026-09-21_appt_blocked_days_audit_trail.sql): trg_pec_appointments_stamp_actor (BEFORE INSERT: fills created_by from auth.uid() when the client did not, and created_by_label from pec_appt_actor(source)) and trg_pec_appointments_audit (AFTER INSERT/UPDATE/DELETE: one audit_log row per meaningful change, entity_type 'pec_appointments', actions created / rescheduled / canceled / restored / completed / reassigned / updated / deleted; tracked fields start_at, end_at, all_day, status, sales_member_id, appt_type, customer_id, lead_id, title, location_address/city/zip; an UPDATE touching only sync stamps writes nothing). pec_appt_actor(p_source) resolves the actor: auth.uid() -> admin_users name/email; else the transaction GUC topcoat.actor (set by book_appointment_slot's p_actor); else the x-topcoat-actor request header (server writers: /book manage = 'Customer via manage link', pec-appt-intake = 'Routemize booking', pec-google-calendar-pull = 'Google Calendar sync'); else derived from source ('Customer (online booking)' / 'Routemize booking' / 'Google Calendar sync' / 'System'). created_by_label = that label at insert time, trigger-written (never edit by hand). book_appointment_slot signature is now (p_row jsonb, p_buffer_before_minutes int, p_buffer_after_minutes int, p_reschedule_id uuid, p_actor text); the 4-arg overload was dropped.
 Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google / routemize / booking (prompt 101: 'booking' = the TopCoat /book public form; booking_manage_token, unique where not null, is the customer's private reschedule/cancel key and dies when the appointment ends; booking_request_id ties back to the pec_booking_requests audit row). Unique (google_event_id) where not null; unique (routemize_appt_id) where not null (the Routemize intake idempotency + lookup key; routemize_appt_id = external Routemize appointment id, set when source = 'routemize'). notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google). Prompt 96: google_recurring_event_id = Google's recurringEventId when the row is an expanded recurring instance (the push patches the instance id only, never the series); google_readonly_reason non-null = an imported event TopCoat must not write back (calendar_read_only | not_organizer | recurring_patch_failed | google_rejected_edit), computed at pull time, rendered read-only in the UI straight off the column. source='google' rows never trigger customer-facing automation (reminders, bell, stage moves, sold-on-site).
 
 ### pec_bonus_payouts
@@ -2384,6 +2406,7 @@ RLS: enabled · rows: 184 (live count 2026-08-19, after the prompt-101 online-bo
 
 PK: id
 Trigger: settings_touch_updated_at (BEFORE INSERT OR UPDATE, sets updated_at := now(); the trigger is the ONLY writer, there is no column default). **Do NOT backfill updated_at: a NULL means the row has not been written since the 2026-08-16 prompt-79 migration ran, and that NULL is the audit signal the column exists to provide.** Row-count note: this block previously read 95; a live count on 2026-08-08 (pre-migration) returned 97, so the documented number had drifted by 2 (the live schema wins); 98 after the settings_rail_breakpoint_px seed.
+Keys added 2026-09-21 (days off / audit trail / default length), Settings > Appointments 'Days off' card, both front-of-card: booking_block_crew_holidays ('true'; while not 'false', pec_prod_holidays dates also close online booking, read server-side by pec-booking.cjs and inside book_appointment_slot) and appt_default_duration_minutes ('45'; the staff appointment form's default length, and the length the end time follows when the start changes; read client-side by apptDefaultDurationMinutes, cached per page load). Inserted insert-only. Settings 184 rows to 186.
 Keys added 2026-08-19 (prompt 101), Settings > Appointments 'Online booking' card: booking_enabled ('false' until the service area is seeded; front-of-card with the booking link/embed control) and behind Advanced booking_url ('' ; the drip {booking_link} token source, renamed from routemize_booking_url which getBookingUrl still reads as fallback; auto-filled with /book on first enable), booking_working_hours (JSON per weekday, Phoenix), booking_slot_granularity_minutes ('30'), booking_min_notice_minutes ('120'), booking_horizon_days ('30'), booking_buffer_min/max/default_minutes ('20'/'90'/'30'), booking_drive_time_enabled ('true'), booking_routes_max_origins_per_request ('25'), booking_routes_timeout_ms ('4000'), booking_drive_cache_ttl_days ('30'), booking_home_base_address (''), booking_rate_limit_per_hour ('5'), booking_min_fill_seconds ('2'), booking_duplicate_window_hours ('24'), booking_sms_disclosure (TCPA text), booking_manage_link_text, plus routemize_intake_enabled ('true'; 'false' turns pec-appt-intake into a logged 200 no-op) and the ops pair ops_check_booking_out_of_area ('true') / ops_booking_days ('7'). Inserted insert-only. Settings 162 rows to 184 (live count verified 2026-08-19 post-apply). Same migration added the SECURITY DEFINER function book_appointment_slot (advisory-lock booking write, EXECUTE service-role only).
 Keys added 2026-08-16 (prompt 94), Settings > Estimates: sold_on_site_enabled ('true', front-of-card), sold_on_site_grace_minutes ('120', front-of-card), and behind that card's Advanced: sold_on_site_appt_types ('on_site_estimate', comma-separated) and sold_on_site_lookback_hours ('0'). Read at accept time by pec-public-estimate.cjs and the dashboard mirror. Same migration DATA-FLIPPED estimate_line_generate_enabled to 'false' (prompt 94 B4: templates fill line scopes at pick time; pec-estimate-scope.cjs and pec-estimate-custom-polish.cjs now check this key server-side and refuse cleanly when 'false'). Settings 123 rows to 127.
 Keys added 2026-08-16 (prompt 93), Settings > Estimates, all read SERVER-side by pec-public-estimate.cjs: estimate_warranty_enabled ('true'; the pinned warranty document on customer estimates, front-of-card), estimate_color_chart_enabled ('true'; catalog-generated color charts, front-of-card), and behind that card's Advanced: estimate_color_chart_min_products ('6'; a slot charts only when this many of its eligible active products have an image_url, the no-allowlist coverage floor), estimate_color_chart_max_swatches ('60'; per-chart cap, selected products never dropped), estimate_color_chart_print_mode ('omit'; ?print=1 drops the charts, 'cap' keeps them capped). Inserted insert-only. Settings 118 rows to 123.

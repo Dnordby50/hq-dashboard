@@ -177,5 +177,39 @@ const hasStart = (slots, day, hhmm) => slots.some(s => s.start === phx(day, hhmm
     'per-rep null weekday produces no slots that day');
 }
 
+// 11. Blocked days (2026-09-21): a company-wide day off yields no slots that
+// day for anyone; a rep-specific day off only removes that rep; a range
+// covers every date in it inclusively; malformed rows are ignored.
+{
+  const blockedDays = [{ start_date: '2026-08-25', end_date: '2026-08-25', sales_member_id: null }];
+  const slots = computeSlots(base({ reps: [REP_A, REP_B], blockedDays }));
+  ok(!slots.some(s => s.start >= phx('2026-08-25', '00:00') && s.start < phx('2026-08-26', '00:00')),
+    'blocked day (everyone): no slots offered that day');
+  ok(slots.some(s => s.start >= phx('2026-08-26', '00:00') && s.start < phx('2026-08-27', '00:00')),
+    'blocked day (everyone): the next day still offers');
+
+  const repOnly = [{ start_date: '2026-08-25', end_date: '2026-08-25', sales_member_id: REP_A.id }];
+  const slots2 = computeSlots(base({ reps: [REP_A, REP_B], blockedDays: repOnly }));
+  const tue = slots2.filter(s => s.start >= phx('2026-08-25', '00:00') && s.start < phx('2026-08-26', '00:00'));
+  ok(tue.length > 0 && tue.every(s => s.sales_member_id === REP_B.id),
+    'blocked day (one rep): that day routes entirely to the other rep');
+  const slots2a = computeSlots(base({ reps: [REP_A], blockedDays: repOnly }));
+  ok(!slots2a.some(s => s.start >= phx('2026-08-25', '00:00') && s.start < phx('2026-08-26', '00:00')),
+    'blocked day (one rep, only rep): nothing offered that day');
+
+  const range = [{ start_date: '2026-08-25', end_date: '2026-08-27', sales_member_id: null }];
+  const slots3 = computeSlots(base({ blockedDays: range, config: { horizonDays: 7 } }));
+  ok(!slots3.some(s => s.start >= phx('2026-08-25', '00:00') && s.start < phx('2026-08-28', '00:00')),
+    'blocked range: every date in the range is closed');
+  ok(slots3.some(s => s.start >= phx('2026-08-28', '00:00') && s.start < phx('2026-08-29', '00:00')),
+    'blocked range: the day after the range offers');
+
+  const junk = [null, { start_date: 'nope' }, { start_date: '2026-08-25T00:00:00Z', end_date: '2026-08-24', sales_member_id: null }];
+  const slots4 = computeSlots(base({ blockedDays: junk }));
+  ok(!slots4.some(s => s.start >= phx('2026-08-25', '00:00') && s.start < phx('2026-08-26', '00:00')),
+    'blocked days: a timestamp-shaped start is trimmed to its date and an inverted range collapses to the start day');
+  ok(slots4.some(s => s.start >= phx('2026-08-26', '00:00')), 'blocked days: junk rows never blank the whole calendar');
+}
+
 console.log(`booking-availability: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

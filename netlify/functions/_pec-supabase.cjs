@@ -112,17 +112,27 @@ function tokenFromEvent(event) {
   return token;
 }
 
-async function sb(method, path, payload, returnRow) {
+// opts: boolean (legacy returnRow) or { returnRow, actor, headers }.
+// actor (2026-09-21): a short label naming WHO this write is for, sent as the
+// x-topcoat-actor header. PostgREST exposes request headers to SQL as the
+// request.headers GUC, and the pec_appointments audit trigger
+// (pec_appt_actor) reads that header when there is no signed-in user, so a
+// service-role write from /book manage, the Routemize intake, or the Google
+// pull is attributed to the right party instead of a generic 'System'.
+async function sb(method, path, payload, opts) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('Supabase env vars not configured (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)');
   }
+  const o = (opts && typeof opts === 'object') ? opts : { returnRow: !!opts };
   const url = `${SUPABASE_URL}/rest/v1${path}`;
   const headers = {
     apikey: SUPABASE_SERVICE_ROLE_KEY,
     Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
     'Content-Type': 'application/json',
   };
-  if (returnRow) headers['Prefer'] = 'return=representation';
+  if (o.returnRow) headers['Prefer'] = 'return=representation';
+  if (o.actor) headers['x-topcoat-actor'] = String(o.actor).slice(0, 120);
+  if (o.headers && typeof o.headers === 'object') Object.assign(headers, o.headers);
 
   const res = await fetch(url, {
     method,
@@ -187,4 +197,15 @@ async function writeHeartbeat(functionName, details) {
   }
 }
 
-module.exports = { sb, json, badSecret, safeEqual, requireStaff, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest, writeHeartbeat };
+// Wrap a db function so every call carries the actor label (see sb()). Works
+// over the real sb and over injected test doubles (which ignore the extra
+// option). The wrapped function keeps the (method, path, payload, opts) shape.
+function withActor(db, actor) {
+  return (method, path, payload, opts) => {
+    const o = (opts && typeof opts === 'object') ? { ...opts } : { returnRow: !!opts };
+    if (!o.actor) o.actor = actor;
+    return db(method, path, payload, o);
+  };
+}
+
+module.exports = { sb, withActor, json, badSecret, safeEqual, requireStaff, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest, writeHeartbeat };

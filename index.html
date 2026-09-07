@@ -2187,6 +2187,11 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
 }
 #pecApptCal .fc-day-today .fc-daygrid-day-number { font-weight: 700; color: var(--rd-accent, #D8531C); }
 .pec-appt-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: .72rem; color: var(--muted); }
+/* Days off (2026-09-21): background shading on the Appointments calendar. The
+   whole day is hatched so it reads as closed at a glance; the label rides in
+   the top-left corner of the cell. */
+.fc .pec-appt-blocked { opacity: 1; background: repeating-linear-gradient(135deg, rgba(100,116,139,.13) 0 6px, rgba(100,116,139,.04) 6px 12px); }
+.pec-appt-blocked-label { position: absolute; top: 2px; left: 4px; font-size: .66rem; font-weight: 700; color: #475569; letter-spacing: .3px; pointer-events: none; max-width: calc(100% - 8px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pec-appt-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: -1px; }
 </style>
 
@@ -22556,7 +22561,7 @@ function openPricingTypeModal(existing, allTypes) {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes, gcalRes, gcSetRes, bkSetRes, bkFormRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes, rsSetRes, gcalRes, gcSetRes, bkSetRes, bkFormRes, bdRes, actRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
     supabase.from('settings').select('key,value').like('key', 'salesask_%'),
@@ -22569,8 +22574,12 @@ async function renderSettingsAppointments() {
     supabase.from('pec_member_google_calendars_v').select('*').order('summary'),
     supabase.from('settings').select('key,value').in('key', ['google_pull_window_days_past', 'google_pull_window_days_future', 'google_pull_max_pages_per_calendar', 'google_imported_default_appt_type', 'google_pull_include_all_day', 'google_pull_include_declined']),
     // Prompt 101: the Online booking card's knobs + the PEC form row.
-    supabase.from('settings').select('key,value').or('key.like.booking_%,key.eq.routemize_intake_enabled'),
+    supabase.from('settings').select('key,value').or('key.like.booking_%,key.eq.routemize_intake_enabled,key.eq.appt_default_duration_minutes'),
     supabase.from('pec_booking_forms').select('*').eq('slug', 'pec').maybeSingle(),
+    // 2026-09-21: upcoming days off (an error = migration pending) and the
+    // latest appointment audit rows for the activity card.
+    supabase.from('pec_appointment_blocked_days').select('*').gte('end_date', apptDateInputVal(new Date())).order('start_date').limit(200),
+    supabase.from('audit_log').select('id,action,admin_email,entity_id,after_json,before_json,created_at').eq('entity_type', 'pec_appointments').order('created_at', { ascending: false }).limit(40),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
   // Multi-calendar sync rows keyed by member (empty pre-migration: the card
@@ -22792,6 +22801,40 @@ async function renderSettingsAppointments() {
           + (inact.length ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.76rem;color:var(--muted)">Inactive members (${inact.length})</summary>${inact.map(saMemberHtml).join('')}</details>` : '');
       })()}
       <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="saStatus"></div>`}
+    </div>
+
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">Days off</h3>
+        <button class="pec-btn primary sm" id="bdAdd">+ Block days</button>
+      </div>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
+        A blocked day closes the Appointments calendar: online booking offers nothing on it and staff
+        get a warning before booking one by hand. Block the whole company or one salesperson. The
+        crew schedule's company holidays (Settings > General) count too when the box below is on.
+      </div>
+      <div style="display:flex;gap:18px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;cursor:pointer;margin:0 0 8px">
+          <input type="checkbox" id="bdHolidays" style="width:auto" ${bkSettings.booking_block_crew_holidays !== 'false' ? 'checked' : ''}>
+          Crew holidays also close online booking</label>
+        <div class="pec-field" style="margin:0;max-width:220px"><label>Default appointment length (min)</label>
+          <input type="number" id="bdDefaultDur" min="5" step="5" value="${esc(bkSettings.appt_default_duration_minutes || '45')}"></div>
+        <span id="bdStatus" style="font-size:.72rem;color:var(--muted);padding-bottom:8px"></span>
+      </div>
+      ${bdRes && bdRes.error ? '<div class="pec-empty">Days off are not available yet: run the 2026-09-21_appt_blocked_days_audit_trail.sql migration.</div>' : `
+      <table class="pec-table">
+        <thead><tr><th>Dates</th><th>Who</th><th>Reason</th><th>Added by</th><th></th></tr></thead>
+        <tbody>
+          ${((bdRes && bdRes.data) || []).map(b => `
+            <tr>
+              <td>${esc(apptBlockedDatesLabel(b))}</td>
+              <td>${esc(b.sales_member_id ? ((members.find(m => m.id === b.sales_member_id) || {}).name || 'One salesperson') : 'Everyone')}</td>
+              <td>${esc(b.reason || '')}</td>
+              <td style="color:var(--muted);font-size:.76rem">${esc(b.created_by_label || '')}</td>
+              <td><button class="pec-btn sm ghost danger" data-bd-del="${esc(b.id)}">Remove</button></td>
+            </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No upcoming days off. Use Block days when the company is closed or a salesperson is away.</td></tr>'}
+        </tbody>
+      </table>`}
     </div>
 
     <div class="pec-card">
@@ -23030,9 +23073,61 @@ async function renderSettingsAppointments() {
             </tr>`).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No rules yet. Add one to send booking confirmations or reminders.</td></tr>'}
         </tbody>
       </table>`}
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Appointment activity</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
+        Who booked, moved, canceled, or deleted each appointment, whichever door it came through
+        (this dashboard, the online booking page, Routemize, or a Google Calendar edit). The same
+        history shows inside each appointment. Last 40 changes.
+      </div>
+      ${actRes && actRes.error ? '<div class="pec-empty">Activity is not available yet: run the 2026-09-21_appt_blocked_days_audit_trail.sql migration.</div>' : `
+      <table class="pec-table">
+        <thead><tr><th>When</th><th>Who</th><th>What</th><th>Appointment</th></tr></thead>
+        <tbody>
+          ${((actRes && actRes.data) || []).map(r => {
+            const h = apptHistoryPhrase(r, members);
+            return `<tr>
+              <td style="white-space:nowrap;color:var(--muted);font-size:.76rem">${esc(apptFmtWhen(r.created_at))}</td>
+              <td>${esc(h.who)}</td>
+              <td>${esc(h.what)}</td>
+              <td>${r.action === 'deleted' ? esc((r.after_json || {}).title || (r.before_json || {}).title || '') : `<a href="#" data-open-appt="${esc(r.entity_id)}">${esc((r.after_json || {}).title || 'Open')}</a>`}</td>
+            </tr>`; }).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No appointment changes recorded yet.</td></tr>'}
+        </tbody>
+      </table>`}
     </div>`;
 
   wireSettingsTabs(root);
+
+  // ---- Days off card wiring (2026-09-21) ------------------------------------
+  {
+    const bdSave = async (key, value) => {
+      const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'days-off-setting-save' });
+      const el = $('bdStatus');
+      if (w && w.error) { if (el) el.textContent = 'Save failed: ' + w.error.message; return; }
+      if (el) { el.textContent = 'Saved.'; setTimeout(() => { if (el.textContent === 'Saved.') el.textContent = ''; }, 2000); }
+    };
+    $('bdHolidays')?.addEventListener('change', e => bdSave('booking_block_crew_holidays', e.target.checked ? 'true' : 'false'));
+    $('bdDefaultDur')?.addEventListener('change', e => {
+      const v = Math.max(5, parseInt(e.target.value, 10) || 45); e.target.value = v;
+      state._apptDefaultDur = v; // the form reads the cache; keep it honest
+      bdSave('appt_default_duration_minutes', v);
+    });
+    $('bdAdd')?.addEventListener('click', () => openBlockedDaysModal(members, () => renderSettingsAppointments()));
+    root.querySelectorAll('[data-bd-del]').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Remove this day off? Online booking will offer those dates again.')) return;
+      btn.disabled = true;
+      const r = await withFreshWriteRetry(() => supabase.from('pec_appointment_blocked_days').delete().eq('id', btn.dataset.bdDel), { label: 'days-off-delete' });
+      if (r && r.error) { btn.disabled = false; showToast('Could not remove: ' + r.error.message, { ttl: 5000 }); return; }
+      renderSettingsAppointments();
+    }));
+    root.querySelectorAll('[data-open-appt]').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      state.openAppointmentId = a.dataset.openAppt;
+      switchView('appointments');
+    }));
+  }
   $('apptGoogleRefresh').addEventListener('click', () => renderSettingsAppointments());
 
   // ---- Online booking card wiring (prompt 101) ------------------------------
@@ -29315,6 +29410,236 @@ function apptDisplayName(row) {
 // error }; a pre-migration read errors and the caller shows the honest
 // not-migrated note instead of a broken calendar (res.error FIRST, per the
 // supabase-js empty-vs-missing-column lesson).
+// ---- Days off, default length, and the audit trail (2026-09-21) -------------
+// Three fixes that share one migration (2026-09-21_appt_blocked_days_audit_trail):
+//  * pec_appointment_blocked_days closes the Appointments calendar for a date
+//    range (everyone, or one rep). Online booking reads it (server side, plus
+//    the locked write re-checks it), the calendar shades it, and the staff
+//    form warns before booking onto it. Crew holidays (pec_prod_holidays)
+//    count too while booking_block_crew_holidays is on.
+//  * A database trigger writes audit_log rows for every appointment create /
+//    reschedule / cancel / reassign / delete, whichever door the write came
+//    through, with the actor resolved server-side (staff user, customer via
+//    /book, Routemize, Google sync). created_by_label caches the booking actor
+//    on the row. The UI only READS this trail; it cannot be skipped by a
+//    client that forgets to log.
+//  * appt_default_duration_minutes (Settings > Appointments > Days off card,
+//    default 45): a new appointment is that long, and moving the start time
+//    drags the end along so only one field needs changing.
+
+// Default appointment length in minutes. Read once per page load and cached
+// on state (the Settings card refreshes the cache when it saves). A missing
+// or unreadable row means 45.
+async function apptDefaultDurationMinutes() {
+  if (state._apptDefaultDur > 0) return state._apptDefaultDur;
+  let v = 45;
+  try {
+    const r = await supabase.from('settings').select('value').eq('key', 'appt_default_duration_minutes').maybeSingle();
+    const n = parseInt(r.data && r.data.value, 10);
+    if (!r.error && n > 0) v = n;
+  } catch (_) { /* the default stands */ }
+  state._apptDefaultDur = v;
+  return v;
+}
+
+// Blocked days (pec_appointment_blocked_days) plus crew holidays
+// (pec_prod_holidays) touching the local-date window [from, to]. Rows come
+// back as { id, start_date, end_date, sales_member_id, reason, kind } with
+// kind 'block' | 'holiday'. Either table missing (migration pending) simply
+// contributes nothing, so the calendar never blanks over a days-off read.
+async function loadBlockedDaysRange(startIso, endIso) {
+  const from = apptDateInputVal(new Date(startIso)), to = apptDateInputVal(new Date(endIso));
+  const out = [];
+  try {
+    const r = await supabase.from('pec_appointment_blocked_days').select('*')
+      .lte('start_date', to).gte('end_date', from).order('start_date').limit(500);
+    if (!r.error) for (const b of (r.data || [])) out.push({ ...b, kind: 'block' });
+  } catch (_) { /* pre-migration */ }
+  try {
+    const r = await supabase.from('pec_prod_holidays').select('*').gte('holiday_date', from).lte('holiday_date', to).limit(200);
+    if (!r.error) for (const h of (r.data || [])) {
+      out.push({ id: 'holiday-' + h.id, start_date: h.holiday_date, end_date: h.holiday_date, sales_member_id: null, reason: h.name || 'Company holiday', kind: 'holiday' });
+    }
+  } catch (_) { /* no holidays table */ }
+  return out;
+}
+
+// The blocks that apply to one local date for one rep ('' = unassigned, which
+// every block applies to). Used by the form's save-time warning.
+async function apptDayBlockedInfo(dateStr, memberId) {
+  const rows = await loadBlockedDaysRange(dateStr + 'T00:00:00', dateStr + 'T23:59:59');
+  return rows.filter(b => b.start_date <= dateStr && b.end_date >= dateStr
+    && (!b.sales_member_id || !memberId || b.sales_member_id === memberId));
+}
+
+function apptBlockedDatesLabel(b) {
+  const f = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  return b.start_date === b.end_date ? f(b.start_date) : `${f(b.start_date)} to ${f(b.end_date)}`;
+}
+
+// A blocked day as a FullCalendar background event (all-day, whole cell).
+function apptBlockedEvent(b, members) {
+  const end = new Date(b.end_date + 'T00:00:00'); end.setDate(end.getDate() + 1);
+  const m = b.sales_member_id ? members.find(x => x.id === b.sales_member_id) : null;
+  const who = m ? `${m.name} off` : (b.kind === 'holiday' ? 'Holiday' : 'Day off');
+  return {
+    id: 'blocked-' + b.id, start: b.start_date, end: apptDateInputVal(end), allDay: true,
+    display: 'background', classNames: ['pec-appt-blocked'],
+    extendedProps: { kind: 'blocked', label: who + (b.reason ? ': ' + b.reason : '') },
+  };
+}
+
+function apptFmtWhen(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// One audit_log row -> { who, what }. The trigger stores the actor label in
+// admin_email (a staff name, 'Customer (online booking)', 'Customer via
+// manage link', 'Routemize booking', 'Google Calendar sync', or 'System') and
+// the changed fields in before_json / after_json.
+function apptHistoryPhrase(row, members) {
+  const a = row.after_json || {}, b = row.before_json || {};
+  const who = row.admin_email || a.actor_label || 'Someone';
+  const memberName = (id) => id ? (((members || []).find(m => m.id === id) || {}).name || 'another salesperson') : 'Unassigned';
+  let what;
+  switch (row.action) {
+    case 'created': what = 'booked it' + (a.start_at ? ' for ' + apptFmtWhen(a.start_at) : ''); break;
+    case 'rescheduled': what = 'moved it' + (b.start_at ? ' from ' + apptFmtWhen(b.start_at) : '') + (a.start_at ? ' to ' + apptFmtWhen(a.start_at) : ''); break;
+    case 'canceled': what = 'canceled it'; break;
+    case 'restored': what = 'restored it'; break;
+    case 'completed': what = 'marked it completed'; break;
+    case 'reassigned': what = `reassigned it from ${memberName(b.sales_member_id)} to ${memberName(a.sales_member_id)}`; break;
+    case 'deleted': what = 'deleted it'; break;
+    default: {
+      const keys = Object.keys(a).filter(k => !['actor_label', 'source', 'title'].includes(k));
+      what = keys.length ? 'updated ' + keys.map(k => k.replace(/^location_/, '').replace(/_/g, ' ')).join(', ') : 'updated it';
+    }
+  }
+  return { who, what };
+}
+
+// The history block inside the appointment modal: the "Booked by" line off
+// the row itself, then the audit trail newest first.
+async function renderApptHistory(container, a, members) {
+  if (!container) return;
+  const bookedBy = a.created_by_label
+    || (a.source === 'booking' ? 'the customer (online booking)'
+      : a.source === 'routemize' ? 'Routemize booking'
+      : a.source === 'google' ? 'Google Calendar import' : null);
+  const head = bookedBy
+    ? `<div style="font-size:.76rem;margin-bottom:4px">Booked by <strong>${esc(bookedBy)}</strong>${a.created_at ? ` <span style="color:var(--muted)">${esc(apptFmtWhen(a.created_at))}</span>` : ''}</div>`
+    : '';
+  container.innerHTML = head + '<div style="font-size:.72rem;color:var(--muted)">Loading history…</div>';
+  let rows = [];
+  try {
+    const r = await supabase.from('audit_log').select('id,action,admin_email,before_json,after_json,created_at')
+      .eq('entity_type', 'pec_appointments').eq('entity_id', a.id)
+      .order('created_at', { ascending: false }).limit(30);
+    if (!r.error) rows = r.data || [];
+  } catch (_) { /* renders the header only */ }
+  container.innerHTML = head + (rows.length
+    ? `<div style="display:flex;flex-direction:column;gap:2px;font-size:.74rem">${rows.map(r => {
+        const h = apptHistoryPhrase(r, members);
+        return `<div><span style="color:var(--muted)">${esc(apptFmtWhen(r.created_at))}</span> · <strong>${esc(h.who)}</strong> ${esc(h.what)}</div>`;
+      }).join('')}</div>`
+    : '<div style="font-size:.72rem;color:var(--muted)">No changes recorded yet (history starts with the 2026-09-21 update).</div>');
+}
+
+// Block days off: a date range for everyone or one salesperson, plus the
+// list of upcoming blocks with Remove. Opened from the Appointments toolbar
+// and from Settings > Appointments > Days off. onDone runs after any change.
+async function openBlockedDaysModal(members, onDone) {
+  if (!members) {
+    const r = await supabase.from('pec_sales_team_members').select('*').order('name');
+    members = r.data || [];
+  }
+  const active = members.filter(m => m.active !== false);
+  const today = apptDateInputVal(new Date());
+  openModal(`
+    <h3>Block days off</h3>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">
+      Nothing can be booked online on a blocked day, and staff get a warning before scheduling onto one.
+      Existing appointments are not moved.
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>First day</label><input type="date" id="bdStart" value="${esc(today)}"></div>
+      <div class="pec-field"><label>Last day</label><input type="date" id="bdEnd" value="${esc(today)}"></div>
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Who is off</label>
+        <select id="bdWho"><option value="">Everyone (company closed)</option>${active.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}</select></div>
+      <div class="pec-field"><label>Reason (optional)</label><input id="bdReason" placeholder="Vacation, holiday, trade show…" maxlength="120"></div>
+    </div>
+    <div class="prod-msg-err" id="bdErr" style="min-height:16px"></div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+      <button type="button" class="pec-btn primary" id="bdSaveBtn">Block these days</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px">Upcoming days off</div>
+    <div id="bdList"><div style="font-size:.74rem;color:var(--muted)">Loading…</div></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
+    </div>
+  `, { onMount: modal => {
+    const errEl = modal.querySelector('#bdErr');
+    const listEl = modal.querySelector('#bdList');
+    let changed = false;
+    const renderList = async () => {
+      const r = await supabase.from('pec_appointment_blocked_days').select('*').gte('end_date', today).order('start_date').limit(200);
+      if (r.error) {
+        listEl.innerHTML = `<div style="font-size:.74rem;color:#b45309">Days off are not available yet (run the 2026-09-21 migration). ${esc(r.error.message)}</div>`;
+        modal.querySelector('#bdSaveBtn').disabled = true;
+        return;
+      }
+      const rows = r.data || [];
+      listEl.innerHTML = rows.length ? rows.map(b => {
+        const m = b.sales_member_id ? members.find(x => x.id === b.sales_member_id) : null;
+        return `<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.8rem">
+          <span style="min-width:150px">${esc(apptBlockedDatesLabel(b))}</span>
+          <span style="min-width:110px">${esc(m ? m.name : 'Everyone')}</span>
+          <span style="flex:1;color:var(--muted)">${esc(b.reason || '')}</span>
+          <button type="button" class="pec-btn sm ghost danger" data-bd-remove="${esc(b.id)}">Remove</button>
+        </div>`;
+      }).join('') : '<div style="font-size:.74rem;color:var(--muted)">No upcoming days off.</div>';
+      listEl.querySelectorAll('[data-bd-remove]').forEach(btn => btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const d = await withFreshWriteRetry(() => supabase.from('pec_appointment_blocked_days').delete().eq('id', btn.dataset.bdRemove), { label: 'days-off-delete' });
+        if (d && d.error) { btn.disabled = false; errEl.textContent = 'Could not remove: ' + d.error.message; return; }
+        changed = true;
+        apptRefresh();
+        renderList();
+      }));
+    };
+    renderList();
+    modal.querySelector('#bdSaveBtn').addEventListener('click', async () => {
+      errEl.textContent = '';
+      const sd = modal.querySelector('#bdStart').value, ed = modal.querySelector('#bdEnd').value || sd;
+      if (!sd) { errEl.textContent = 'Pick the first day.'; return; }
+      if (ed < sd) { errEl.textContent = 'The last day is before the first day.'; return; }
+      const btn = modal.querySelector('#bdSaveBtn');
+      btn.disabled = true;
+      const row = {
+        start_date: sd, end_date: ed,
+        sales_member_id: modal.querySelector('#bdWho').value || null,
+        reason: modal.querySelector('#bdReason').value.trim() || null,
+        created_by: (state.session && state.session.user && state.session.user.id) || null,
+        created_by_label: (state.adminUser && (state.adminUser.name || state.adminUser.email)) || (state.session && state.session.user && state.session.user.email) || null,
+      };
+      const r = await withFreshWrite(() => supabase.from('pec_appointment_blocked_days').insert(row), { label: 'days-off-insert' });
+      btn.disabled = false;
+      if (r && r.error) { errEl.textContent = 'Could not save: ' + r.error.message; return; }
+      changed = true;
+      modal.querySelector('#bdReason').value = '';
+      showToast('Days blocked', { ttl: 1800 });
+      apptRefresh();
+      renderList();
+    });
+    // Anything that changed re-renders the caller once the modal closes.
+    const closeBtn = modal.querySelector('.pec-modal-actions .pec-btn.ghost');
+    if (closeBtn && typeof onDone === 'function') closeBtn.addEventListener('click', () => { if (changed) onDone(); });
+  }});
+}
+
 async function loadAppointmentsRange(startIso, endIso) {
   const f = state.apptFilters;
   const buildQ = (sel) => {
@@ -29400,6 +29725,13 @@ function apptEventFromRow(row, members) {
 function apptChipContent(arg) {
   const ev = arg.event, p = ev.extendedProps || {};
   const el = document.createElement('div');
+  // Days off render as a background shade with a corner label (2026-09-21).
+  if (p.kind === 'blocked') {
+    el.className = 'pec-appt-blocked-label';
+    el.textContent = p.label || 'Day off';
+    el.title = p.label || 'Day off';
+    return { domNodes: [el] };
+  }
   el.style.setProperty('--pec-member', p.memberColor || '#64748b');
   el.style.setProperty('--pec-type', p.typeAccent || '#64748b');
   const mk = (cls, text) => {
@@ -29467,6 +29799,7 @@ async function renderAppointments() {
         <div class="pec-field" style="margin:0"><label>Salesperson</label><select id="pecApptMemberFilter">${memberOpts}</select></div>
         <label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;font-size:.8rem;cursor:pointer;padding-bottom:8px">
           <input type="checkbox" id="pecApptHideImported" style="width:auto" ${f.hideImported ? 'checked' : ''}> Hide Google-imported</label>
+        <button class="pec-btn ghost" id="pecApptBlock" title="Close the calendar for a day or a range: nothing books online, staff get a warning.">Days off</button>
         <button class="pec-btn primary" id="pecApptNew">+ New Appointment</button>
       </div>
     </div>
@@ -29477,6 +29810,7 @@ async function renderAppointments() {
     </div>`;
 
   $('pecApptNew').addEventListener('click', () => openAppointmentForm(null, { members }));
+  $('pecApptBlock').addEventListener('click', () => openBlockedDaysModal(members));
   $('pecApptTypeFilter').addEventListener('change', e => { f.type = e.target.value; apptRefresh(members); });
   $('pecApptMemberFilter').addEventListener('change', e => { f.member = e.target.value; apptRefresh(members); });
   $('pecApptHideImported').addEventListener('change', e => { f.hideImported = e.target.checked; apptRefresh(members); });
@@ -29499,13 +29833,18 @@ async function renderAppointments() {
       // call refetchEvents(). Pre-migration the read errors once into the
       // note div and the grid stays empty (never a broken render).
       events: (info, success) => {
-        loadAppointmentsRange(info.start.toISOString(), info.end.toISOString()).then(({ rows, error }) => {
+        // Appointments plus the days-off shading for the same range (the
+        // blocked read never rejects; pre-migration it is just empty).
+        Promise.all([
+          loadAppointmentsRange(info.start.toISOString(), info.end.toISOString()),
+          loadBlockedDaysRange(info.start.toISOString(), info.end.toISOString()),
+        ]).then(([{ rows, error }, blocked]) => {
           const note = $('pecApptMigNote');
           if (note) {
             note.style.display = error ? '' : 'none';
             if (error) note.textContent = 'Appointments could not load: ' + (error.message || error) + ' (has the appointments migration been applied?)';
           }
-          success(rows.map(r => apptEventFromRow(r, members)));
+          success(rows.map(r => apptEventFromRow(r, members)).concat(blocked.map(b => apptBlockedEvent(b, members))));
         });
       },
       datesSet: (info) => {
@@ -29513,7 +29852,8 @@ async function renderAppointments() {
         state.apptDate = info.view.currentStart ? info.view.currentStart.toISOString() : null;
       },
       dateClick: (info) => {
-        // Month-grid day tap: open the form pre-anchored to that day, 9-10am.
+        // Month-grid day tap: open the form pre-anchored to that day at 9am
+        // (the end follows the default length setting).
         if (info.view.type !== 'dayGridMonth') return;
         const d = new Date(info.date); d.setHours(9, 0, 0, 0);
         openAppointmentForm(null, { members, start: d });
@@ -29793,14 +30133,18 @@ async function openAppointmentForm(existing, prefill = {}) {
   const a = existing || {};
   const isNew = !existing;
 
-  // Times: existing row wins, then a tapped slot, then next-hour + 1h.
+  // Times: existing row wins, then a tapped slot, then next-hour + the
+  // default length (Settings > Appointments > Days off, 45 min out of the
+  // box; 2026-09-21, replacing the hardcoded 1 hour). A week/day-grid drag
+  // selection keeps its own length.
   const now = new Date();
+  const defaultDurMin = await apptDefaultDurationMinutes();
   const defStart = a.start_at ? new Date(a.start_at)
     : prefill.start ? new Date(prefill.start)
     : new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
   const defEnd = a.end_at ? new Date(a.end_at)
     : (prefill.end && prefill.start && (prefill.end - prefill.start) >= 15 * 60000) ? new Date(prefill.end)
-    : new Date(defStart.getTime() + 60 * 60000); // default length: 1 hour
+    : new Date(defStart.getTime() + defaultDurMin * 60000);
   const curType = a.appt_type || prefill.appt_type || 'on_site_estimate';
   const curMember = a.sales_member_id || (activeMembers[0] ? activeMembers[0].id : '');
   const leadId = a.lead_id || prefill.lead_id || null;
@@ -29865,7 +30209,8 @@ async function openAppointmentForm(existing, prefill = {}) {
     </div>
     <div class="pec-row-2" id="afTimesRow" style="${a.all_day ? 'display:none' : ''}">
       <div class="pec-field"><label>Start</label><input type="time" id="afStart" value="${esc(apptTimeInputVal(defStart))}" step="900"></div>
-      <div class="pec-field"><label>End</label><input type="time" id="afEnd" value="${esc(apptTimeInputVal(defEnd))}" step="900"></div>
+      <div class="pec-field"><label>End</label><input type="time" id="afEnd" value="${esc(apptTimeInputVal(defEnd))}" step="900">
+        <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Follows the start (${esc(String(defaultDurMin))} min) until you change it yourself.</div></div>
     </div>
     <div class="pec-field"><label>Address</label><input id="afAddress" value="${esc(a.location_address || prefill.location_address || '')}" placeholder="Street address" autocomplete="off"></div>
     <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
@@ -29885,6 +30230,7 @@ async function openAppointmentForm(existing, prefill = {}) {
     ${roReason ? `<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This event lives in Google and TopCoat cannot edit it. ${esc(RO_REASON_TEXT[roReason] || '')}</div>` : ''}
     ${isNew ? '' : '<div id="afSalesAskRow"></div>'}
     ${a.status === 'canceled' ? '<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This appointment is canceled.</div>' : ''}
+    ${isNew ? '' : '<details style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:.78rem">History (who booked and changed it)</summary><div id="afHistory" style="margin-top:6px"></div></details>'}
     <div class="prod-msg-err" id="afErr" style="min-height:16px"></div>
     <div class="pec-modal-actions" style="justify-content:space-between">
       <div style="display:flex;gap:8px">
@@ -29917,6 +30263,28 @@ async function openAppointmentForm(existing, prefill = {}) {
     modal.querySelector('#afAllDay').addEventListener('change', e => {
       modal.querySelector('#afTimesRow').style.display = e.target.checked ? 'none' : '';
     });
+    // End follows start (2026-09-21): changing the start time moves the end
+    // to start + the default length, so a reschedule is one field, not two.
+    // Once the user edits the end by hand in THIS form, that custom length
+    // is kept on later start changes instead (a 2-hour walkthrough stays 2
+    // hours when it moves).
+    {
+      const startEl = modal.querySelector('#afStart'), endEl = modal.querySelector('#afEnd');
+      let customDurMin = null;
+      const parseHm = (v) => { const m = /^(\d{1,2}):(\d{2})$/.exec(v || ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+      const fmtHm = (mins) => { const c = Math.max(0, Math.min(23 * 60 + 59, mins)); return `${String(Math.floor(c / 60)).padStart(2, '0')}:${String(c % 60).padStart(2, '0')}`; };
+      endEl.addEventListener('input', () => {
+        const s = parseHm(startEl.value), e = parseHm(endEl.value);
+        customDurMin = (s != null && e != null && e > s) ? e - s : null;
+      });
+      startEl.addEventListener('input', () => {
+        const s = parseHm(startEl.value);
+        if (s == null) return;
+        endEl.value = fmtHm(s + (customDurMin || defaultDurMin));
+      });
+    }
+    // The audit trail for a saved row (a new one has none yet).
+    if (!isNew) renderApptHistory(modal.querySelector('#afHistory'), a, members);
     // ---- Customer picker (prompt 89): type-ahead over name / phone /
     // address (server-side ilike, debounced, seq-guarded — the
     // openAttachToCustomer pattern), an inline "create customer" path so a
@@ -30138,6 +30506,19 @@ async function openAppointmentForm(existing, prefill = {}) {
         startAt = new Date(dateStr + 'T' + st + ':00');
         endAt = new Date(dateStr + 'T' + en + ':00');
         if (!(endAt > startAt)) { errEl.textContent = 'End time must be after the start time.'; return; }
+      }
+      // Days off (2026-09-21): booking onto a blocked day or a crew holiday
+      // is allowed for staff (a customer insists, a rep works a holiday) but
+      // never silent. Checked when the date is new or changed; a read failure
+      // (migration pending) skips the warning rather than blocking the save.
+      if (isNew || !a.start_at || apptDateInputVal(new Date(a.start_at)) !== dateStr) {
+        try {
+          const blocks = await apptDayBlockedInfo(dateStr, val('afMember'));
+          if (blocks.length) {
+            const why = blocks.map(b => (b.sales_member_id ? 'salesperson off' : (b.kind === 'holiday' ? 'company holiday' : 'company day off')) + (b.reason ? ` (${b.reason})` : '')).join('; ');
+            if (!confirm(`That day is blocked off: ${why}. Book it anyway?`)) return;
+          }
+        } catch (_) { /* warning only */ }
       }
       // Quote gate (2026-08-19): BOOKING an on-site estimate requires a linked
       // customer with an email and the job address, so the profile is complete
