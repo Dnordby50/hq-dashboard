@@ -38,7 +38,7 @@ test('weekly rock focus stays Monday-Sunday and carries unfinished milestones un
   assert.equal(weeklyRockFocus(items,'2026-09-07')[1].milestoneIndex,1);
 });
 test('top navigation retains every owner destination and marks only the selected tab',()=>{
-  const pages=['focus','sales','revenue','review','rocks','problems','insights','settings'];
+  const pages=['focus','sales','revenue','budget','income','review','rocks','problems','insights','settings'];
   for(const page of pages) {
     const html=renderOwnerHeader(page,'2026-09-07');
     assert.ok(html.startsWith('<header class="tc-owner-header">'));
@@ -102,7 +102,7 @@ test('check-in feedback distinguishes draft, completed and bypassed results besi
 });
 test('pending check-ins show immediate progress, block duplicate clicks, and preserve answers on release',()=>{
   for(const action of ['save-focus','complete-focus','bypass-focus']) {
-    const target={textContent:'Original button',disabled:false},answer={value:'Unsaved answer',disabled:false},alreadyDisabled={disabled:true};
+    const target={tagName:'BUTTON',textContent:'Original button',disabled:false},answer={value:'Unsaved answer',disabled:false},alreadyDisabled={disabled:true};
     const notices=[{textContent:''},{textContent:''}],attributes=new Map();
     const root={querySelectorAll:selector=>selector==='button,input,textarea,select'?[target,answer,alreadyDisabled]:notices,setAttribute:(k,v)=>attributes.set(k,v),removeAttribute:k=>attributes.delete(k)};
     const release=showCheckinSaving(root,target,action);

@@ -1,7 +1,9 @@
 // Private Owner Studio endpoint. Never log bodies, answers, tokens, or DB errors.
 // Anthropic is called only by an explicitly requested insights action. Dylan
 // approved goals/KPI summaries and separately selected private notes on 9/7.
-const DOC = /^(mbp:\d{4}|source:\d{4}|focus:\d{4}-\d{2}-\d{2}|review:\d{4}-\d{2}-\d{2}|plan:\d{4}-q[1-4]|problems)$/;
+const FINANCE_YEAR = /^finance:(20[2-9]\d|2100)$/;
+const DOC = /^(mbp:\d{4}|source:\d{4}|(?:source:)?finance:(?:20[2-9]\d|2100)|focus:\d{4}-\d{2}-\d{2}|review:\d{4}-\d{2}-\d{2}|plan:\d{4}-q[1-4]|problems)$/;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone'];
 const reply = (statusCode, body) => ({ statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store, max-age=0', 'Pragma': 'no-cache', 'Vary': 'Authorization', 'X-Content-Type-Options': 'nosniff' }, body: JSON.stringify(body) });
 const error = (status, message) => Object.assign(new Error(message), { status });
@@ -42,6 +44,11 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         const rows = await db(`/pec_owner_documents?auth_user_id=eq.${uid}&doc_key=eq.${encodeURIComponent(key)}&select=doc_key,revision,body,updated_at&limit=1`);
         return rows[0] ?? null;
       };
+      const writeDocument = async (key, revision, requestId, body) => {
+        const result = await db('/rpc/pec_owner_save_document', { method:'POST', body:{ p_auth_user_id:user.id, p_doc_key:key, p_expected_revision:revision, p_request_id:requestId, p_body:body } });
+        if (result.conflict) return reply(409, { error:'This record changed in another window. Reload it before saving; your draft has not overwritten it.', conflict:true });
+        return reply(200,{ ok:true, document:await read(key), replayed:result.replayed });
+      };
       const action = event.queryStringParameters?.action || 'status';
       if (event.httpMethod === 'GET') {
         if (action === 'crm-week') {
@@ -74,6 +81,13 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
           return reply(200, { allowed: true, userId: user.id, config, routine: routineStatus(now(), config, focus), focus, serverTime: now().toISOString() });
         }
         if (action === 'document') return reply(200, { document: await read(event.queryStringParameters?.key || '') });
+        if (action === 'finance-years') {
+          const rows = await db(`/pec_owner_documents?auth_user_id=eq.${uid}&doc_key=like.finance:*&select=doc_key,revision,updated_at&order=doc_key.desc&limit=100`);
+          // The year picker needs metadata only. Source snapshots and private
+          // content stay out of this response even if more columns are added later.
+          const documents = rows.filter(row => FINANCE_YEAR.test(row.doc_key)).map(({doc_key,revision,updated_at}) => ({doc_key,revision,updated_at}));
+          return reply(200, { documents });
+        }
         if (action === 'history') {
           const key = event.queryStringParameters?.key || '';
           if (!DOC.test(key)) throw error(400, 'Unknown owner document.');
@@ -129,16 +143,35 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         for (const [key,value] of Object.entries(payload.values)) await db(`/settings?key=eq.${key}`, { method: 'PATCH', body: { value }, user: true });
         return reply(200, { ok: true });
       }
+      if (action === 'finance-create-year') {
+        const validYear = year => Number.isInteger(year) && year >= 2020 && year <= 2100;
+        if (!validYear(payload.fromYear) || !validYear(payload.year) || payload.year !== payload.fromYear + 1) throw error(400, 'Choose the next consecutive budget year, from 2020 through 2100.');
+        if (!Number.isInteger(payload.fromRevision) || payload.fromRevision < 1 || !REQUEST_ID.test(payload.requestId || '')) throw error(400, 'A valid source revision and request ID are required.');
+        // Pin the immutable source revision so an uncertain request can be
+        // replayed unchanged even when the original working budget is edited.
+        const rows = await db(`/pec_owner_revisions?auth_user_id=eq.${uid}&doc_key=eq.finance:${payload.fromYear}&revision=eq.${payload.fromRevision}&select=body&limit=1`);
+        if (!rows[0]) throw error(404, 'The saved budget year could not be found.');
+        if (rows[0].body?.year !== payload.fromYear) throw error(400, 'The source budget year does not match.');
+        const { newFinanceYear, validateFinance } = await import('../../production/owner-finance.js');
+        const body = newFinanceYear(rows[0].body, payload.year);
+        validateFinance(body);
+        if (body.year !== payload.year) throw error(400, 'The budget year does not match.');
+        return await writeDocument(`finance:${payload.year}`, 0, payload.requestId, body);
+      }
       if (action !== 'save') throw error(400, 'Unknown owner action.');
       const key = payload.key;
       if (typeof key !== 'string' || !DOC.test(key) || key.startsWith('source:')) throw error(400, 'This document cannot be changed here.');
-      if (!Number.isInteger(payload.revision) || payload.revision < 0 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.requestId || '')) throw error(400, 'A valid revision and request ID are required.');
+      if (!Number.isInteger(payload.revision) || payload.revision < 0 || !REQUEST_ID.test(payload.requestId || '')) throw error(400, 'A valid revision and request ID are required.');
       if (!object(payload.body)) throw error(400, 'Document data is missing.');
       let body = payload.body;
       if (key.startsWith('mbp:')) {
         if (!['draft','active'].includes(body.status) || !object(body.mbp)) throw error(400, 'A draft or active MBP plan is required.');
         calculateMbp(body.mbp);
         if (String(body.mbp.year) !== key.slice(4)) throw error(400, 'The plan year does not match.');
+      } else if (key.startsWith('finance:')) {
+        if (!Number.isInteger(body.year) || String(body.year) !== key.slice(8)) throw error(400, 'The budget year does not match.');
+        const { validateFinance } = await import('../../production/owner-finance.js');
+        validateFinance(body);
       } else if (key.startsWith('focus:')) {
         if (key !== `focus:${clock.day}`) throw error(400, 'Morning check-ins can only be saved for today.');
         // Keep the write deterministic for request-id replay. Trusted save times
@@ -162,11 +195,9 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
           ids.add(m.id);
         }
       }
-      const result = await db('/rpc/pec_owner_save_document', { method:'POST', body:{ p_auth_user_id:user.id, p_doc_key:key, p_expected_revision:payload.revision, p_request_id:payload.requestId, p_body:body } });
-      if (result.conflict) return reply(409, { error:'This record changed in another window. Reload it before saving; your draft has not overwritten it.', conflict:true });
-      return reply(200,{ ok:true, document:await read(key), replayed:result.replayed });
+      return await writeDocument(key, payload.revision, payload.requestId, body);
     } catch (err) {
-      const validation = err.name === 'MbpInputError' || /setting is invalid|response|Record a reason|What |When |Choose a valid check-in|Check-in answers|Keep the bypass/i.test(err.message || '');
+      const validation = ['MbpInputError','FinanceInputError'].includes(err.name) || /setting is invalid|response|Record a reason|What |When |Choose a valid check-in|Check-in answers|Keep the bypass/i.test(err.message || '');
       return reply(err.status || (validation ? 400 : 503), { error:err.status || validation ? err.message : 'Owner workspace is unavailable. Your saved records are safe.' });
     }
   };

@@ -208,3 +208,26 @@
 #topcoat-owner-studio .tc-field input,#topcoat-owner-studio .tc-field textarea,#topcoat-owner-studio .tc-field select{max-width:100%}
 #topcoat-owner-studio button:focus-visible,#topcoat-owner-studio input:focus-visible,#topcoat-owner-studio textarea:focus-visible,#topcoat-owner-studio select:focus-visible{outline:2px solid var(--tc-accent);outline-offset:3px}
 @media(max-width:620px){#topcoat-owner-studio .tc-focus-context{grid-template-columns:1fr}#topcoat-owner-studio .tc-actionbar{align-items:stretch}#topcoat-owner-studio .tc-mbp-tabs{flex-direction:column}}
+/* Budget and income statement retain the source grid and independent year records. */
+#topcoat-owner-studio .tc-finance-actions{display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap;margin:18px 0}
+#topcoat-owner-studio .tc-finance-scroll{overflow:auto;max-height:70vh;max-height:70dvh;max-width:100%;border:1px solid var(--tc-line);border-radius:10px;background:var(--tc-panel);position:relative;scrollbar-gutter:stable}
+#topcoat-owner-studio .tc-finance-table{border-collapse:separate;border-spacing:0;table-layout:fixed;width:max-content;font-size:12px;font-variant-numeric:tabular-nums;color:#172a38}
+#topcoat-owner-studio .tc-finance-table th,#topcoat-owner-studio .tc-finance-table td{border-right:1px solid #ccd4db;border-bottom:1px solid #ccd4db;min-height:28px;height:28px;padding:5px 7px;text-align:right;background:#fff;white-space:pre-wrap;overflow-wrap:anywhere;max-width:280px}
+#topcoat-owner-studio .tc-finance-table thead{position:sticky;top:0;z-index:5;box-shadow:0 2px 0 var(--tc-line)}
+#topcoat-owner-studio .tc-finance-table thead>tr:first-child th{background:#e4ecf5;text-align:center;font-weight:500;font-size:10px}
+#topcoat-owner-studio .tc-finance-table .tc-finance-rownum{position:sticky;left:0;z-index:3;background:#edf2f7;text-align:center;font-size:10px;color:#536578;width:38px;min-width:38px}
+#topcoat-owner-studio .tc-finance-table .tc-finance-text{text-align:left}
+#topcoat-owner-studio .tc-finance-table td.tc-finance-editable{padding:0;box-shadow:inset 0 -1px #507fa0}
+#topcoat-owner-studio .tc-finance-editable input{display:block;box-sizing:border-box;width:100%;min-width:0;min-height:30px;border:0;border-radius:0;padding:5px 7px;background:#eaf4ff;color:#143f61;text-align:inherit;font:inherit;font-weight:inherit}
+#topcoat-owner-studio .tc-finance-editable input:focus{background:#fff;outline:2px solid var(--tc-accent);outline-offset:-2px}
+#topcoat-owner-studio .tc-finance-table .tc-finance-error{color:#a62622!important;background:#fff0e8!important}
+#topcoat-owner-studio .tc-finance-scroll+p{margin-top:10px}
+#topcoat-owner-studio .tc-private{white-space:normal}
+@media(max-width:620px){#topcoat-owner-studio .tc-finance-actions{align-items:stretch}#topcoat-owner-studio .tc-finance-editable input{font-size:16px;min-height:44px}#topcoat-owner-studio .tc-finance-scroll{max-height:65dvh}}
+#topcoat-owner-studio .tc-finance-table td:not(.tc-finance-text){white-space:nowrap}
+#topcoat-owner-studio .tc-finance-table a{color:inherit}
+@media(max-width:620px){#topcoat-owner-studio .tc-finance-pinned{position:static!important}#topcoat-owner-studio .tc-finance-label{position:sticky!important;left:38px!important;z-index:2!important}}
+#topcoat-owner-studio{box-sizing:border-box}
+#topcoat-owner-studio .tc-finance-editable textarea{display:block;box-sizing:border-box;width:100%;min-width:0;min-height:30px;border:0;border-radius:0;padding:5px 7px;background:#eaf4ff;color:#143f61;text-align:inherit;font:inherit;font-weight:inherit;resize:vertical;line-height:1.45}
+#topcoat-owner-studio .tc-finance-editable textarea:focus{background:#fff;outline:2px solid var(--tc-accent);outline-offset:-2px}
+@media(max-width:620px){#topcoat-owner-studio .tc-finance-editable textarea{font-size:16px;min-height:44px}}

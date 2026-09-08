@@ -2048,7 +2048,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <div class="pec-subnav-group">Overview</div>
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="metrics">Metrics</button>
-          <button data-pec-view="owner-studio" style="display:none">My Eyes Only</button>
+          <button data-pec-view="owner-studio" style="display:none">🚀 Growth and Development</button>
           <!-- Personal, private per-user checklist (build 28). Deliberately NO
                pec-role-admin class and no capability gate: every signed-in
                user has their own list, and the DB's owner-only RLS is the
@@ -2747,7 +2747,7 @@ function logout() {
 async function init() {
   // Set date. (The Cockpit loaders that used to run here, brain dumps,
   // tasks, revenue, goals, projects, Cowork cards, were removed 2026-09-07
-  // with the Cockpit itself; My Eyes Only covers that ground now.)
+  // with the Cockpit itself; 🚀 Growth and Development covers that ground now.)
   const d = new Date();
   const opts = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
   if ($('headerDate')) $('headerDate').textContent = d.toLocaleDateString('en-US', opts);
@@ -4725,7 +4725,7 @@ const ownerStudio = createOwnerStudio({
     const button = document.querySelector('#pecSubnav [data-pec-view="owner-studio"]');
     if (button) {
       button.style.display = allowed !== false ? '' : 'none';
-      button.textContent = allowed === null ? 'My Eyes Only · Retry' : 'My Eyes Only';
+      button.textContent = allowed === null ? '🚀 Growth and Development · Retry' : '🚀 Growth and Development';
     }
   },
   openOwner: () => {

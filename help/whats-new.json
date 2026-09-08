@@ -1,5 +1,16 @@
 [
   {
+    "id": "owner-growth-development-yearly-finance",
+    "date": "2026-09-07",
+    "title": "🚀 Growth and Development adds yearly budgets and income statements.",
+    "summary": "My Eyes Only is now Growth and Development, with your original budget structure, linked income statement, editable fields, and separate history for each year.",
+    "howto": [
+      "Open Overview > 🚀 Growth and Development, then choose Budget Plans or Income Statement. Edit planning fields in Budget Plans and enter monthly actuals in Income Statement. Choose Save changes to keep edits.",
+      "Use Budget year to revisit a saved year. Add year copies your planning values and starts new actuals blank while preserving earlier years. Prior-year figures show recorded actuals and their coverage.",
+      "Choose Show all rows and columns for collapsed monthly/template detail, or Original source for the imported reference. Workbook notes identify existing source discrepancies."
+    ]
+  },
+  {
     "id": "cockpit-removed",
     "date": "2026-09-07",
     "title": "The Cockpit (Daily flow) is gone; My Eyes Only takes its place.",

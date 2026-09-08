@@ -1,3 +1,27 @@
+## [2026-09-07 20:49 MST] owner: yearly budgets and linked income statements in Growth and Development
+
+By: Codex
+
+Changed: Renamed the private owner workspace to 🚀 Growth and Development and added Budget Plans and Income Statement. The working pair preserves the active Budget - 2 / Income Statement - 2 source structure, editable inputs, monthly columns, hidden template detail, notes, links and calculated relationships. Budget account/category edits flow into the income statement; monthly actuals flow back into budget comparisons. A year picker preserves separate annual records. Creating the next consecutive year copies plans, clears actuals and carries recorded prior-year actuals into the historical columns with correct labels and coverage notes.
+
+Why: Dylan requested both original workbook tabs with all associated data, editable fields, linked planning/actuals and yearly history.
+
+Data/import: Read-only fresh Google Sheets export matched the local workbook copies. Saved finance:2026 and immutable source:finance:2026 privately at revision 1, including all source data and needed Date Definitions cells. All 25,440 populated cached reference cells reconciled with zero differences. The existing mbp:2026 revision 4 and source:2026 revision 1 were unchanged. Exact content digests were verified during SQL assembly; final writes and cleanup were rehearsed with BEGIN/ROLLBACK, then the verified operation committed. Eleven temporary private import records and their revision rows were removed in the same final transaction. No source workbook edits, schema migrations, entitlement changes or private financial input data in public assets.
+
+Implementation: A limited formula parser handles the imported formulas without JavaScript evaluation or external calls. Spreadsheet array spills become equivalent scalar working links while the source retains original formulas/caches. Original source formula issues and the omitted expense category in a budget summary remain preserved and explained privately. Sparse input ranges preserve blanks versus explicit zeros. Untouched display formatting never rounds saved source inputs. Both tabs save together through the existing revision/request-ID RPC; conflict and failed-load UI keeps drafts/current selection. Year creation reads the selected immutable revision, rejects skipped/backward years and cannot replace an existing year. Owner entitlement, live-session validation and per-owner record filters cover all new reads/writes.
+
+Verified: Full npm test passed (30 legacy suites plus 66 owner tests); touched CJS/JS syntax checks passed; all 6 inline script blocks parse with the same empty failure set as HEAD; features.json, help/whats-new.json and package.json parse; git diff --check clean. Focused owner tests were rerun after final UI adjustments: 68 tests passed, zero failures. The source adapter was additionally checked against the actual raw import for exact cached-value/formula preservation and zero editable fields. Private local browser QA verified editable labels/plans, linked income labels and budget actuals, blank future actuals, conflict preservation/retry, failed year-load recovery, new-year planning/history and blank actuals, original-source read-only rendering, desktop scrolling and a 390px mobile viewport. Browser edits and the QA-created next year existed only in the isolated local preview.
+
+Files touched: index.html, production/owner-studio.js, production/owner-studio.css, production/owner-studio.test.js, production/owner-finance.js, production/owner-finance.test.js, production/owner-finance-ui.js, production/owner-finance-ui.test.js, netlify/functions/pec-owner-studio.cjs, production/owner-studio-api.test.cjs, production/owner-mbp.md, package.json, features.json, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: Publish the committed application changes after Dylan's go-ahead, then confirm the deployed owner view. The private 2026 data import is already complete; the new application tabs are not deployed by this commit alone.
+
+## Handoff to Cowork
+None.
+
+## Handoff to Dylan
+Application publication awaits authorization under AGENTS.md: never push, Dylan pushes. After deployment, refresh TopCoat and open Overview > 🚀 Growth and Development. Use Budget Plans for planning and Income Statement for monthly actuals; save edits and use Budget year / Add year for annual history.
+
 ## [2026-09-07 12:40 MST] shell: remove the Cockpit / Daily flow workspace (Dashboard, Execution, JARVIS); My Eyes Only replaces it
 
 By: Claude Code
