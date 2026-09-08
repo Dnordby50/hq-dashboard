@@ -1,3 +1,16 @@
+## [2026-09-07 21:13 MST] owner: authorized publication of Growth and Development finance tabs
+
+By: Codex
+
+Changed: Pushed the completed and validated application change 6d31bb4 to origin/main after Dylan explicitly answered yes to publishing the new owner tabs. The private 2026 budget/income working pair and immutable source import were already verified at revision 1. This entry records the publication authorization that supersedes the pending handoff in the preceding entry.
+
+Verified: Git push succeeded from c0a11ae to 6d31bb4. The existing implementation checks remain valid: full npm test and the final 68 owner tests passed, with exact source-data reconciliation and private browser QA documented above. No application code changed during publication. Live deployment verification follows the push.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Confirm the live application serves the new modules and displays both imported tabs.
+Handoff to Cowork: None.
+Handoff to Dylan: None required for publication; authorization was received in this task.
+
 ## [2026-09-07 20:49 MST] owner: yearly budgets and linked income statements in Growth and Development
 
 By: Codex
