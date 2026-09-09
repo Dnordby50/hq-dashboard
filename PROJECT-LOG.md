@@ -1,3 +1,16 @@
+## [2026-09-08 20:56 MST] owner: authorized publication and live verification of editable MBP plans
+
+By: Codex
+
+Changed: Dylan explicitly answered yes to publishing this Sales and Revenue update after the earlier approval block. Pushed 99d0056 and 87b5920 to origin/main successfully. This resolves the publication handoff in the preceding entry; the application update is now live.
+
+Verified: Netlify returned HTTP 200 for owner-mbp-inputs.js, owner-mbp-ui.js and owner-studio.js, each byte-for-byte matching the approved local files. A fresh live browser load displayed editable annual and weekly fields, a successful TopCoat source check, and automatic current-week PEC leads, jobs booked, booked dollars and produced dollars. Estimates and labor hours remained manual with source limitations explained. FTP Revenue had 262 editable inputs and zero automatic cells. The original snapshot had zero table inputs and no save or weekly-entry action. No live financial records were edited for verification. Previous full test results remain valid: 30 legacy suites plus 101 owner tests passed; focused UI checks passed after the final adjustments. Git was clean and synchronized after the release push.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Refresh TopCoat and use Sales Plan or Revenue Produced under Growth and Development. Save input changes; yellow marks manual edits, and Use TopCoat restores automatic PEC values where available.
+Handoff to Cowork: None.
+Handoff to Dylan: None required for publication.
+
 ## [2026-09-08 19:50 MST] owner: editable MBP release awaits renewed publication approval
 
 By: Codex
