@@ -106,12 +106,13 @@
 [functions."pec-security-monitor"]
   schedule = "*/15 * * * *"
 
-# Google -> TopCoat appointment pull (prompt 37 Phase B). Every 15 minutes;
-# incremental syncToken polling per connected member (410 = drop token and
+# Google -> TopCoat appointment pull. Every 5 minutes so saved pages resume
+# promptly within the availability freshness window. Incremental syncToken
+# polling per connected member (410 = drop token and
 # full-resync). No-op until GOOGLE_OAUTH_* env vars are set and a member
 # connects; a manual call is just an ordinary idempotent tick.
 [functions."pec-google-calendar-pull"]
-  schedule = "*/15 * * * *"
+  schedule = "*/5 * * * *"
 
 # Lost-reason AI backfill (prompt 62 Part G). Nightly at 15:00 UTC = 08:00
 # MST: fills lost_reason / lost_notes on already-lost leads that have a

@@ -1,3 +1,18 @@
+## [2026-09-09 09:07 MST] appointments: keep recurring imports inside the scheduling window
+
+By: Codex
+
+Changed: New Google-import rows from incremental responses must overlap the configured rolling import window. Existing mapped appointments still update or cancel when moved outside that window. Google query parameters and continuation tokens retain their original values. The scheduled worker now runs every five minutes so deferred pages resume promptly.
+
+Why: Live recovery successfully restored every missing event, but subsequent automatic incremental responses expanded changed recurring series through 2040. These unnecessary new future rows consumed the bounded worker's time and made the primary calendar require multiple 15-minute ticks. The added guard skips those inserts without removing existing records or ignoring changes to previously mapped events. Google's events.list documentation confirms that empty partial pages are valid and other query parameters must remain consistent across sync-token requests, so pagination size and cursors are preserved.
+
+Verified before final tuning: All eight enabled calendars completed recovery at 7:58 AM Arizona with no errors or pending state. All seven identified missing events appeared at the exact Google times in the live office view. The original 48 native appointment ids, sources, customer/lead links and assignees retained the same database fingerprint; Google ids are unique. Public booking reopened with 77 slots across 21 days, and an independent database comparison found zero overlaps; September 10 only offered 1:30, 2:00 and 2:30 PM after SNP and FTP busy time plus the buffer. Subsequent scheduled completions were confirmed at 8:15 and 8:31 AM, and primary continuation advanced successfully through 9:05 AM. No customers were contacted and existing bookings were not moved. All 40 worker recovery regressions and 22 mapping checks passed for the final window guard; the 43 multi-calendar checks also passed. The scheduled interval diff was reviewed. Deployment verification follows.
+
+Files touched: netlify/functions/_pec-google-pull.cjs, production/google-pull.test.cjs, netlify.toml, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Publish the tested window guard and cadence update, verify live scheduled continuation, then record release verification. The latest live sync now places the Dusty/Anne/Doug meeting at 10:30-11:30 AM and Golf at 5:00-7:00 PM, reflecting newer Google edits. The earlier overlap with Kyle LeVasseur's 1:30-2:30 PM estimate is cleared.
+Handoff to Cowork: None.
+Handoff to Dylan: None. The earlier meeting conflict has cleared through a newer Google update.
+
 ## [2026-09-09 07:56 MST] appointments: preserve continuation after database JSON normalization
 
 By: Codex

@@ -3,7 +3,7 @@
     "id": "google-calendar-reliable-sync",
     "date": "2026-09-09",
     "title": "A more reliable appointment calendar.",
-    "summary": "Google sync resumes after interruptions, the office calendar refreshes automatically, and booking checks protect busy time.",
+    "summary": "Google sync runs every five minutes and resumes after interruptions, the office calendar refreshes automatically, and booking checks protect busy time.",
     "howto": [
       "Open Appointments to see Google sync status. Use Sync now to refresh connected calendars or continue a recovery.",
       "Use All types and leave Hide Google-imported unchecked when checking availability. Multi-day blocks remain visible throughout their dates.",

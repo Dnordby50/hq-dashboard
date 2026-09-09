@@ -4,7 +4,7 @@
 // driven through the exported helpers plus the shared mini-PostgREST.
 // Run: node production/google-pull.test.cjs
 'use strict';
-const { mapEventToRow, shouldSkipEcho } = require('../netlify/functions/pec-google-calendar-pull.cjs');
+const { mapEventToRow, shouldSkipEcho, pullWindow } = require('../netlify/functions/pec-google-calendar-pull.cjs');
 const { composeGcalDescription, stripGcalDescription, GCAL_DESC_SEPARATOR } = require('../netlify/functions/_pec-google.cjs');
 const { makeChecker } = require('./_drip-test-kit.cjs');
 
@@ -282,6 +282,33 @@ const MEMBER = { id: 'sm1', name: 'Dylan N', google_calendar_id: 'cal_topcoat_1'
     await runGooglePull(r.deps);
     const complete = r.calls.filter(c => c.path.startsWith('/pec_heartbeats')).pop();
     check(complete.method === 'POST' && !!complete.payload.last_ok_at && complete.payload.details.complete, 'completed heartbeat advances success timestamp');
+  }
+  {
+    const window = pullWindow(cfg, new Date(T));
+    const r = rig({ cal: { pull_version: 2, sync_token: 'stable-size-token', last_synced_at: stamp, last_full_synced_at: stamp }, google: () => ({ ok: true, status: 200, body: { items: [
+      event('far-future', { start: { dateTime: '2040-08-29T16:00:00-07:00' }, end: { dateTime: '2040-08-29T17:00:00-07:00' } }),
+      event('before-window', { start: { dateTime: '2020-01-01T00:00:00Z' }, end: { dateTime: '2020-01-01T01:00:00Z' } }),
+      event('at-upper-bound', { start: { dateTime: window.timeMax }, end: { dateTime: new Date(Date.parse(window.timeMax)+3600000).toISOString() } }),
+      event('at-lower-bound', { start: { dateTime: new Date(Date.parse(window.timeMin)-3600000).toISOString() }, end: { dateTime: window.timeMin } }),
+      event('inside-window'),
+      event('spanning-all-day', { start: { date: '2026-08-01' }, end: { date: '2026-09-11' } }),
+    ], nextSyncToken: 'bounded-writes-complete' } }) });
+    const out = await runGooglePull(r.deps);
+    check(out.complete && out.skipped === 4 && r.cal.sync_token === 'bounded-writes-complete', 'distant and exclusive-boundary new instances skip writes while incremental progress completes');
+    check(r.tables.pec_appointments.map(a => a.google_event_id).sort().join(',') === 'inside-window,spanning-all-day', 'in-window and overlapping all-day instances import');
+    const query = new URL('https://x' + r.requests[0].path).searchParams;
+    check(query.get('maxResults') === '100' && query.get('syncToken') === 'stable-size-token' && !query.has('timeMin') && !query.has('timeMax'), 'local write bounds leave incremental Google query and page size unchanged');
+    const base = { google_calendar_id: 'personal', google_updated: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z', status: 'scheduled', source: 'google', start_at: '2026-09-09T20:00:00Z', end_at: '2026-09-09T21:00:00Z' };
+    const r2 = rig({ cal: { pull_version: 2, sync_token: 'old', last_synced_at: stamp, last_full_synced_at: stamp }, appointments: [
+      { ...base, id: 'a1', google_event_id: 'move-outside' },
+      { ...base, id: 'a2', google_event_id: 'cancel-outside', start_at: '2040-08-29T23:00:00Z', end_at: '2040-08-30T00:00:00Z' },
+    ], google: () => ({ ok: true, status: 200, body: { items: [
+      event('move-outside', { start: { dateTime: '2040-08-29T16:00:00-07:00' }, end: { dateTime: '2040-08-29T17:00:00-07:00' } }),
+      event('cancel-outside', { status: 'cancelled' }),
+    ], nextSyncToken: 'done' } }) });
+    await runGooglePull(r2.deps);
+    check(r2.tables.pec_appointments[0].start_at.startsWith('2040-08-29') && r2.tables.pec_appointments[0].status === 'scheduled', 'existing mapped event still moves beyond the import window');
+    check(r2.tables.pec_appointments[1].status === 'canceled', 'existing mapped event outside the window still cancels');
   }
   console.log(`\n${checks} durable runner checks passed`);
 })().catch(err => { console.error(err); process.exitCode = 1; });

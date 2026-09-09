@@ -94,6 +94,17 @@ async function processEvents(ctx, events) {
     if (imported && shouldSkipImportedEvent(ev, cfg)) { summary.skipped++; return; }
     const mapped = mapEventToRow(ev, member, { calendarId: cal.calendar_id, defaultType: imported ? cfg.defaultType : 'other' });
     if (!mapped.valid) throw new Error('Google returned an event without a usable start time.');
+    // Google incremental sync may expand changed recurring series beyond
+    // the initial full-list time bounds (observed through 2040 in prod).
+    // Retain the immutable Google query, but do not INSERT distant instances.
+    // Existing mappings still move/cancel outside this window so an old busy
+    // slot cannot survive a remote reschedule. Bounds match events.list:
+    // event end > timeMin and event start < timeMax; spanning all-day blocks
+    // therefore remain visible. The window is fixed to this pull's start.
+    if (!existing && ctx.window && !(Date.parse(mapped.row.end_at) > Date.parse(ctx.window.timeMin) && Date.parse(mapped.row.start_at) < Date.parse(ctx.window.timeMax))) {
+      summary.skipped++;
+      return;
+    }
     // Native bookings retain customer/lead/source/type/assignee. Imported
     // writes retain the same organizer and calendar guardrails as before.
     if (imported) mapped.row.google_readonly_reason = importGuardrailReason(ev, cal);
@@ -201,7 +212,9 @@ async function runGooglePull(deps = {}) {
             state = newPullState(reconnect || configChanged ? { ...cal, sync_token: null } : cal, cfg, clock());
             await save({ pull_state: state });
           }
-          const ctx = { db, member, cal, cfg: { ...cfg, ...state.config }, summary, canWork, token, requestGoogle };
+          const snapshotConfig = { ...cfg, ...state.config };
+          const ctx = { db, member, cal, cfg: snapshotConfig, summary, canWork, token, requestGoogle,
+            window: pullWindow(snapshotConfig, new Date(state.started_at)) };
           if (state.phase === 'reconcile') {
             const next = await reconcilePage(ctx, state);
             if (next) await save({ pull_state: next });
