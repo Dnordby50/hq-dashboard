@@ -1,3 +1,16 @@
+## [2026-09-09 09:11 MST] appointments: calendar recovery and automatic sync verified live
+
+By: Codex
+
+Verified: Published 8d9805f, 87afb85 and 675878e to origin/main. Live dashboard, schema note and latest What's New checksums match the corresponding local releases. The first automatic run on the five-minute cadence completed all eight required calendars at 9:10:24 AM Arizona in 11.6 seconds, with zero errors, no pending work, and no unnecessary inserts. Every required ledger is version 2, current and error-free. The live office view shows the recovered events and reports Google sync up to date; later Google time changes also reached TopCoat. Public booking reopened and its returned slots were independently compared against the current scheduled appointments with zero overlaps. The missing-events investigation is resolved.
+
+Validation: Full npm test passed for the main repair; final focused worker validation passed 40 recovery checks plus 22 mapping and 43 multi-calendar checks. The live database rehearsal passed 14 cases before applying the migration. All six dashboard inline scripts and changed CJS files parse, endpoint bundles build, manifests parse, and the complete release diff passes whitespace checks. Existing Google-disabled sources and permissions were preserved. The original native appointment links remained unchanged; the live user-created additional site visit was preserved. No customer messages or test appointments were sent or created.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Office users can refresh TopCoat once to load the repaired calendar, sync status and staff overlap warnings. Google pulls now run every five minutes and the visible calendar refreshes each minute; unsafe online availability is withheld if a required calendar becomes stale or fails.
+Handoff to Cowork: None.
+Handoff to Dylan: None. The earlier meeting conflict cleared after a newer Google time change.
+
 ## [2026-09-09 09:07 MST] appointments: keep recurring imports inside the scheduling window
 
 By: Codex
