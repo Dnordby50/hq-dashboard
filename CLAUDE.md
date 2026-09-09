@@ -14,6 +14,7 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 1. Commit after every meaningful change.
    - Format: `<area>: <what changed>` (example: `dashboard: fix Booked Jobs pull for empty rows`)
    - Never commit secrets, API keys, credentials, or .env files.
+   - Standing publication authorization from Dylan (2026-09-09): after required checks pass, commit and push user-requested changes to `origin/main` without asking for per-push confirmation, then verify the live deployment. Honor any explicit request to hold publication. Keep shared history intact and use revert commits for rollback. Report real test, push, or deployment blockers instead of treating routine publication as a handoff to Dylan.
 
 2. Update PROJECT-LOG.md after every meaningful change.
    - Append a new entry at the TOP of the log (newest first).

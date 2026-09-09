@@ -35,15 +35,15 @@ Five actors touch this project. Each has a defined lane. Do not drift into anoth
 
 | Actor | What it does | Where it works | Writes to the repo? |
 |---|---|---|---|
-| **Dylan** | Owner. Brings issues, build phases, bugs. Makes binary architectural calls. Pushes to remote. Approves prod migrations on money/auth tables. | Everywhere | Yes (rarely directly) |
+| **Dylan** | Owner. Brings issues, build phases, bugs. Makes binary architectural calls. Gives agents standing authorization to push tested requested changes. Approves prod migrations on money/auth tables. | Everywhere | Yes (rarely directly) |
 | **Claude Code** | Coding agent. Reads the repo, edits code, runs tests, applies migrations via the Supabase MCP, commits, writes PROJECT-LOG entries, prints Cowork handoff prompts. | Local terminal on Dylan's Mac, repo at `/Users/dylannordby/Claude-Code/HQ-Dashboard` | Yes. `By: Claude Code` in the log. |
 | **Codex** (you) | Second coding agent. Same lane as Claude Code, same rules, plus the coordination contract in Section 15. | Same repo | Yes. `By: Codex` in the log. |
-| **Cowork** | Anthropic's desktop agent, running as Dylan's operator for things a coding session cannot reach: third-party web UIs, Google Sheets, Google Docs, Supabase Studio, Netlify dashboard, Zapier, prod verification, writing build prompts from Dylan's requests, and audits. Has its own project instructions (Section 11). | Cloud sandbox with Dylan's Mac folders mounted | Yes. `By: Cowork` in the log. Commits locally, never pushes. |
+| **Cowork** | Anthropic's desktop agent, running as Dylan's operator for things a coding session cannot reach: third-party web UIs, Google Sheets, Google Docs, Supabase Studio, Netlify dashboard, Zapier, prod verification, writing build prompts from Dylan's requests, and audits. Has its own project instructions (Section 11). | Cloud sandbox with Dylan's Mac folders mounted | Yes. `By: Cowork` in the log. Commits and pushes tested requested changes under Dylan's standing authorization. |
 | **Chat Claude projects** | Planning and review. Three claude.ai projects: **TopCoat CRM** (planning, review, writes build prompts), **Business Coach** (strategy, explicitly out of scope for CRM code), **Business Radar** (monitoring; reads Supabase, writes `pec_radar_alerts`, appends `RADAR-SIGNALS.md` in the vault). | claude.ai | No direct repo writes |
 
 Log tallies at HEAD: 567 PROJECT-LOG entries since 2026-06-01, 307 by Claude Code and 264 by Cowork. That ratio is the workflow: the coding agent ships, Cowork verifies and operates, and both log.
 
-**The handoff loop, in one paragraph.** Dylan describes a request (often several in one message). Cowork or chat Claude interrogates him (10+ multiple-choice questions is the project norm), audits the code and the live database for what already exists, and writes a numbered build prompt (`claude-code-prompt-NNN-<slug>.md` at the repo root). The coding agent runs the prompt: reads CLAUDE.md and the last three log entries, implements, tests, updates `features.json`, `help/whats-new.json` and `SCHEMA.md` as needed, logs, commits. Anything the coding agent cannot do from the terminal becomes a self-contained Cowork handoff prompt printed in chat AND logged. Cowork executes it, logs `By: Cowork`, commits locally. Dylan pushes.
+**The handoff loop, in one paragraph.** Dylan describes a request (often several in one message). Cowork or chat Claude interrogates him (10+ multiple-choice questions is the project norm), audits the code and the live database for what already exists, and writes a numbered build prompt (`claude-code-prompt-NNN-<slug>.md` at the repo root). The coding agent runs the prompt: reads CLAUDE.md and the last three log entries, implements, tests, updates `features.json`, `help/whats-new.json` and `SCHEMA.md` as needed, logs, commits. Anything the coding agent cannot do from the terminal becomes a self-contained Cowork handoff prompt printed in chat AND logged. Cowork executes it, logs `By: Cowork`, commits and pushes after required checks pass. The agent that publishes verifies the live deployment; per-push confirmation is not required under Dylan's 2026-09-09 standing authorization.
 
 ---
 
@@ -91,7 +91,7 @@ For `index.html`, the convention is a per-script-block parse check: extract each
 
 The estimator: `npm --prefix apps/estimator run build` runs `tsc --noEmit && vite build`. Netlify does this on deploy; run it locally when you touch `apps/estimator/src`.
 
-There is no CI. Netlify builds on push to `main`. A red build is discovered by Dylan noticing the site did not change.
+Netlify builds on push to `main`. The publishing agent verifies the deployment and relevant live behavior, and reports any failed build or delivery instead of assuming a successful push means the site changed.
 
 ---
 
@@ -198,7 +198,7 @@ These are the 14 rules in CLAUDE.md. Wording is preserved where it matters; "Cla
 **Additional standing conventions that are not numbered in CLAUDE.md but are enforced in practice:**
 
 - Stage specific files, never `git add .`.
-- Do not push. Dylan pushes (Cowork's project instructions require his confirmation; Claude Code's local allowlist permits it but the log shows sessions ending "committed, NOT pushed" as the norm). Say at the end of every session how many commits are waiting locally.
+- Dylan authorizes agents to commit and push tested, user-requested changes to `origin/main` without per-push confirmation (2026-09-09), then verify the live deployment. Honor an explicit publication hold. Keep shared history intact; use revert commits for rollback. Report any real blocker and pending commits.
 - Never modify the Obsidian HQ vault from this project (read-only reference).
 - Never touch `estimator/` (build output) by hand.
 - One-off backfill scripts are idempotent, support `--dry-run`, and get Dylan's explicit yes before the live run.
@@ -224,7 +224,9 @@ This is what a normal build session looks like from the first message to the las
 
 **Commit.** `git add <specific files>` then `git commit -m "<area>: <what>"`. The docs commit that carries the log entry is usually separate from the code commits (the log then lists both).
 
-**Report.** Tell Dylan: what shipped, what he will see, what is waiting on Cowork, how many commits are local and unpushed.
+**Publish.** After required checks pass, push the requested changes to `origin/main` and verify the live deployment. Dylan's 2026-09-09 standing authorization replaces the old per-push approval requirement. Honor any explicit request to hold publication.
+
+**Report.** Tell Dylan what shipped and what he will see. Report any real blocker, failed deployment, or commits that remain unpublished.
 
 ---
 
@@ -307,12 +309,12 @@ The log is the project's memory. Every agent reads only the top three entries at
 
 ## 11. Cowork's project instructions (so you know what the operator on the other side is bound by)
 
-Dylan's Cowork project for this repo is called "TopCoat CRM". Its instructions, condensed:
+Dylan's Cowork project for this repo is called "TopCoat CRM". For this repository, Dylan's 2026-09-09 standing push authorization supersedes the former push-confirmation requirement. Its instructions, condensed with that correction:
 
 - Startup: read CLAUDE.md and the 3 most recent PROJECT-LOG entries; confirm in the first reply, in one sentence, what the most recent entry was and the project's current state; then do the task.
 - Reference files instead of searching: `SCHEMA.md` for every table and column (if SCHEMA.md and reality disagree, trust the live schema and flag the drift in the log entry); `features.json` for where things live; never read `index.html` or the log end to end; check `res.error` on empty supabase-js reads.
 - Do exactly what the task says, no scope expansion. If unclear or in conflict with CLAUDE.md or recent entries, stop and ask.
-- STOP and confirm with Dylan before: sending any email or external communication; modifying any Google Sheet listed in CLAUDE.md; making any payment, purchase, or financial action; deleting files; pushing to a remote git repo.
+- STOP and confirm with Dylan before: sending any email or external communication; modifying any Google Sheet listed in CLAUDE.md; making any payment, purchase, or financial action; deleting files. Routine pushes of tested, user-requested changes to `origin/main` have Dylan's standing authorization (2026-09-09) and need no per-push confirmation; verify the live deployment.
 - Logging: append a `By: Cowork` entry at the TOP of PROJECT-LOG.md after every task, including errors and early stops.
 - Commits: stage specific files (never `git add .`), commit as `cowork: <short description>`. Never commit secrets.
 - Style: no em dashes in anything customer-facing.
@@ -411,7 +413,7 @@ Two coding agents on one `main` with no branches, no CI, and a shared append-onl
 
 4. **Log identity is the coordination signal.** Write `By: Codex`. Never write `By: Claude Code`. The next agent's startup read of three entries is how it learns you were here.
 
-5. **Pull before you start if the repo has a remote change, but never push.** Dylan pushes. If `main` is behind origin, `git pull --ff-only` only; if that fails, stop and tell Dylan rather than merging.
+5. **Publish tested requested changes without per-push confirmation.** Dylan gave standing authorization on 2026-09-09. Push to `origin/main` after required checks pass and verify the live deployment, unless Dylan explicitly asks to hold publication. Keep shared history intact and use revert commits for rollback. If `main` is behind origin, `git pull --ff-only` only; if that fails, stop and tell Dylan rather than merging.
 
 6. **Lock files.** If `.git/index.lock` or `.git/HEAD.lock` exists at session start and no git process is running, it is Cowork's debris (Section 11). Delete it and say so in your reply. Never leave one behind yourself.
 
@@ -470,7 +472,7 @@ Each of these is recorded in Cowork's project memory or a log entry. They are st
 
 **Open right now**
 
-- `main` is `[ahead 2]` of origin: Cowork's two 2026-09-02 commits (Meta Lead Ads agency guide log entries) are unpushed. Prod is not affected (docs only), but the pattern is the landmine described in Section 16. Dylan should push.
+- `main` is `[ahead 2]` of origin: Cowork's two 2026-09-02 commits (Meta Lead Ads agency guide log entries) are unpushed. Prod was not affected (docs only). This is a historical 2026-09-07 snapshot, not a current publication instruction; see the standing agent-push authorization added 2026-09-09.
 - Prompts 101 (TopCoat booking, replacing Routemize) and 102 (visual form builder) were written 2026-08-19 and both shipped by 2026-08-20 (`pec-booking.cjs`, `pec_booking_*` tables, `pec_drive_time_cache`, the "Online booking" feature entry). 102's Part C (the FTP form) was skipped by Dylan's call and remains open. The two prompt files still sit at the repo root because they are the live specs; they will move to `docs/archive/prompts/` on the next sweep.
 - Custom domain deferred since 2026-08-09.
 - Angi to Zapier intake built but unpublished, blocked on Angi firing one payload (2026-08-21).
@@ -512,6 +514,6 @@ Before: read AGENTS.md / CLAUDE.md; top 3 log entries; `git status -sb`; confirm
 
 During: check before building; small commits `<area>: <what>`; `@artifacts` on migrations; rule 14 rehearsal on money/auth/status; settings surface for every feature; no em dashes customer-facing; secrets stay in env.
 
-After: `npm test`; `node --check`; script-block parse check; JSON reloads; `features.json`; `help/whats-new.json`; `SCHEMA.md`; log entry at the top with `By: Codex`, both handoff lines, verified line, commit SHAs; stage specific files; commit; do not push; report unpushed count; print any Cowork prompt in the Section 8 format.
+After: `npm test`; `node --check`; script-block parse check; JSON reloads; `features.json`; `help/whats-new.json`; `SCHEMA.md`; log entry at the top with `By: Codex`, both handoff lines, verified line, commit SHAs; stage specific files; commit and push tested requested changes without per-push confirmation; verify the live deployment; report real blockers or pending commits; print any Cowork prompt in the Section 8 format.
 
 Never: read the 3 MB files wholesale; guess a column; write to the vault; touch `estimator/`; blind-retry a non-idempotent write; edit the shared contract files without Dylan; claim a migration applied that you did not apply.

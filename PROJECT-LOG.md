@@ -1,3 +1,18 @@
+## [2026-09-09 04:15 MST] workflow: Dylan authorizes routine pushes and the dialog fix publication
+
+By: Codex
+
+Changed: Dylan explicitly approved publishing the tested What's New fix and replaced the per-push approval rule: agents should push tested changes without asking him each time. Updated the canonical CLAUDE.md rule, AGENTS.md summary, and all active CODEX-HANDOVER.md publishing instructions, including Cowork's local instruction summary and the final checklist. The publishing agent commits, pushes to origin/main, and verifies the live deployment. Explicit publication holds still apply; shared history stays intact and rollback uses revert commits. Historical PROJECT-LOG entries are preserved.
+
+Why: Dylan said he no longer pushes changes himself and wants the approval step removed. His new standing instruction supersedes the prior never-push rule and resolves the 2026-09-08 dialog publication block.
+
+Verified: Reviewed active project instructions and ancestor instruction locations for conflicting rules. The local Claude allowlist already permits git push; no permission configuration changes were needed. This is a documentation-only rule update. The application fix in 1b454e0 retains its passing full test suite and ten focused dialog regressions from the preceding session. Documentation diff passes git diff --check. Publication and live verification follow this commit.
+
+Files touched: AGENTS.md, CLAUDE.md, CODEX-HANDOVER.md, PROJECT-LOG.md.
+Next steps: Push the approved dialog fix and updated rules, then verify the live dialog remains open.
+Handoff to Cowork: None.
+Handoff to Dylan: None required; standing publication authorization is recorded in the project rules.
+
 ## [2026-09-08 21:26 MST] shell: dialog fix awaits explicit publication approval
 
 By: Codex

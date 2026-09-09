@@ -34,7 +34,7 @@ The full operating picture (who the other agents are, infrastructure, the sessio
 
 - One agent per task. Uncommitted changes you did not make mean another session may be live: stop and ask.
 - Number build prompts from `git log` and the current listing at write time, and re-check before committing. Highest at HEAD on 2026-09-07: 102.
-- Never push. Dylan pushes. `git pull --ff-only` only; on failure, stop and tell Dylan.
+- Dylan authorizes agents to commit and push tested, user-requested changes to `origin/main` without per-push confirmation, then verify the live deployment (updated 2026-09-09). Honor any explicit request to hold publication. Keep shared history intact and use revert commits for rollback. `git pull --ff-only` only; on failure, stop and tell Dylan.
 - Stale `.git/index.lock` or `.git/HEAD.lock` with no git process running is Cowork's sandbox debris: delete it and say so.
 - Do not edit `CLAUDE.md`, `AGENTS.md`, `.claude/settings*.json`, or the `netlify.toml` omit list without Dylan's explicit instruction.
 - If you cannot apply a migration (no Supabase access), the session ends on that block with a printed Cowork prompt. Never log a migration as applied that you did not apply.
