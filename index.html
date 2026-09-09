@@ -32309,6 +32309,10 @@ async function renderEstimateDetail(estimateId) {
   }
   const back = () => { unmountInlineEstimator(); state.openEstimateId = null; pecEstDetailPinned = null; renderEstimates(); };
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="estBack">← Back to estimates</button></div>';
+  // Capture THIS render's shell before yielding, so an older initial load
+  // cannot adopt a newer shell and mount a second iframe over typed work.
+  const chromeEl = $('estDetailChrome'), inlineHost = $('estInlineHost'), bodyEl = $('estDetailBody');
+  if (!chromeEl || !inlineHost || !bodyEl) return;
   let res;
   try {
     res = await withFreshSession(() => supabase.from('estimates')
@@ -32317,8 +32321,7 @@ async function renderEstimateDetail(estimateId) {
       // NOTE: deleted_at is NOT filtered here on purpose: viewing an archived
       // estimate's detail (to restore it, or read it) must work.
   } catch (e) { res = { error: e }; }
-  const chromeEl = $('estDetailChrome'), inlineHost = $('estInlineHost'), bodyEl = $('estDetailBody');
-  if (!chromeEl || !inlineHost || !bodyEl) return;   // the view changed underneath the fetch
+  if ($('estDetailChrome') !== chromeEl || $('estInlineHost') !== inlineHost || $('estDetailBody') !== bodyEl) return;
   if (res.error || !res.data) {
     chromeEl.innerHTML = backBar;
     bodyEl.innerHTML = `<div class="pec-empty">${res.error
@@ -32468,6 +32471,10 @@ async function renderEstimateDetail(estimateId) {
     }
     hotCfg = await pecEstimateHotSettings();
   } catch (_) {}
+
+  // A second startup render or navigation may replace this shell while
+  // views/settings load. Never paint or wire a detached estimate page.
+  if ($('estDetailChrome') !== chromeEl || $('estInlineHost') !== inlineHost || $('estDetailBody') !== bodyEl) return;
 
   chromeEl.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">

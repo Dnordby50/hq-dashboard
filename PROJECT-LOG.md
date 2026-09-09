@@ -1,3 +1,18 @@
+## [2026-09-09 05:43 MST] estimates: ignore stale page loads during startup and navigation
+
+By: Codex
+
+Changed: Estimate detail now captures its page shell before its initial query and checks that shell after the initial query and again after view-tracking/settings loads. An older response cannot paint detached elements, wire a missing Back button, or adopt a newer page and replace its inline editor.
+
+Why: Live verification of the simplified layout caught two overlapping startup renders failing at estBack.addEventListener. The previous guard only checked for nodes after the first query, then retained them across later awaits. This existing race became visible on a fresh authenticated estimate load during verification.
+
+Verified: Five new tests execute the actual renderer with delayed initial, view-tracking and settings reads; replaced/cleared views return quietly, a current view proceeds, and a newer concurrent render owns its shell. Tests reproduce the failure on the preceding renderer and pass with these guards. Full npm test passed again: 30 legacy suites, 101 owner tests, 10 What's New tests and 5 loading tests. The new CJS file passes node --check; all six inline blocks retain zero parse failures; manifests parse; git diff --check passes. The main layout deployment was confirmed by matching live index/What's New and CSS checksums and the updated live JavaScript bundle. This correction's live verification follows publication.
+
+Files touched: index.html, production/estimate-detail-loading.test.cjs, package.json, features.json, PROJECT-LOG.md.
+Next steps: Publish and recheck a fresh authenticated estimate load before completing the task.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-09 05:39 MST] estimates: simplify creation with focused sections and fewer visible actions
 
 By: Codex
