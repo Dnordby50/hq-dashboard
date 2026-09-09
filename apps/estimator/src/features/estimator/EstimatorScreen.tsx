@@ -564,8 +564,9 @@ export default function EstimatorScreen({
   // are INTERNAL ONLY. Crew notes above keep their crew-work-order contract.
   const [clientNotes, setClientNotes] = useState<string>(() => editing?.clientNotes ?? '');
   const [companyNotes, setCompanyNotes] = useState<string>(() => editing?.companyNotes ?? '');
-  // Bottom tab strip (Settings | Notes), the DripJobs editor shape.
-  const [estTab, setEstTab] = useState<'settings' | 'notes'>('settings');
+  // Navigation is presentation-only; all estimate values stay at screen scope.
+  const [estTab, setEstTab] = useState<'estimate' | 'job' | 'payments' | 'notes'>('estimate');
+  const [adjustmentsOpen, setAdjustmentsOpen] = useState(false);
   const [crewNotesEdited, setCrewNotesEdited] = useState(false);
   const [preGenCrewNotes, setPreGenCrewNotes] = useState<string | null>(null);
   const [crewNotesBusy, setCrewNotesBusy] = useState(false);
@@ -2986,6 +2987,17 @@ export default function EstimatorScreen({
     return () => { cancelled = true; };
   }, []);
 
+  const adjustmentsRelevant = priceMoved || shortfall >= 0.5 || overrideReason.trim() !== '';
+  useEffect(() => {
+    if (adjustmentsRelevant) setAdjustmentsOpen(true);
+  }, [adjustmentsRelevant]);
+
+  const editCustomer = () => {
+    setEstTab('estimate');
+    setCustLocked(false);
+    window.setTimeout(() => document.querySelector<HTMLInputElement>('.cust-full input')?.focus(), 0);
+  };
+
   // The ONE Save row for both modes (prompt 82). It renders UNCONDITIONALLY,
   // outside every pricing gate: when the estimate cannot be saved the button
   // is disabled with the first blocker named beside it in plain text (no
@@ -3022,7 +3034,15 @@ export default function EstimatorScreen({
       <button type="button" className="save" disabled={!canSave} onClick={onSave}>
         {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
       </button>
-      {saveNote}
+      <div className="save-feedback">
+        {saveNote}
+        {saveBlockers.some((message) => message.includes('Customer card')) && (
+          <button type="button" className="link" onClick={editCustomer}>Edit customer</button>
+        )}
+        {!salesperson && (
+          <button type="button" className="link" onClick={() => setEstTab('job')}>Pick salesperson</button>
+        )}
+      </div>
     </div>
   );
 
@@ -3127,10 +3147,58 @@ export default function EstimatorScreen({
         </div>
       )}
 
-      {/* Customer header (Dylan's ask): full width above the two columns.
-          Once the info is inputted the card locks into a compact summary bar;
-          the WHOLE bar is a button that reopens the editable card. */}
-      <div className="cust-top">
+      <div className="estimate-workspace-nav">
+        <div className="estimate-tabs" role="tablist" aria-label="Estimate sections">
+          {([
+            ['estimate', 'Estimate'],
+            ['job', 'Job details'],
+            ['payments', 'Payments'],
+            ['notes', 'Notes'],
+          ] as const).map(([tab, label], index, tabs) => (
+            <button
+              key={tab}
+              id={`estimate-tab-${tab}`}
+              type="button"
+              role="tab"
+              aria-selected={estTab === tab}
+              aria-controls="estimate-workspace-panel"
+              tabIndex={estTab === tab ? 0 : -1}
+              onClick={() => setEstTab(tab)}
+              onKeyDown={(event) => {
+                const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+                  : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+                  : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+                if (next == null) return;
+                event.preventDefault();
+                setEstTab(tabs[next][0]);
+                document.getElementById(`estimate-tab-${tabs[next][0]}`)?.focus();
+              }}
+            >{label}</button>
+          ))}
+        </div>
+        {(woMissingFields.length > 0 || scheduleError) && (
+          <div className="estimate-notices">
+            {woMissingFields.length > 0 && (
+              <div className="estimate-notice">
+                <span>Site readings needed: {woMissingFields.join(' and ')}.</span>
+                <button type="button" className="link" onClick={() => setEstTab('job')}>Add readings</button>
+              </div>
+            )}
+            {scheduleError && (
+              <div className="estimate-notice is-blocking" role="alert">
+                <span>Payment schedule needs attention before sending.</span>
+                <button type="button" className="link" onClick={() => setEstTab('payments')}>Review payments</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <main className="cols estimate-workspace">
+        <div className="left" id="estimate-workspace-panel" role="tabpanel" aria-labelledby={`estimate-tab-${estTab}`}>
+          {estTab === 'estimate' && (
+            <>
+      <div className="estimate-customer">
         {custLocked ? (
           <section
             className="card cust-summary"
@@ -3268,65 +3336,6 @@ export default function EstimatorScreen({
           </section>
         )}
       </div>
-
-      <main className="cols">
-        <div className="left">
-          {/* MOHS + moisture banner (prompt 62 Part H): loud, never a block.
-              Dylan wrote "required for every quote" but chose warning-only
-              and confirmed it on a second pass, so this is an unmissable red
-              banner (here AND on the estimate detail page), not a gate. It
-              replaces the old quiet woMissingFields line. */}
-          {woMissingFields.length > 0 && (
-            <div className="wo-banner" role="alert">
-              {woMissingFields.join(' and ')} {woMissingFields.length === 1 ? 'is' : 'are'} blank. The crew work order will print {woMissingFields.length === 1 ? 'it' : 'them'} blank. Fill {woMissingFields.length === 1 ? 'it' : 'them'} in under Work order below. Saving and sending still work.
-            </div>
-          )}
-          {/* Standard / Custom is an ESTIMATE-level switch (build 24), not a
-              system type: Custom turns the whole estimate into typed scope +
-              typed price for one-off work. Non-destructive: hidden area and
-              answer state survives a toggle round-trip. */}
-          {/* Estimate type + Salesperson share ONE card (2026-08-10 phase 4
-              declutter): both are set-once-per-estimate controls, and two
-              stacked two-line boxes were the exact "boxes" Dylan wanted
-              fewer of. The Customer card lives in the full-width header. */}
-          <section className="card inputs">
-            <div className="areas-head">
-              <span>Estimate type</span>
-              <div className="cust-type" role="group" aria-label="Estimate type">
-                <button type="button" className={isCustom ? '' : 'on'} onClick={() => setIsCustom(false)}>Standard</button>
-                <button type="button" className={isCustom ? 'on' : ''} onClick={() => setIsCustom(true)}>Custom</button>
-              </div>
-            </div>
-            {isCustom && (
-              <p className="hint">Custom estimate for one-off work: you type the scope and the price yourself. Areas and the material calculator are off (switch back to Standard to use them); add-ons still work.</p>
-            )}
-            <label className="field">
-              <span>Salesperson</span>
-              {salespersonLocked ? (
-                <>
-                  <input value={salesperson ? salesperson.name : 'Unassigned'} readOnly disabled />
-                  <p className="muted" style={{ fontSize: '.75rem', margin: '4px 0 0' }}>
-                    Locked once the estimate is sent, or when someone else started it. An admin can change it.
-                  </p>
-                </>
-              ) : (
-                <select value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
-                  <option value="">Select…</option>
-                  {salespeople.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.commission_pct ?? 0}% commission)
-                    </option>
-                  ))}
-                </select>
-              )}
-            </label>
-
-            {salespersonUnmapped && <p className="warn">{salespersonPrompt}</p>}
-
-            {!isCustom && mvbMissing && (
-              <p className="error">The product "{MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so the moisture vapor barrier cannot be priced. Restore it (Price &amp; Material Catalog) or uncheck MVB on the areas.</p>
-            )}
-          </section>
 
           {/* Custom mode: the typed scope replaces the areas/systems flow.
               The textarea is the customer-facing proposal text; Polish is
@@ -3468,7 +3477,10 @@ export default function EstimatorScreen({
                 first-class priceable estimate now, and that advice was
                 exactly wrong for it. */}
             <div className="line-actions">
-              <button type="button" className="link" onClick={addArea}>+ Add area</button>
+              <button type="button" className="link" onClick={addArea}>+ Add item</button>
+              <details className="estimate-extra-items">
+                <summary>Other items</summary>
+                <div className="estimate-extra-actions">
               <button type="button" className="link" onClick={addCustomLine}>+ Add custom line</button>
               <button type="button" className="link" onClick={addOneOff}>+ One-off line</button>
               <select
@@ -3483,8 +3495,10 @@ export default function EstimatorScreen({
                   </option>
                 ))}
               </select>
+                </div>
+              </details>
             </div>
-            <p className="hint">Tap a line to edit its price, options, and the scope the customer reads. Optional items stay out of the total until the customer picks them.</p>
+            <p className="hint">Select a line to edit the work, price, and description.</p>
           </section>}
 
           {/* Template-driven, so they do not apply to a custom estimate. */}
@@ -3507,13 +3521,57 @@ export default function EstimatorScreen({
             </section>
           )}
 
-          {/* The work order questions render ALWAYS VISIBLE (prompt 62 Part H
-              dropped the More detail accordion: a collapsed section kept
-              getting skipped in the driveway). Product dropdowns are hidden
-              behind Specify products (prompt 63 Part A: they detract from the
-              sale; picks happen later, on the job). Still optional: a rep who
-              never touches any of it gets a correct price off the recipe
-              defaults. Hidden in custom mode (recipe/area detail). */}
+            </>
+          )}
+          {estTab === 'job' && (
+            <>
+          {/* Standard / Custom is an ESTIMATE-level switch (build 24), not a
+              system type: Custom turns the whole estimate into typed scope +
+              typed price for one-off work. Non-destructive: hidden area and
+              answer state survives a toggle round-trip. */}
+          {/* Set-once job setup stays together away from the line-item flow. */}
+          <section className="card inputs">
+            <div className="areas-head">
+              <span>Estimate type</span>
+              <div className="cust-type" role="group" aria-label="Estimate type">
+                <button type="button" className={isCustom ? '' : 'on'} onClick={() => setIsCustom(false)}>Standard</button>
+                <button type="button" className={isCustom ? 'on' : ''} onClick={() => setIsCustom(true)}>Custom</button>
+              </div>
+            </div>
+            {isCustom && (
+              <p className="hint">Custom estimate for one-off work: you type the scope and the price yourself. Areas and the material calculator are off (switch back to Standard to use them); add-ons still work.</p>
+            )}
+            <label className="field">
+              <span>Salesperson</span>
+              {salespersonLocked ? (
+                <>
+                  <input value={salesperson ? salesperson.name : 'Unassigned'} readOnly disabled />
+                  <p className="muted" style={{ fontSize: '.75rem', margin: '4px 0 0' }}>
+                    Locked once the estimate is sent, or when someone else started it. An admin can change it.
+                  </p>
+                </>
+              ) : (
+                <select value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
+                  <option value="">Select…</option>
+                  {salespeople.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.commission_pct ?? 0}% commission)
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+
+            {salespersonUnmapped && <p className="warn">{salespersonPrompt}</p>}
+
+            {!isCustom && mvbMissing && (
+              <p className="error">The product "{MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so the moisture vapor barrier cannot be priced. Restore it (Price &amp; Material Catalog) or uncheck MVB on the areas.</p>
+            )}
+          </section>
+
+          {/* Site questions live in Job details. Missing readings remain
+              visible above the tabs, with a direct path here. Product picks
+              retain their recipe defaults and session-only reveal. */}
           {!isCustom && <section className="card">
             {(() => {
               // Prompt 63 Part A: product-kind slots (Basecoat, Topcoat, Flake,
@@ -3581,196 +3639,9 @@ export default function EstimatorScreen({
             {workOrderFields}
           </section>}
 
-          {/* Crew notes moved to the Notes tab below the columns (2026-08-10
-              phase 4): the three-lane notes strip is the DripJobs shape. */}
-        </div>
-
-        <div className="right">
-          <section className="card result" aria-live="polite">
-            {salespersonPrompt && <p className="hint">{salespersonPrompt}</p>}
-            {/* Custom mode: the typed price IS the sell price. No engine, no
-                GP basis, no blockers beyond customer + price. */}
-            {isCustom && salesperson && (
-              <>
-                <div className="price">{money(totalPrice)}</div>
-                {hasOptionalAddons && totalAllOptions != null && totalAllOptions !== totalPrice && (
-                  <p className="hint">with every optional item: {money(totalAllOptions)}</p>
-                )}
-                {sellPrice != null && addonsBaseTotal > 0 && (
-                  <p className="hint">custom work {money(sellPrice)} + add-ons {money(addonsBaseTotal)}</p>
-                )}
-                <label className="field"><span>Price $ (you set it{customPrice == null ? ', required' : ''})</span>
-                  <input inputMode="decimal" value={customPriceInput} placeholder="0" onChange={(e) => setCustomPriceInput(e.target.value.replace(/[^0-9.]/g, ''))} />
-                </label>
-                <label className="field"><span>Square footage (optional)</span>
-                  <input inputMode="decimal" value={customSqftInput} placeholder="0" onChange={(e) => setCustomSqftInput(e.target.value.replace(/[^0-9.]/g, ''))} />
-                </label>
-                {/* $/sqft READOUT (prompt 32): price / sqft, display only. The
-                    typed price is never computed from a rate. INTERNAL, same
-                    as the standard-mode ppsf line. */}
-                {customPrice != null && customSqft != null && (
-                  <div className="ppsf-line">{money2(customPrice / customSqft)}<span className="muted"> / sqft</span></div>
-                )}
-                <dl className="metrics">
-                  <div><dt>Commission (standard {config.standardCommissionPct}%)</dt><dd>{money2(customCommission)}</dd></div>
-                  <div><dt>Gross profit</dt><dd>--</dd></div>
-                </dl>
-                <p className="hint">Custom estimate: the price is typed, not calculated, so GP has no cost basis and is not shown. Commission is the standard {config.standardCommissionPct}% of the total.</p>
-                {customerIncomplete && (
-                  <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
-                )}
-                {woMissingFields.length > 0 && (
-                  <p className="warn">Work order: {woMissingFields.join(' and ')} not filled in (see Work order above). Saving still works.</p>
-                )}
-              </>
-            )}
-            {/* Only when a CALCULATOR line is missing its square footage: a
-                custom-line-only estimate needs no sqft, and telling Ron to
-                enter one was exactly the wrong advice (prompt 82). */}
-            {!isCustom && salesperson && !hasPrice && !err && !mvbMissing &&
-              areas.some((a) => !a.isCustom && !(Number(a.sqft) > 0 && a.systemTypeId)) &&
-              <p className="hint">Enter the square footage to price the job.</p>}
-            {err && <p className="error">{(ERROR_COPY[err] ?? err) + (pricing?.errorArea ? ` (area: ${pricing.errorArea})` : '')}</p>}
-            {!isCustom && hasPrice && customLineUnpriced && (
-              <p className="warn">A custom line has no price yet. Type its price on the line (Areas card) to price the job.</p>
-            )}
-            {/* The money block keys off the LINE chain, not the engine
-                (prompt 82): with only custom lines the engine is dormant and
-                `pricing` is legitimately null, but the estimate still prices. */}
-            {!isCustom && linesReady && adjusted && (
-              <>
-                <div className="price">{money(totalPrice)}</div>
-                {/* Optional-lines totals (prompt 72, decision 6). The
-                    headline above is the customer's OPENING total (required +
-                    pre-selected). All-in replaces the old "with every
-                    optional item" hint; required-only is the floor with its
-                    own GP so a rep never has to do that math in the truck. */}
-                {(hasOptionalLines || hasOptionalAddons) && totalAllOptions != null && requiredOnlyTotal != null && (
-                  <div className="hint" style={{ display: 'grid', gap: 2 }}>
-                    <span><strong>All-in</strong> {money(totalAllOptions)} (every line at full value)</span>
-                    <span><strong>Required only</strong> {money(requiredOnlyTotal)}{requiredGpPct != null ? ` · GP ${pct(requiredGpPct)}` : ''}</span>
-                  </div>
-                )}
-                {optionalGpWarn && requiredGpPct != null && (
-                  <p className="warn gp-warn">
-                    If they take only the required lines, this job runs at {(requiredGpPct * 100).toFixed(1)}% GP, below your {Number(config.optionalLinesGpWarnPct ?? 40).toFixed(0)}% floor. Consider pricing the required lines to stand on their own.
-                  </p>
-                )}
-                {(discounted || anyLineEdited || addonsBaseTotal > 0) && (
-                  <p className="hint">
-                    system {money(finalSell)}
-                    {calcTotal != null && finalSell != null && Math.abs(finalSell - calcTotal) >= 0.5 ? ` (calculated ${money(calcTotal)}${shortfall > 0 ? `, ${money(shortfall)} under` : ''})` : ''}
-                    {addonsBaseTotal > 0 ? ` + add-ons ${money(addonsBaseTotal)}` : ''}
-                  </p>
-                )}
-                {/* $/sqft: the number Dylan wants at a glance. INTERNAL. */}
-                {pricePerSqft != null && (
-                  <div className="ppsf-line">{money2(pricePerSqft)}<span className="muted"> / sqft</span></div>
-                )}
-                <div className="sell-row">
-                  <label className="field"><span>Sell price $ (system)</span>
-                    <input inputMode="decimal" value={sellInput} placeholder={basePrice != null ? String(basePrice) : ''} onChange={(e) => onSellInput(e.target.value)} />
-                  </label>
-                  <label className="field"><span>Discount %</span>
-                    <input inputMode="decimal" value={discInput} placeholder="0" onChange={(e) => onDiscInput(e.target.value)} />
-                  </label>
-                </div>
-                {/* Override reason (prompt 69): shown whenever the price
-                    moved off the calculated total by ANY route (a per-line
-                    edit, the job discount, or both); REQUIRED only when the
-                    shortfall exceeds the threshold, so a rounding nudge does
-                    not nag but three small line trims that add up still ask. */}
-                {(priceMoved || shortfall >= 0.5 || overrideReason.trim() !== '') && (
-                  <label className="field override-reason">
-                    <span>Why the price was changed{overrideNeedsReason ? ' (required)' : ''}</span>
-                    <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="problem customer, large sqft, competitor match…" />
-                  </label>
-                )}
-                {overrideNeedsReason && <p className="warn">The final price is {money(shortfall)} under the calculated total, past the allowed {money(reasonThreshold)} leeway. A written reason is required to save.</p>}
-                <dl className="metrics">
-                  <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(combinedGpDollars)} ({pct(combinedGpPct)})</dd></div>
-                  <div><dt>Target GP</dt><dd>{Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}%</dd></div>
-                  <div><dt>GP / hour</dt><dd>{money2(combinedGpPerHour)}</dd></div>
-                  {/* Engine dormant (custom lines only): materials is the
-                      typed custom cost alone, and the pct labels fall back to
-                      the config (labor is a RATE, not a pct, so it shows as
-                      $/hr). The dollar figures come from `adjusted`, summed
-                      from customLinePricing, and are right either way. */}
-                  <div><dt>Materials</dt><dd>{money2(r2((pricing?.materialsCost ?? 0) + customMaterialsTotal))}{pricing != null && customMaterialsTotal > 0 ? <span className="muted"> · incl. {money2(customMaterialsTotal)} custom</span> : null}</dd></div>
-                  <div><dt>Labor ({pricing != null ? `${pricing.laborPct != null ? Number(pricing.laborPct).toFixed(1).replace(/\.0$/, '') : '--'}%` : `${money2(config.laborRate)}/hr`})</dt><dd>{money2(adjusted.laborDollars)}<span className="muted"> · {adjusted.budgetedHours?.toFixed(1) ?? '--'}h</span></dd></div>
-                  <div><dt>Sundries ({Number(pricing?.sundriesPct ?? config.sundriesPct).toFixed(1).replace(/\.0$/, '')}%)</dt><dd>{money2(adjusted.sundriesDollars)}</dd></div>
-                  <div><dt>Commission (standard {pricing?.standardCommissionPct ?? config.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
-                  {addonCost > 0 && <div><dt>Add-on cost</dt><dd>{money2(addonCost)}</dd></div>}
-                </dl>
-                {/* How the price was reached, in one plain-English line.
-                    Engine dormant: the custom-lines-only phrasing, no engine
-                    sentence, and no empty <p> either way (prompt 82). */}
-                {engineCost != null && pricing != null && pricing.price != null ? (
-                  <p className="derivation">
-                    {`cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(pricing.price)}${mixedSystems ? `, each area solved at its own system's target` : ''}${customLineRows.length > 0 ? ` + ${customLineRows.length} custom line${customLineRows.length > 1 ? 's' : ''} at typed prices` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`}
-                  </p>
-                ) : engineDormant && customLineRows.length > 0 ? (
-                  <p className="derivation">
-                    {customLineRows.length === 1 ? '1 custom line at a typed price' : `${customLineRows.length} custom lines at typed prices`}
-                  </p>
-                ) : null}
-                {gpBelowTarget && (
-                  <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (price-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
-                )}
-                {belowFloor && (
-                  <p className="warn gp-warn">GP is below the {config.floorGpPct}% floor. Saving asks you to confirm.</p>
-                )}
-                {!belowFloor && belowFloorLines.length > 0 && (
-                  <p className="warn gp-warn">
-                    Below the {lineFloorPct}% line floor: {belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.
-                    {config.linePricingBlockBelowFloor === true ? ' Saving asks you to confirm.' : ' Saving still works; the line is red on purpose.'}
-                  </p>
-                )}
-                {pricing?.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
-                  <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>
-                )}
-                {/* No engine result, no engine version line. */}
-                {pricing != null && <p className="calcver">engine {pricing.calcVersion}</p>}
-                {customerIncomplete && (
-                  <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
-                )}
-                {woMissingFields.length > 0 && (
-                  <p className="warn">Work order: {woMissingFields.join(' and ')} not filled in (see More detail above). Saving still works.</p>
-                )}
-              </>
-            )}
-            {/* Save renders in EVERY state of BOTH modes (prompt 82): outside
-                the money gates, disabled with its blocker named when it must
-                be. A missing Save button is never the interface again. */}
-            {saveRow}
-          </section>
-
-          {/* Payment schedule moved to the Settings tab below the columns
-              (2026-08-10 phase 4), the DripJobs editor shape. */}
-
-          {/* The "Comparable jobs" and "AI price read" panels used to render
-              here as collapsed disclosures (the phase-4 declutter parked them
-              under the Money card). Prompt 87 (Dylan, 2026-08-12) reversed
-              that: reps never opened them and the column was still too busy,
-              so the panels moved OUT of the estimator entirely. The pipeline
-              behind them still runs silently — the comps computation, the
-              per-line AI fetch effect, and the pricing_snapshot write below
-              are all intact — and the estimate DETAIL page (index.html
-              renderEstimateDetail, snapAi.lines) is where the read lives now.
-              Do not re-add panels here without a new decision from Dylan. */}
-        </div>
-      </main>
-
-      {/* Bottom tab strip (2026-08-10, DripJobs-parity phase 4): the DripJobs
-          proposal editor's Settings | Notes tabs, full width below the
-          columns. React state keeps hidden tabs' inputs alive; the iframe
-          height listener on the dashboard side follows the height change. */}
-      <div className="cust-type" role="tablist" aria-label="Estimate sections" style={{ display: 'inline-flex', margin: '14px 0 10px' }}>
-        <button type="button" role="tab" aria-selected={estTab === 'settings'} className={estTab === 'settings' ? 'on' : ''} onClick={() => setEstTab('settings')}>Settings</button>
-        <button type="button" role="tab" aria-selected={estTab === 'notes'} className={estTab === 'notes' ? 'on' : ''} onClick={() => setEstTab('notes')}>Notes</button>
-      </div>
-
-      {estTab === 'settings' && (
+            </>
+          )}
+      {estTab === 'payments' && (
         <>
           {/* Payment schedule (prompt 74): created and approved HERE, before
               the customer ever sees the estimate (locked decision 5). Zero
@@ -3866,7 +3737,7 @@ export default function EstimatorScreen({
       )}
 
       {estTab === 'notes' && (
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+        <div className="estimate-note-cards">
           {/* Crew notes (prompt 32, Part B): INTERNAL, both modes. Prints on
               the crew work order only; never on the customer proposal, the
               customer estimate page, or the PDF. Generate is manual-only. */}
@@ -3924,6 +3795,173 @@ export default function EstimatorScreen({
           </section>
         </div>
       )}
+
+        </div>
+
+        <div className="right">
+          <section className="card result" aria-live="polite">
+            <div className="estimate-total-title">Estimate total</div>
+            {(isCustom ? !salesperson : !(linesReady && adjusted)) && <div className="price">--</div>}
+            {/* Custom mode: the typed price IS the sell price. No engine, no
+                GP basis, no blockers beyond customer + price. */}
+            {isCustom && salesperson && (
+              <>
+                <div className="price">{money(totalPrice)}</div>
+                {hasOptionalAddons && totalAllOptions != null && totalAllOptions !== totalPrice && (
+                  <p className="hint">with every optional item: {money(totalAllOptions)}</p>
+                )}
+                {sellPrice != null && addonsBaseTotal > 0 && (
+                  <p className="hint">custom work {money(sellPrice)} + add-ons {money(addonsBaseTotal)}</p>
+                )}
+                <label className="field"><span>Price $ (you set it{customPrice == null ? ', required' : ''})</span>
+                  <input inputMode="decimal" value={customPriceInput} placeholder="0" onChange={(e) => setCustomPriceInput(e.target.value.replace(/[^0-9.]/g, ''))} />
+                </label>
+                <label className="field"><span>Square footage (optional)</span>
+                  <input inputMode="decimal" value={customSqftInput} placeholder="0" onChange={(e) => setCustomSqftInput(e.target.value.replace(/[^0-9.]/g, ''))} />
+                </label>
+                {/* $/sqft READOUT (prompt 32): price / sqft, display only. The
+                    typed price is never computed from a rate. INTERNAL, same
+                    as the standard-mode ppsf line. */}
+                {customPrice != null && customSqft != null && (
+                  <div className="ppsf-line">{money2(customPrice / customSqft)}<span className="muted"> / sqft</span></div>
+                )}
+                <details className="estimate-disclosure">
+                  <summary>Cost breakdown</summary>
+                  <div className="estimate-disclosure-body">
+                <dl className="metrics">
+                  <div><dt>Commission (standard {config.standardCommissionPct}%)</dt><dd>{money2(customCommission)}</dd></div>
+                  <div><dt>Gross profit</dt><dd>--</dd></div>
+                </dl>
+                <p className="hint">Custom estimate: the price is typed, not calculated, so GP has no cost basis and is not shown. Commission is the standard {config.standardCommissionPct}% of the total.</p>
+                  </div>
+                </details>
+              </>
+            )}
+            {/* Only when a CALCULATOR line is missing its square footage: a
+                custom-line-only estimate needs no sqft, and telling Ron to
+                enter one was exactly the wrong advice (prompt 82). */}
+            {!isCustom && salesperson && !hasPrice && !err && !mvbMissing &&
+              areas.some((a) => !a.isCustom && !(Number(a.sqft) > 0 && a.systemTypeId)) &&
+              <p className="hint">Enter the square footage to price the job.</p>}
+            {err && <p className="error">{(ERROR_COPY[err] ?? err) + (pricing?.errorArea ? ` (area: ${pricing.errorArea})` : '')}</p>}
+            {!isCustom && hasPrice && customLineUnpriced && (
+              <p className="warn">A custom line has no price yet. Open that line under Estimate and enter its price.</p>
+            )}
+            {/* The money block keys off the LINE chain, not the engine
+                (prompt 82): with only custom lines the engine is dormant and
+                `pricing` is legitimately null, but the estimate still prices. */}
+            {!isCustom && linesReady && adjusted && (
+              <>
+                <div className="price">{money(totalPrice)}</div>
+                {/* Optional-lines totals (prompt 72, decision 6). The
+                    headline above is the customer's OPENING total (required +
+                    pre-selected). All-in replaces the old "with every
+                    optional item" hint; required-only is the floor with its
+                    own GP so a rep never has to do that math in the truck. */}
+                {(hasOptionalLines || hasOptionalAddons) && totalAllOptions != null && requiredOnlyTotal != null && (
+                  <div className="hint" style={{ display: 'grid', gap: 2 }}>
+                    <span><strong>All-in</strong> {money(totalAllOptions)} (every line at full value)</span>
+                    <span><strong>Required only</strong> {money(requiredOnlyTotal)}{requiredGpPct != null ? ` · GP ${pct(requiredGpPct)}` : ''}</span>
+                  </div>
+                )}
+                {optionalGpWarn && requiredGpPct != null && (
+                  <p className="warn gp-warn">
+                    If they take only the required lines, this job runs at {(requiredGpPct * 100).toFixed(1)}% GP, below your {Number(config.optionalLinesGpWarnPct ?? 40).toFixed(0)}% floor. Consider pricing the required lines to stand on their own.
+                  </p>
+                )}
+                {(discounted || anyLineEdited || addonsBaseTotal > 0) && (
+                  <p className="hint">
+                    system {money(finalSell)}
+                    {calcTotal != null && finalSell != null && Math.abs(finalSell - calcTotal) >= 0.5 ? ` (calculated ${money(calcTotal)}${shortfall > 0 ? `, ${money(shortfall)} under` : ''})` : ''}
+                    {addonsBaseTotal > 0 ? ` + add-ons ${money(addonsBaseTotal)}` : ''}
+                  </p>
+                )}
+                {/* $/sqft: the number Dylan wants at a glance. INTERNAL. */}
+                {pricePerSqft != null && (
+                  <div className="ppsf-line">{money2(pricePerSqft)}<span className="muted"> / sqft</span></div>
+                )}
+                <details className="estimate-disclosure" open={adjustmentsOpen} onToggle={(event) => setAdjustmentsOpen(event.currentTarget.open)}>
+                  <summary>Adjust price</summary>
+                  <div className="estimate-disclosure-body">
+                <div className="sell-row">
+                  <label className="field"><span>Sell price $ (system)</span>
+                    <input inputMode="decimal" value={sellInput} placeholder={basePrice != null ? String(basePrice) : ''} onChange={(e) => onSellInput(e.target.value)} />
+                  </label>
+                  <label className="field"><span>Discount %</span>
+                    <input inputMode="decimal" value={discInput} placeholder="0" onChange={(e) => onDiscInput(e.target.value)} />
+                  </label>
+                </div>
+                {/* Override reason (prompt 69): shown whenever the price
+                    moved off the calculated total by ANY route (a per-line
+                    edit, the job discount, or both); REQUIRED only when the
+                    shortfall exceeds the threshold, so a rounding nudge does
+                    not nag but three small line trims that add up still ask. */}
+                {(priceMoved || shortfall >= 0.5 || overrideReason.trim() !== '') && (
+                  <label className="field override-reason">
+                    <span>Why the price was changed{overrideNeedsReason ? ' (required)' : ''}</span>
+                    <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="problem customer, large sqft, competitor match…" />
+                  </label>
+                )}
+                {overrideNeedsReason && <p className="warn">The final price is {money(shortfall)} under the calculated total, past the allowed {money(reasonThreshold)} leeway. A written reason is required to save.</p>}
+                  </div>
+                </details>
+                <details className="estimate-disclosure">
+                  <summary>Cost breakdown</summary>
+                  <div className="estimate-disclosure-body">
+                <dl className="metrics">
+                  <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(combinedGpDollars)} ({pct(combinedGpPct)})</dd></div>
+                  <div><dt>Target GP</dt><dd>{Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}%</dd></div>
+                  <div><dt>GP / hour</dt><dd>{money2(combinedGpPerHour)}</dd></div>
+                  {/* Engine dormant (custom lines only): materials is the
+                      typed custom cost alone, and the pct labels fall back to
+                      the config (labor is a RATE, not a pct, so it shows as
+                      $/hr). The dollar figures come from `adjusted`, summed
+                      from customLinePricing, and are right either way. */}
+                  <div><dt>Materials</dt><dd>{money2(r2((pricing?.materialsCost ?? 0) + customMaterialsTotal))}{pricing != null && customMaterialsTotal > 0 ? <span className="muted"> · incl. {money2(customMaterialsTotal)} custom</span> : null}</dd></div>
+                  <div><dt>Labor ({pricing != null ? `${pricing.laborPct != null ? Number(pricing.laborPct).toFixed(1).replace(/\.0$/, '') : '--'}%` : `${money2(config.laborRate)}/hr`})</dt><dd>{money2(adjusted.laborDollars)}<span className="muted"> · {adjusted.budgetedHours?.toFixed(1) ?? '--'}h</span></dd></div>
+                  <div><dt>Sundries ({Number(pricing?.sundriesPct ?? config.sundriesPct).toFixed(1).replace(/\.0$/, '')}%)</dt><dd>{money2(adjusted.sundriesDollars)}</dd></div>
+                  <div><dt>Commission (standard {pricing?.standardCommissionPct ?? config.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
+                  {addonCost > 0 && <div><dt>Add-on cost</dt><dd>{money2(addonCost)}</dd></div>}
+                </dl>
+                {/* How the price was reached, in one plain-English line.
+                    Engine dormant: the custom-lines-only phrasing, no engine
+                    sentence, and no empty <p> either way (prompt 82). */}
+                {engineCost != null && pricing != null && pricing.price != null ? (
+                  <p className="derivation">
+                    {`cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(pricing.price)}${mixedSystems ? `, each area solved at its own system's target` : ''}${customLineRows.length > 0 ? ` + ${customLineRows.length} custom line${customLineRows.length > 1 ? 's' : ''} at typed prices` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`}
+                  </p>
+                ) : engineDormant && customLineRows.length > 0 ? (
+                  <p className="derivation">
+                    {customLineRows.length === 1 ? '1 custom line at a typed price' : `${customLineRows.length} custom lines at typed prices`}
+                  </p>
+                ) : null}
+                  </div>
+                </details>
+                {gpBelowTarget && (
+                  <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (price-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
+                )}
+                {belowFloor && (
+                  <p className="warn gp-warn">GP is below the {config.floorGpPct}% floor. Saving asks you to confirm.</p>
+                )}
+                {!belowFloor && belowFloorLines.length > 0 && (
+                  <p className="warn gp-warn">
+                    Below the {lineFloorPct}% line floor: {belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.
+                    {config.linePricingBlockBelowFloor === true ? ' Saving asks you to confirm.' : ' Saving still works; the line is red on purpose.'}
+                  </p>
+                )}
+                {pricing?.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
+                  <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>
+                )}
+              </>
+            )}
+            {/* Save renders in EVERY state of BOTH modes (prompt 82): outside
+                the money gates, disabled with its blocker named when it must
+                be. A missing Save button is never the interface again. */}
+            {saveRow}
+          </section>
+
+        </div>
+      </main>
 
       {/* The line editor sheet (prompt 76 Part C): one line at a time,
           DripJobs-shaped sections (Area, Pricing, Description, Internal

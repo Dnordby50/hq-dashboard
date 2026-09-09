@@ -1,3 +1,18 @@
+## [2026-09-09 05:39 MST] estimates: simplify creation with focused sections and fewer visible actions
+
+By: Codex
+
+Changed: The estimator now opens on Estimate with the customer, line items, total and Save. Job details holds estimate type, salesperson, products and site readings; Payments and Notes have their own top tabs. Add item is the main line action, with custom, one-off and catalog items under Other items. Adjust price and Cost breakdown disclosures keep the internal math available. Small actionable prompts expose missing readings, invalid payment schedules and customer/salesperson save blockers. Save remains outside every tab. Keyboard arrows, Home and End navigate the tabs. The parent toolbar moves secondary actions under More and folds photos, messages and activity while editing; these cards stay mounted. The same layout helper serves normal Edit and send-gate line links, summary refresh preserves the iframe and disclosure state, and communications scroll to the latest message on their first loaded expansion.
+
+Why: Dylan asked for an estimate-creation layout that felt more familiar from DripJobs, then clarified that there was too much on the page. Used DripJobs' official proposal overview and line-item screenshots as the layout reference. Pricing, scope, optional lines, customer requirements, payment rules, autosave, offline saves and send/status gates retain their existing behavior.
+
+Verified: Full npm test passed (30 legacy suites, 101 owner tests, 10 What's New tests). Estimator TypeScript and Vite production build passed. All six index.html inline script blocks parse with HEAD's same zero-failure set; features.json and help/whats-new.json parse; git diff --check passed. Independent reviews checked iframe preservation and action availability, and caught the corrected mobile menu anchoring and hidden communications-scroll behavior. Private browser QA used the real component and synthetic records with all database/network/outbox writes mocked: standard and custom estimates, optional line display, line editor and focus-line deep link, customer correction link, tab-switch persistence for notes/payments/site readings/line edits/custom price, required override reason, payment error shortcut, and mock Save. Desktop plus 360px/320px layouts fit without horizontal overflow; More stayed within the phone viewport. No live estimates or messages were created or changed for testing. Production publication and live asset verification follow this commit.
+
+Files touched: apps/estimator/src/features/estimator/EstimatorScreen.tsx, apps/estimator/src/styles.css, index.html, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Push under Dylan's standing authorization and verify the deployed dashboard and estimator assets.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-09 MST] cowork: prompt 103 written, Google Ads conversion signal for /book and /pricing
 
 By: Cowork

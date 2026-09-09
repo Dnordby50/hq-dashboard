@@ -208,6 +208,17 @@ textarea{resize:vertical;min-height:60px}
 .pec-subnav button.active{color:var(--accent);border-bottom-color:var(--accent)}
 .pec-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .pec-toolbar input,.pec-toolbar select{max-width:260px}
+.pec-est-actions{position:relative;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pec-est-more{position:static}
+.pec-est-more>summary{list-style:none;white-space:nowrap}
+.pec-est-more>summary::-webkit-details-marker{display:none}
+.pec-est-more[open]>summary{border-color:var(--accent)}
+.pec-est-more-panel{position:absolute;right:0;top:calc(100% + 6px);z-index:25;display:grid;gap:4px;min-width:190px;padding:8px;background:var(--rd-card,var(--s1));border:1px solid var(--rd-line,var(--border));border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,.16)}
+.pec-est-more-panel>.pec-btn{text-align:left;padding:9px 12px}
+.pec-est-supporting>summary{color:var(--rd-ink,var(--text));cursor:pointer;font-size:.86rem;font-weight:650;padding:14px 16px;border:1px solid var(--rd-line,var(--border));border-radius:10px;background:var(--rd-card,var(--s1));margin-bottom:14px}
+#estSummaryGrid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr);gap:14px;align-items:start}
+#estSummaryGrid.pec-est-editing{grid-template-columns:minmax(0,1fr)}
+@media(max-width:700px){#estSummaryGrid{grid-template-columns:minmax(0,1fr)}.pec-est-actions{gap:6px}}
 .pec-btn{padding:8px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--s2);color:var(--text);font-size:.78rem;cursor:pointer;transition:all .15s;font-family:inherit}
 .pec-btn:hover{border-color:var(--accent);color:var(--text)}
 .pec-btn.primary{background:var(--accent);border-color:var(--accent);color:#0a0a0f;font-weight:600}
@@ -32461,13 +32472,16 @@ async function renderEstimateDetail(estimateId) {
   chromeEl.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
       <button class="pec-btn ghost" id="estBack">← Back to estimates</button>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div class="pec-est-actions">
+        <button class="pec-btn sm" id="estEdit" title="Edit this estimate on the page">Edit estimate</button>
+        <button class="pec-btn sm" id="estPreview" title="See the customer proposal before sending">Preview</button>
+        <details class="pec-est-more" id="estMoreActions">
+          <summary class="pec-btn sm ghost">More ▾</summary>
+          <div class="pec-est-more-panel">
         ${est.job_id ? `
           <button class="pec-btn sm" id="estOpenJobBtn" title="The job card created when this estimate was accepted">Open job</button>
           <button class="pec-btn sm" id="estViewInvoiceBtn" title="This job's invoice and payments">View invoice</button>
         ` : ''}
-        <button class="pec-btn sm" id="estEdit" title="Opens the estimator right here on the page; saving edits this estimate in place">Edit</button>
-        <button class="pec-btn sm" id="estPreview" title="See exactly what the customer will get, without sending">Preview</button>
         <button class="pec-btn sm" id="estPresent" title="Full-screen on-site presentation: your story, process, photos, and reviews, ending on this estimate. The customer can sign right on your device.">Present</button>
         <button class="pec-btn sm ghost" id="estPrint" title="Print or save the customer proposal as a PDF. Works before sending too.">Print / PDF</button>
         ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
@@ -32476,6 +32490,8 @@ async function renderEstimateDetail(estimateId) {
         ${isArchived
           ? '<button class="pec-btn sm primary" id="estRestore">Restore</button>'
           : '<button class="pec-btn sm ghost danger" id="estArchive" title="Soft-delete: hides it from the list and 404s the public link. Restorable from the Archived filter.">Archive</button>'}
+          </div>
+        </details>
         ${['draft', 'sent', 'change_requested'].includes(estimateEffectiveStatus(est))
           ? pecSplitSendHtml('pecEstSend', est.sent_at ? 'Re-send to customer' : 'Send to customer')
           : `<button class="pec-btn sm primary" disabled title="This estimate is ${esc(est.status)}; it can no longer be sent.">Send to customer</button>`}
@@ -32508,11 +32524,12 @@ async function renderEstimateDetail(estimateId) {
       // blank; Edit opens the estimator where the fields live.
       const ik = est.intake || {};
       const missing = [!ik.moisture ? 'Moisture' : null, !ik.mohs_hardness ? 'MOHS hardness' : null].filter(Boolean);
-      return missing.length ? `<div role="alert" style="background:#dc2626;color:#fff;border-radius:8px;padding:10px 14px;font-size:.9rem;font-weight:600;margin-bottom:10px">${esc(missing.join(' and '))} ${missing.length === 1 ? 'is' : 'are'} blank on this estimate. The crew work order will print ${missing.length === 1 ? 'it' : 'them'} blank. Use Edit to fill ${missing.length === 1 ? 'it' : 'them'} in. Saving and sending still work.</div>` : '';
+      return missing.length ? `<div id="estReadingsNotice" role="alert" style="background:#dc2626;color:#fff;border-radius:8px;padding:10px 14px;font-size:.9rem;font-weight:600;margin-bottom:10px">${esc(missing.join(' and '))} ${missing.length === 1 ? 'is' : 'are'} blank on this estimate. The crew work order will print ${missing.length === 1 ? 'it' : 'them'} blank. Use Edit to fill ${missing.length === 1 ? 'it' : 'them'} in. Saving and sending still work.</div>` : '';
     })()}
   `;
+  const supportingWasOpen = keepInline && $('estSupportingDetails')?.open === true;
   bodyEl.innerHTML = `
-    <div id="estSummaryGrid" style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
+    <div id="estSummaryGrid">
       <div id="estSummaryLeft">
         <div class="pec-card">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
@@ -32610,7 +32627,9 @@ async function renderEstimateDetail(estimateId) {
           <div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit these by reopening the estimator (Edit button above).</div>
         </div>
       </div>
-      <div>
+      <details class="pec-est-supporting" id="estSupportingDetails" open>
+        <summary hidden>Photos, messages &amp; activity</summary>
+        <div>
         <div class="pec-card">
           <h3>Customer view</h3>
           ${!est.sent_at ? `
@@ -32684,11 +32703,22 @@ async function renderEstimateDetail(estimateId) {
           </div>`).join('') : '<div class="pec-empty">No activity yet.</div>'}
         </div>
         ${estimateCommsCardHtml()}
-      </div>
+        </div>
+      </details>
     </div>
   `;
 
   $('estBack').addEventListener('click', back);
+  const moreActions = $('estMoreActions');
+  moreActions.addEventListener('click', event => {
+    if (event.target.closest('button')) moreActions.open = false;
+  });
+  moreActions.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      moreActions.open = false;
+      moreActions.querySelector('summary').focus();
+    }
+  });
 
   // Touches & notes (prompt 98): the same customer-note rows the follow-up
   // queue and customer page read, scoped to this customer + this estimate,
@@ -32713,21 +32743,30 @@ async function renderEstimateDetail(estimateId) {
 
   // Communications card: texts + calls + emails for this estimate's contact,
   // with the Call/Text chip. Self-contained, best-effort.
-  mountEstimateComms($('estCommsCard'), est).catch(err => console.warn('[estimates] comms card:', err && err.message));
+  const supportingDetails = $('estSupportingDetails');
+  const commsCard = $('estCommsCard');
+  let commsLoaded = false, commsPositioned = false;
+  const revealLatestComms = () => {
+    if (!commsLoaded || commsPositioned || !supportingDetails.open || !commsCard.isConnected) return;
+    const feed = commsCard.querySelector('[data-est-comms-feed]');
+    if (feed) feed.scrollTop = feed.scrollHeight;
+    commsPositioned = true;
+  };
+  supportingDetails.addEventListener('toggle', revealLatestComms);
+  mountEstimateComms(commsCard, est).then(() => {
+    // Hidden feeds have no scroll geometry. Position once when both loaded
+    // and visible, then preserve the rep's scroll on subsequent toggles.
+    commsLoaded = true;
+    revealLatestComms();
+  }).catch(err => console.warn('[estimates] comms card:', err && err.message));
 
   // ---- Inline estimator region (prompt 61 Part A) ---------------------------
   // The region below the toolbar is EITHER the read-only summary (the left
   // column of the grid) or the inline estimator. Draft opens with the
   // estimator up (unless the rep just closed it); Edit swaps it in on any
-  // status, in place, with no page re-render and no modal. The right column
-  // (customer view, pricing, activity) stays visible in both states.
-  const applyInlineLayout = () => {
-    inlineHost.style.display = 'block';
-    const left = $('estSummaryLeft'); if (left) left.style.display = 'none';
-    const grid = $('estSummaryGrid'); if (grid) grid.style.gridTemplateColumns = 'minmax(300px,1fr)';
-    const editBtn = $('estEdit');
-    if (editBtn) { editBtn.disabled = true; editBtn.textContent = 'Editing below'; editBtn.title = 'The estimator is open below. Close it there to see the read-only summary.'; }
-  };
+  // status, in place, with no page re-render and no modal. Supporting cards
+  // stay mounted behind one disclosure while the rep builds the estimate.
+  const applyInlineLayout = () => pecApplyEstimateEditingLayout({ supportingOpen: supportingWasOpen });
   const openInlineEstimator = () => {
     pecEstInline.closedFor = null;
     mountInlineEstimator(inlineHost, { estimateId: est.id });
@@ -33383,13 +33422,24 @@ function pecOpenEstimateLine(estimateId, sortOrder) {
   if (!host) { showToast('Open the estimate first, then edit the line.', { ttl: 4000 }); return; }
   pecEstInline.closedFor = null;
   const iframe = mountInlineEstimator(host, { estimateId, focusLine: sortOrder });
-  // Same layout switch renderEstimateDetail's openInlineEstimator applies.
-  host.style.display = 'block';
-  const left = document.getElementById('estSummaryLeft'); if (left) left.style.display = 'none';
-  const grid = document.getElementById('estSummaryGrid'); if (grid) grid.style.gridTemplateColumns = 'minmax(300px,1fr)';
-  const editBtn = document.getElementById('estEdit');
-  if (editBtn) { editBtn.disabled = true; editBtn.textContent = 'Editing below'; editBtn.title = 'The estimator is open below. Close it there to see the read-only summary.'; }
+  pecApplyEstimateEditingLayout();
   try { iframe.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+}
+
+// Shared by normal Edit and send-gate line deep links. Only changes the
+// surrounding chrome; the iframe and every form value remain untouched.
+function pecApplyEstimateEditingLayout({ supportingOpen = false } = {}) {
+  const host = document.getElementById('estInlineHost'); if (host) host.style.display = 'block';
+  const left = document.getElementById('estSummaryLeft'); if (left) left.style.display = 'none';
+  const grid = document.getElementById('estSummaryGrid'); if (grid) grid.classList.add('pec-est-editing');
+  const editBtn = document.getElementById('estEdit'); if (editBtn) editBtn.hidden = true;
+  // The editor provides an actionable Job details prompt for these same readings.
+  const readings = document.getElementById('estReadingsNotice'); if (readings) readings.hidden = true;
+  const supporting = document.getElementById('estSupportingDetails');
+  if (supporting) {
+    supporting.open = supportingOpen;
+    supporting.querySelector('summary').hidden = false;
+  }
 }
 
 // The customer's OPENING total: required lines plus currently selected

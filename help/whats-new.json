@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-builder-simpler-layout",
+    "date": "2026-09-09",
+    "title": "A simpler estimate builder.",
+    "summary": "Build the customer estimate with less on the screen. Line items and the total stay in focus, with separate tabs for the details.",
+    "howto": [
+      "Use Estimate for the customer and line items. Open Job details for products, site readings, estimate type and salesperson; use Payments and Notes for those details.",
+      "Open Adjust price or Cost breakdown when needed. Save changes stays available in every section.",
+      "Preview and Send stay at the top of the estimate. Open More for Present, Print / PDF and other actions, or expand Photos, messages & activity below the editor."
+    ]
+  },
+  {
     "id": "whats-new-stays-open",
     "date": "2026-09-08",
     "title": "What's New stays open until you close it.",
