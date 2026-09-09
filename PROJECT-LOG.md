@@ -1,3 +1,14 @@
+## [2026-09-08 21:26 MST] shell: dialog fix awaits explicit publication approval
+
+By: Codex
+
+Correction to the preceding entry: the completed fix is committed as 1b454e0, but automatic approval review rejected the production push before execution. The reviewer requires explicit publication approval for this correction and cited the repository's never-push rule. Dylan has been asked to approve publishing the tested fix. No alternate publishing path was attempted; live code remains unchanged.
+
+Files touched: PROJECT-LOG.md.
+Next steps: After explicit approval, push the committed fix and verify the live dialog.
+Handoff to Cowork: None.
+Handoff to Dylan: Approve publishing the dialog fix.
+
 ## [2026-09-08 21:25 MST] shell: keep the What's New dialog open through startup cleanup
 
 By: Codex
