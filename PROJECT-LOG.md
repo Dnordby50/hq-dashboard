@@ -1,3 +1,16 @@
+## [2026-09-09 MST] cowork: prompt 103 written, Google Ads conversion signal for /book and /pricing
+
+By: Cowork
+
+Dylan's Google Ads web developer asked for a gtag.js snippet (GA4 G-81HQTNS16Z, Ads AW-16589902180) on "the estimate request form thank you page." Cowork checked the code and the live site: neither /book nor /pricing has a thank-you URL (success is a JS state), and prescottepoxy.com embeds /book?embed=1 in an iframe with GTM container GTM-5ST5QR5R on the parent page. Firing gtag inside the cross-domain iframe would produce unattributed conversions, which is likely the disconnect he reports.
+
+Decisions from Dylan (Cowork Q&A): postMessage from the iframe to the parent, GTM on the parent fires the Google tags, no Google script or IDs in TopCoat; PEC only; both forms now; conversion = lead captured; first submission only. Cowork wrote claude-code-prompt-103-ads-conversion-signal.md (fire gates use the existing honeypot and duplicate response shapes so no server response changes) and drafted an email for Dylan to send the web developer with the GTM trigger and tag spec plus the questions he needs answered (exact Ads conversion label, whether he already has GA4/Ads config tags in the container).
+
+Files touched: claude-code-prompt-103-ads-conversion-signal.md, PROJECT-LOG.md.
+Next steps: Dylan sends the email; Claude Code runs prompt 103.
+Handoff to Claude Code: run claude-code-prompt-103-ads-conversion-signal.md.
+Handoff to Dylan: send the web developer email (text in the Cowork chat), then run prompt 103.
+
 ## [2026-09-09 04:17 MST] shell: dialog fix and standing push authorization published
 
 By: Codex
