@@ -193,7 +193,10 @@ async function runGooglePull(deps = {}) {
           const reconnect = member.google_connected_at && (!cal.last_synced_at || Date.parse(member.google_connected_at) > Date.parse(cal.last_synced_at));
           let state = cal.pull_state && cal.pull_state.version === VERSION ? cal.pull_state : null;
           const currentConfig = newPullState(cal, cfg, clock()).config;
-          const configChanged = state && JSON.stringify(state.config) !== JSON.stringify(currentConfig);
+          // PostgreSQL JSONB reorders object keys when it stores a document.
+          // Compare the actual option values, never serialization order, or
+          // every resumed page becomes another first-page full sync.
+          const configChanged = state && Object.keys(currentConfig).some(key => !state.config || state.config[key] !== currentConfig[key]);
           if (!state || configChanged || (member.google_connected_at && Date.parse(member.google_connected_at) > Date.parse(state.started_at))) {
             state = newPullState(reconnect || configChanged ? { ...cal, sync_token: null } : cal, cfg, clock());
             await save({ pull_state: state });

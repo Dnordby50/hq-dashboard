@@ -1,3 +1,16 @@
+## [2026-09-09 07:56 MST] appointments: preserve continuation after database JSON normalization
+
+By: Codex
+
+Changed: Compare the saved Google pull configuration by its values instead of serialized object key order. The database normalizes JSONB key order, so the first live recovery exposed repeated restarts despite unchanged settings. The regression fixture now exercises database-style persistence. Also removed one whitespace-only migration line and refreshed the verified calendar schema note.
+
+Verified: The initial repair 8d9805f is published and live index/What's New match local SHA-256. The staff Sync now action imports through the real deployed endpoint; FTP returned seven events with its existing free/busy permissions and the missing September 10 noon block is now in TopCoat. Live public slots correctly return 503 calendar_unavailable and no times while the baseline is incomplete. No source was disabled, permissions expanded, appointment moved, or customer contacted. Final focused regression and post-correction catch-up verification follow before completion.
+
+Files touched: netlify/functions/_pec-google-pull.cjs, production/google-pull.test.cjs, SCHEMA.md, supabase/migrations/20260909143036_google_calendar_sync_recovery.sql, PROJECT-LOG.md.
+Next steps: Publish the tested continuation correction and complete live catch-up and booking checks.
+Handoff to Cowork: None.
+Handoff to Dylan: None for recovery.
+
 ## [2026-09-09 07:45 MST] appointments: recover Google imports and guard stale availability
 
 By: Codex

@@ -88,7 +88,7 @@ begin
     v_google_max_age := 45;
   end;
   v_google_max_age := greatest(15, least(1440, v_google_max_age));
-  
+
   if exists (
     select 1 from public.pec_sales_team_members m
     where m.id = v_member

@@ -91,7 +91,13 @@ const MEMBER = { id: 'sm1', name: 'Dylan N', google_calendar_id: 'cal_topcoat_1'
   const stamp = new Date(T).toISOString();
   const cfg = { windowDaysPast: 30, windowDaysFuture: 180, defaultType: 'other', includeAllDay: true, includeDeclined: false };
   const event = (id, extra = {}) => ({ id, updated: stamp, summary: id, start: { dateTime: '2026-09-09T13:00:00-07:00' }, end: { dateTime: '2026-09-09T14:00:00-07:00' }, organizer: { self: true }, ...extra });
-  const clone = x => x == null ? x : JSON.parse(JSON.stringify(x));
+  // JSONB does not preserve JS insertion order. Canonicalize EVERY persisted
+  // object, including ledger PATCHes, so runner fixtures exercise that fact.
+  const clone = x => {
+    if (x == null || typeof x !== 'object') return x;
+    if (Array.isArray(x)) return x.map(clone);
+    return Object.fromEntries(Object.keys(x).sort().map(key => [key, clone(x[key])]));
+  };
   let checks = 0;
   function check(value, message) { assert.ok(value, message); checks++; }
   function rig(options = {}) {
@@ -215,6 +221,9 @@ const MEMBER = { id: 'sm1', name: 'Dylan N', google_calendar_id: 'cal_topcoat_1'
     const r2 = rig(); r2.cal.pull_state = newPullState(r2.cal, { ...cfg, includeAllDay: false }, T); r2.cal.pull_state.page_token = 'old-policy';
     await runGooglePull(r2.deps);
     check(!r2.requests[0].path.includes('pageToken') && r2.cal.pull_state.config.includeAllDay, 'changed import settings restart a consistent snapshot');
+    const r3 = rig(); r3.cal.pull_state = clone(newPullState(r3.cal, cfg, T)); r3.cal.pull_state.page_token = 'jsonb-page-2';
+    await runGooglePull(r3.deps);
+    check(r3.requests[0].path.includes('pageToken=jsonb-page-2'), 'JSONB key reordering preserves semantic config equality and resumes page 2');
   }
   {
     const r = rig({ maxPages: 2, google: () => ({ ok: true, status: 200, body: { items: [], nextPageToken: 'more' } }) });
