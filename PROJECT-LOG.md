@@ -1,3 +1,14 @@
+## [2026-09-08 19:50 MST] owner: editable MBP release awaits renewed publication approval
+
+By: Codex
+
+Correction to the preceding entry: application change 99d0056 is complete and all validation passed, but automatic approval review rejected the git push before execution. The reviewer treated the earlier yes as authorization for the prior budget release, not this additional Sales/Revenue change, and cited AGENTS.md's never-push rule. The agent requested explicit approval for this new publication. No attempted workaround or alternative publishing path was used. The settings seed/migration is already applied; the new application code is still local and unpublished.
+
+Files touched: PROJECT-LOG.md.
+Next steps: On explicit approval, push the committed release and verify live input fields and source refreshes.
+Handoff to Cowork: None.
+Handoff to Dylan: Approve publication of the editable Sales/Revenue update or push the completed commits yourself.
+
 ## [2026-09-08 19:48 MST] owner: editable MBP plans with yellow manual overrides and automatic PEC values
 
 By: Codex
