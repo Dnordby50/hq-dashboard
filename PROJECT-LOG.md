@@ -1,3 +1,14 @@
+## [2026-09-09 04:17 MST] shell: dialog fix and standing push authorization published
+
+By: Codex
+
+Verified: Pushed the approved dialog fix and updated project rules through 3382ebc to origin/main. The live index.html and help/whats-new.json each match the local files byte-for-byte by SHA-256. After a fresh live browser reload, What's New remained visible after the owner workspace finished startup and showed both unread updates with Close, Got it, and See all updates in Help. No live acknowledgments or planning records were changed during verification. The prior publication block is resolved, and no active per-push confirmation rule remains in AGENTS.md, CLAUDE.md or CODEX-HANDOVER.md. The working tree was clean and synchronized after the release push.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Refresh TopCoat to load the corrected dialog. Future tested, requested changes are pushed and verified under Dylan's standing authorization.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-09 04:15 MST] workflow: Dylan authorizes routine pushes and the dialog fix publication
 
 By: Codex
