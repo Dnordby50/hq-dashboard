@@ -42,6 +42,10 @@ exports.handler = async (event) => {
       google_email: null,
       google_calendar_id: null, google_connected_at: null,
     });
+    await sb('PATCH', `/pec_sales_member_google_calendars?member_id=eq.${encodeURIComponent(memberId)}`, {
+      pull_state: null, pull_version: 0, sync_token: null, last_synced_at: null,
+      last_full_synced_at: null, lease_id: null, lease_until: null,
+    });
     console.log(`pec-google-disconnect: member ${memberId} disconnected by ${user.email || user.id}`);
     return jc(200, { ok: true });
   } catch (err) {

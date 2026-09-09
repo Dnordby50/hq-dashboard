@@ -76,6 +76,12 @@ exports.handler = async (event) => {
       google_calendar_id: calendarId,
       google_connected_at: new Date().toISOString(),
     });
+    // Invalidate any in-flight checkpoint and require a bounded fresh sync
+    // on the new connection. The lease fence stops an old worker saving it.
+    await sb('PATCH', `/pec_sales_member_google_calendars?member_id=eq.${encodeURIComponent(memberId)}`, {
+      pull_state: null, pull_version: 0, sync_token: null, last_synced_at: null,
+      last_full_synced_at: null, lease_id: null, lease_until: null, last_error: null,
+    });
 
     console.log(`pec-google-oauth-callback: connected member ${memberId} (${email})`);
     return page('Connected', `<h1>Google Calendar connected</h1>

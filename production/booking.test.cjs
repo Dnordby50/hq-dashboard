@@ -59,6 +59,7 @@ function baseTables(over = {}) {
     ],
     pec_booking_requests: [],
     pec_sales_team_members: [{ id: REP, name: 'Dylan', active: true }],
+    pec_sales_member_google_calendars: [],
     pec_appointments: [],
     leads: [],
     customers: [],
@@ -332,6 +333,142 @@ const goodBody = (over = {}) => ({
     ok(slots.status === 200 && slots.body.open === false, 'empty allowlist: booking reads closed, not out-of-area');
     const book = await processBook(deps, goodBody(), { ipHash: 'ip6' });
     ok(book.status === 503 && book.body.closed === true, 'empty allowlist: the write path refuses as closed');
+  }
+
+  // ---- Google availability is only as current as its oldest required source.
+  // These are real endpoint runs: stale state must hide slots AND refuse a
+  // direct post before it creates a contact, appointment, or confirmation.
+  const connectedRep = () => ({ id: REP, name: 'Dylan', active: true,
+    google_connected: true, google_needs_reconnect: false,
+    google_calendar_id: 'dedicated', google_connected_at: '2026-08-01T00:00:00Z' });
+  const googleRows = () => ['dedicated', 'private-calendar'].map(calendar_id => ({
+    member_id: REP, calendar_id, sync_enabled: true, pull_version: 2,
+    last_synced_at: new Date(NOW.getTime() - 5 * 60000).toISOString(), last_error: null,
+  }));
+  const unhealthyCases = [
+    ['never completed', (r, c) => { c[1].last_synced_at = null; }],
+    ['stale source', (r, c) => { c[1].last_synced_at = new Date(NOW.getTime() - 46 * 60000).toISOString(); }],
+    ['failed source', (r, c) => { c[1].last_error = 'Sensitive private calendar API failure'; }],
+    ['pre-repair partial source', (r, c) => { c[1].pull_version = 0; }],
+    ['disconnected with enabled sources', (r) => { r.google_connected = false; }],
+    ['reconnect required', (r) => { r.google_needs_reconnect = true; }],
+    ['reconnected since completion', (r) => { r.google_connected_at = NOW.toISOString(); }],
+    ['missing dedicated source', (r, c) => { c.splice(0, 1); }],
+    ['connected without source ledger', (r, c) => { r.google_calendar_id = null; c.length = 0; }],
+    ['far-future completion', (r, c) => { c[1].last_synced_at = new Date(NOW.getTime() + 120000).toISOString(); }],
+  ];
+  for (const [label, breakHealth] of unhealthyCases) {
+    const rep = connectedRep(), calendars = googleRows();
+    breakHealth(rep, calendars);
+    const fx = makeDb(baseTables({ pec_sales_team_members: [rep], pec_sales_member_google_calendars: calendars }));
+    let lockCalls = 0;
+    const { deps, spies } = makeDeps(fx, { bookSlot: async () => { lockCalls++; throw new Error('unhealthy rep reached write'); } });
+    const slots = await processSlots(deps, goodBody());
+    const book = await processBook(deps, goodBody());
+    ok(slots.status === 503 && slots.body.calendar_unavailable && slots.body.days.length === 0,
+      `Google ${label}: unavailable source cannot offer slots`);
+    ok(book.status === 503 && book.body.calendar_unavailable && lockCalls === 0
+      && fx.db.leads.length === 0 && fx.db.pec_appointments.length === 0 && spies.pushed.length === 0 && spies.reminded.length === 0,
+      `Google ${label}: direct submission is refused without booking effects`);
+    ok(fx.db.pec_booking_requests.some(r => r.error_text === 'calendar_unavailable')
+      && !/private-calendar|Sensitive|Dylan/.test(JSON.stringify([slots.body, book.body])),
+      `Google ${label}: recorded internally, public response reveals no calendar information`);
+  }
+  {
+    // A failed read cannot masquerade as an empty calendar list.
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep()], pec_sales_member_google_calendars: googleRows() }));
+    const { deps } = makeDeps(fx, { sb: async (method, path, ...rest) => {
+      if (path.startsWith('/pec_sales_member_google_calendars?')) throw new Error('calendar health unavailable');
+      return fx.sb(method, path, ...rest);
+    } });
+    const result = await processBook(deps, goodBody());
+    ok(result.status === 503 && result.body.calendar_unavailable && fx.db.pec_appointments.length === 0,
+      'Google: a failed health read refuses the write');
+  }
+  {
+    const calendars = googleRows();
+    // Disabled foreign sources and a partial ordinary refresh do not veto
+    // a completed, healthy source. A completion during the request's read
+    // is allowed within the one-minute clock tolerance.
+    calendars.push({ member_id: REP, calendar_id: 'disabled', sync_enabled: false, last_error: 'disabled calendar failed' });
+    calendars[1].pull_state = { pageToken: 'still-refreshing' };
+    calendars[1].last_synced_at = new Date(NOW.getTime() + 1000).toISOString();
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep()], pec_sales_member_google_calendars: calendars }));
+    const { deps } = makeDeps(fx);
+    const result = await processBook(deps, goodBody());
+    ok(result.status === 200 && result.body.ok && fx.db.pec_appointments.length === 1,
+      'Google: healthy completed source remains bookable during ordinary refresh; disabled sources ignored');
+  }
+  {
+    const rep2 = 'aaaaaaaa-0000-0000-0000-000000000002';
+    const calendars = googleRows();
+    calendars[1].last_error = 'failed';
+    const healthy = { ...connectedRep(), id: rep2, name: 'Other rep' };
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep(), healthy],
+      pec_sales_member_google_calendars: calendars.concat(googleRows().map(c => ({ ...c, member_id: rep2 }))) }));
+    const { deps } = makeDeps(fx);
+    const slots = await processSlots(deps, goodBody());
+    const result = await processBook(deps, goodBody());
+    ok(slots.status === 200 && slots.body.days.length > 0 && result.status === 200
+      && fx.db.pec_appointments[0].sales_member_id === rep2,
+      'Google: another healthy representative remains available and gets the booking');
+  }
+  {
+    const rows = googleRows();
+    rows.forEach(c => { c.last_synced_at = new Date(NOW.getTime() - 60 * 60000).toISOString(); });
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep()], pec_sales_member_google_calendars: rows,
+      settings: baseTables().settings.concat([{ key: 'google_booking_max_sync_age_minutes', value: '90' }]) }));
+    const result = await processSlots(makeDeps(fx).deps, goodBody());
+    ok(result.status === 200 && result.body.days.length > 0,
+      'Google: configured maximum sync age is honored');
+  }
+  {
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep()], pec_sales_member_google_calendars: googleRows() }));
+    const { deps } = makeDeps(fx);
+    const offered = await processSlots(deps, goodBody());
+    fx.db.pec_sales_member_google_calendars[1].last_error = 'failed after times were offered';
+    const booked = await processBook(deps, goodBody());
+    ok(offered.status === 200 && offered.body.days.length > 0 && booked.status === 503
+      && booked.body.calendar_unavailable && fx.db.pec_appointments.length === 0,
+      'Google: calendar health is loaded again on submission, not trusted from earlier slot list');
+  }
+  {
+    // The real RPC has the final check under the booking lock. Simulate its
+    // rejection after an initially healthy availability read and prove the
+    // endpoint refreshes alternatives and emits no appointment effects.
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep()], pec_sales_member_google_calendars: googleRows() }));
+    const { deps, spies } = makeDeps(fx, { bookSlot: async () => {
+      fx.db.pec_sales_member_google_calendars[1].last_error = 'became unhealthy before locked insert';
+      return { ok: false, taken: true, calendar_unavailable: true };
+    } });
+    const result = await processBook(deps, goodBody());
+    ok(result.status === 409 && result.body.taken && result.body.calendar_unavailable && result.body.days.length === 0
+      && fx.db.pec_appointments.length === 0 && spies.pushed.length === 0 && spies.reminded.length === 0,
+      'Google: health lost before the locked write returns fresh options and no confirmation');
+  }
+  {
+    const fx = makeDb(baseTables({ pec_sales_team_members: [connectedRep()], pec_sales_member_google_calendars: googleRows() }));
+    const { deps, spies } = makeDeps(fx);
+    await processBook(deps, goodBody());
+    const appt = fx.db.pec_appointments[0], token = appt.booking_manage_token;
+    const originalStart = appt.start_at;
+    const offered = await processManage(deps, { token, action: 'slots' });
+    const newStart = offered.body.days[0].slots.find(s => s.start !== originalStart).start;
+    deps.bookSlot = async () => {
+      fx.db.pec_sales_member_google_calendars[1].last_error = 'became unhealthy before locked reschedule';
+      return { ok: false, taken: true, calendar_unavailable: true };
+    };
+    const race = await processManage(deps, { token, action: 'reschedule', start: newStart });
+    ok(race.status === 409 && race.body.calendar_unavailable && race.body.days.length === 0
+      && appt.start_at === originalStart && spies.pushed.length === 1,
+      'Google: locked reschedule health race keeps original appointment and refreshes alternatives');
+    const staleSlots = await processManage(deps, { token, action: 'slots' });
+    const staleMove = await processManage(deps, { token, action: 'reschedule', start: newStart });
+    ok(staleSlots.status === 503 && staleMove.status === 503 && appt.start_at === originalStart,
+      'Google: manage slot list and direct reschedule both enforce source health');
+    const cancel = await processManage(deps, { token, action: 'cancel' });
+    ok(cancel.status === 200 && appt.status === 'canceled',
+      'Google: a stale source never prevents a customer canceling an existing appointment');
   }
 
   // ---- Concurrency: two callers, one slot, ONE row (acceptance criterion) --

@@ -37,6 +37,21 @@ async function timedFetch(url, opts = {}, ms = 8000) {
   finally { clearTimeout(t); }
 }
 
+// Keep the deadline active while reading JSON as well as receiving headers.
+async function timedJsonFetch(url, opts = {}, ms = 8000) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctl.signal });
+    let body = null;
+    if (res.status !== 204) {
+      try { body = await res.json(); }
+      catch (err) { if (ctl.signal.aborted) throw err; }
+    }
+    return { ok: res.ok, status: res.status, body };
+  } finally { clearTimeout(timer); }
+}
+
 // ---------------------------------------------------------------------------
 // Signed OAuth state: the callback arrives from Google with no staff JWT, so
 // the HMAC-signed state is what proves the flow was started by our own
@@ -148,21 +163,21 @@ async function markNeedsReconnect(sb, memberId) {
 // when the stored one is stale (60s early-expiry margin). Null when the
 // member is not connected or the refresh is rejected (revoked in Google);
 // callers treat null as "not connected" and skip, never crash.
-async function getFreshAccessToken(sb, memberId) {
+async function getFreshAccessToken(sb, memberId, timeoutMs = 8000) {
   const row = await getTokenRow(sb, memberId);
   if (!row || !row.refresh_token) return null;
   if (row.access_token && row.token_expiry && new Date(row.token_expiry).getTime() > Date.now() + 60000) {
     return row.access_token;
   }
-  const res = await timedFetch(TOKEN_URL, {
+  const res = await timedJsonFetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       refresh_token: row.refresh_token, client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET, grant_type: 'refresh_token',
     }).toString(),
-  });
-  const body = await res.json().catch(() => ({}));
+  }, timeoutMs);
+  const body = res.body || {};
   if (!res.ok || !body.access_token) {
     console.error(`_pec-google: refresh failed for member ${memberId} (${res.status}): ${JSON.stringify(body).slice(0, 200)}`);
     // invalid_grant ONLY: a 500 or a network blip is transient and must not
@@ -181,7 +196,7 @@ async function getFreshAccessToken(sb, memberId) {
 // Calendar API wrapper: JSON in/out, bounded, never throws on HTTP errors
 // (returns { ok, status, body } so callers branch on 404/410/etc).
 async function gcalFetch(accessToken, method, path, payload, ms = 8000) {
-  const res = await timedFetch(`${GCAL_BASE}${path}`, {
+  return timedJsonFetch(`${GCAL_BASE}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -189,9 +204,6 @@ async function gcalFetch(accessToken, method, path, payload, ms = 8000) {
     },
     body: payload ? JSON.stringify(payload) : undefined,
   }, ms);
-  let body = null;
-  try { body = res.status === 204 ? null : await res.json(); } catch (_) { body = null; }
-  return { ok: res.ok, status: res.status, body };
 }
 
 // Create-or-reuse the member's dedicated "TopCoat" calendar. Reuse looks

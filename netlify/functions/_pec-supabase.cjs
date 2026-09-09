@@ -63,20 +63,23 @@ async function requireStaff(event, opts) {
   if (!token) return { ok: false, status: 401, error: 'Not authenticated' };
 
   let user;
+  const authController = opts && Number(opts.timeoutMs) > 0 ? new AbortController() : null;
+  const authTimer = authController ? setTimeout(() => authController.abort(), Number(opts.timeoutMs)) : null;
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` },
+      ...(authController ? { signal: authController.signal } : {}),
     });
     if (!res.ok) return { ok: false, status: 401, error: 'Invalid session' };
     user = await res.json();
   } catch (_) {
     return { ok: false, status: 401, error: 'Invalid session' };
-  }
+  } finally { if (authTimer) clearTimeout(authTimer); }
   if (!user || !user.id) return { ok: false, status: 401, error: 'Invalid session' };
 
   let staff;
   try {
-    const rows = await sb('GET', `/admin_users?auth_user_id=eq.${encodeURIComponent(user.id)}&select=id,email,name,role&limit=1`);
+    const rows = await sb('GET', `/admin_users?auth_user_id=eq.${encodeURIComponent(user.id)}&select=id,email,name,role&limit=1`, null, opts && opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : undefined);
     staff = Array.isArray(rows) && rows[0] ? rows[0] : null;
   } catch (_) {
     return { ok: false, status: 500, error: 'Authorization check failed' };
@@ -134,18 +137,27 @@ async function sb(method, path, payload, opts) {
   if (o.actor) headers['x-topcoat-actor'] = String(o.actor).slice(0, 120);
   if (o.headers && typeof o.headers === 'object') Object.assign(headers, o.headers);
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: payload ? JSON.stringify(payload) : undefined,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase ${method} ${path} failed (${res.status}): ${text}`);
+  // Opt-in deadline for resumable workers. Keep the timer through body reads
+  // and actually abort the request; a Promise.race would leave writes running.
+  const controller = Number(o.timeoutMs) > 0 ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), Number(o.timeoutMs)) : null;
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: payload ? JSON.stringify(payload) : undefined,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Supabase ${method} ${path} failed (${res.status}): ${text}`);
+    }
+    if (res.status === 204) return null;
+    const ct = res.headers.get('content-type') || '';
+    return await (ct.includes('application/json') ? res.json() : res.text());
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  if (res.status === 204) return null;
-  const ct = res.headers.get('content-type') || '';
-  return ct.includes('application/json') ? res.json() : res.text();
 }
 
 // Best-effort ingestion logger. Writes one row to pec_webhook_ingest_log per

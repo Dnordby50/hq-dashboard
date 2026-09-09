@@ -66,6 +66,7 @@ const {
 } = require('./_pec-drip.cjs');
 const { driveMinutesFor } = require('./_pec-booking-drive.cjs');
 const { computeSlots, addrKey, HOME_KEY } = require('../../production/booking-availability.cjs');
+const { repsWithVerifiedGoogleCalendars } = require('./_pec-booking-google-health.cjs');
 
 const ENDPOINT = 'booking';
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
@@ -77,6 +78,8 @@ const TYPE_LABELS = {
   other: 'Appointment',
 };
 const STOP_LINE = ' Reply STOP to opt out.';
+const CALENDAR_UNAVAILABLE_COPY = 'We cannot confirm open times right now. Please call us and we will get you scheduled.';
+const calendarUnavailable = () => ({ status: 503, body: { ok: false, calendar_unavailable: true, error: CALENDAR_UNAVAILABLE_COPY, days: [] } });
 
 const cleanStr = (s) => { const v = String(s == null ? '' : s).trim(); return v || null; };
 const esc = (s) => String(s == null ? '' : s)
@@ -97,7 +100,7 @@ const SETTING_KEYS = [
   'booking_home_base_address', 'booking_rate_limit_per_hour',
   'booking_min_fill_seconds', 'booking_duplicate_window_hours',
   'booking_sms_disclosure', 'booking_manage_link_text',
-  'booking_block_crew_holidays',
+  'booking_block_crew_holidays', 'google_booking_max_sync_age_minutes',
 ];
 
 // Audit-trail actor labels (2026-09-21). The customer never has a staff
@@ -186,7 +189,7 @@ function checkArea(area, zip, city) {
 }
 
 async function loadActiveReps(db) {
-  const rows = await db('GET', '/pec_sales_team_members?active=eq.true&select=id,name&order=name');
+  const rows = await db('GET', '/pec_sales_team_members?active=eq.true&select=id,name,google_connected,google_calendar_id,google_connected_at,google_needs_reconnect&order=name');
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -257,6 +260,10 @@ async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId,
   const cfg = engineConfig(settings, t.duration, excludeApptId);
   let reps = await loadActiveReps(db);
   if (onlyRepId) reps = reps.filter(r => r.id === onlyRepId);
+  const health = await repsWithVerifiedGoogleCalendars(db, reps, settings, now);
+  reps = health.reps;
+  const calendarUnavailable = !reps.length && health.unavailableCount > 0;
+  if (calendarUnavailable) return { slots: [], cfg, apptType: t, reps, calendarUnavailable };
   const busy = await loadBusy(db, now, cfg.horizonDays);
   const blockedDays = await loadBlockedDays(db, settings, now, cfg.horizonDays);
 
@@ -289,7 +296,7 @@ async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId,
   const slots = computeSlots({
     now, reps, busy, workingHours: workingHoursFrom(settings), config: cfg, driveTimes, blockedDays,
   });
-  return { slots, cfg, apptType: t, reps };
+  return { slots, cfg, apptType: t, reps, calendarUnavailable };
 }
 
 // Group engine slots by Phoenix day for the picker.
@@ -671,7 +678,13 @@ async function processBook(deps, body, meta = {}) {
     }
 
     // -- Fresh availability re-check: the SAME engine, fresh busy (B6) ------
-    const { slots } = await openSlotsFor(deps, { settings, form, customerAddr: addr });
+    const availability = await openSlotsFor(deps, { settings, form, customerAddr: addr });
+    const { slots } = availability;
+    if (availability.calendarUnavailable) {
+      await writeRequestRow(db, { ...baseRow, status: 'rejected', in_area: true, error_text: 'calendar_unavailable' });
+      await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 503, message: 'Calendar availability could not be verified', payload: null });
+      return calendarUnavailable();
+    }
     const startIso = new Date(start).toISOString();
     const slot = slots.find(s => s.start === startIso);
     if (!slot) {
@@ -732,11 +745,12 @@ async function processBook(deps, body, meta = {}) {
     }, slot.buffer_before, slot.buffer_after, null, ACTOR_BOOK);
 
     if (!res || res.ok !== true) {
-      if (res && res.taken) {
+      if (res && (res.taken || res.calendar_unavailable)) {
         const fresh = await openSlotsFor(deps, { settings, form, customerAddr: addr });
-        await writeRequestRow(db, { ...baseRow, id: requestId, status: 'rejected', in_area: true, lead_id: contact.lead_id, customer_id: contact.customer_id, error_text: 'slot_taken' });
+        const unavailable = !!res.calendar_unavailable || fresh.calendarUnavailable;
+        await writeRequestRow(db, { ...baseRow, id: requestId, status: 'rejected', in_area: true, lead_id: contact.lead_id, customer_id: contact.customer_id, error_text: unavailable ? 'calendar_unavailable' : 'slot_taken' });
         await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 409, message: `lost the slot race for ${startIso}`, payload: null });
-        return { status: 409, body: { ok: false, taken: true, error: 'That time was just taken. Here are the next open times.', days: groupSlotsByDay(fresh.slots).slice(0, 10) } };
+        return { status: 409, body: { ok: false, taken: true, ...(unavailable ? { calendar_unavailable: true } : {}), error: unavailable ? CALENDAR_UNAVAILABLE_COPY : 'That time was just taken. Here are the next open times.', days: groupSlotsByDay(fresh.slots).slice(0, 10) } };
       }
       throw new Error(`book_appointment_slot: ${res && res.error ? res.error : 'no result'}`);
     }
@@ -948,7 +962,7 @@ async function processManage(deps, body, meta = {}) {
     if (action === 'slots') {
       if (appt.status === 'canceled') return { status: 400, body: { ok: false, error: 'This appointment is canceled. Book a new time from the booking page.' } };
       const form = await loadForm(db, 'pec');
-      const { slots } = await openSlotsFor(deps, {
+      const availability = await openSlotsFor(deps, {
         settings, form,
         customerAddr: { address: appt.location_address, city: appt.location_city, state: appt.location_state, zip: appt.location_zip },
         excludeApptId: appt.id,
@@ -956,6 +970,8 @@ async function processManage(deps, body, meta = {}) {
         // and swapping reps mid-manage would need a different write shape.
         onlyRepId: appt.sales_member_id || null,
       });
+      if (availability.calendarUnavailable) return calendarUnavailable();
+      const { slots } = availability;
       return { status: 200, body: { ok: true, days: groupSlotsByDay(slots).slice(0, 14) } };
     }
 
@@ -964,12 +980,14 @@ async function processManage(deps, body, meta = {}) {
       const start = cleanStr(body.start);
       if (!start || isNaN(new Date(start))) return { status: 400, body: { ok: false, error: 'Pick one of the offered times.' } };
       const form = await loadForm(db, 'pec');
-      const { slots } = await openSlotsFor(deps, {
+      const availability = await openSlotsFor(deps, {
         settings, form,
         customerAddr: { address: appt.location_address, city: appt.location_city, state: appt.location_state, zip: appt.location_zip },
         excludeApptId: appt.id,
         onlyRepId: appt.sales_member_id || null,
       });
+      if (availability.calendarUnavailable) return calendarUnavailable();
+      const { slots } = availability;
       const startIso = new Date(start).toISOString();
       const slot = slots.find(s => s.start === startIso);
       if (!slot) return { status: 409, body: { ok: false, taken: true, error: 'That time is no longer open. Here are the current options.', days: groupSlotsByDay(slots).slice(0, 14) } };
@@ -980,7 +998,15 @@ async function processManage(deps, body, meta = {}) {
         start_at: slot.start, end_at: slot.end,
       }, slot.buffer_before, slot.buffer_after, appt.id, ACTOR_MANAGE);
       if (!res || res.ok !== true) {
-        if (res && res.taken) return { status: 409, body: { ok: false, taken: true, error: 'That time was just taken. Pick another.', days: groupSlotsByDay(slots).slice(0, 14) } };
+        if (res && (res.taken || res.calendar_unavailable)) {
+          const fresh = await openSlotsFor(deps, {
+            settings, form,
+            customerAddr: { address: appt.location_address, city: appt.location_city, state: appt.location_state, zip: appt.location_zip },
+            excludeApptId: appt.id, onlyRepId: appt.sales_member_id || null,
+          });
+          const unavailable = !!res.calendar_unavailable || fresh.calendarUnavailable;
+          return { status: 409, body: { ok: false, taken: true, ...(unavailable ? { calendar_unavailable: true } : {}), error: unavailable ? CALENDAR_UNAVAILABLE_COPY : 'That time was just taken. Pick another.', days: groupSlotsByDay(fresh.slots).slice(0, 14) } };
+        }
         throw new Error(`book_appointment_slot reschedule: ${res && res.error ? res.error : 'no result'}`);
       }
       const fromTxt = `${apptDateStr(appt.start_at)}, ${apptTimeStr(appt.start_at)}`;
@@ -1036,7 +1062,9 @@ async function processSlots(deps, body) {
     }
     const verdict = checkArea(area, addr.zip, addr.city);
     if (!verdict.inArea) return { status: 200, body: { ok: true, open: true, in_area: false } };
-    const { slots } = await openSlotsFor(deps, { settings, form, customerAddr: addr });
+    const availability = await openSlotsFor(deps, { settings, form, customerAddr: addr });
+    if (availability.calendarUnavailable) return calendarUnavailable();
+    const { slots } = availability;
     return { status: 200, body: { ok: true, open: true, in_area: true, days: groupSlotsByDay(slots) } };
   } catch (err) {
     console.error('pec-booking slots failed:', err);

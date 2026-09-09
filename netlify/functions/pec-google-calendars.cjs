@@ -98,9 +98,10 @@ exports.handler = async (event) => {
       // earlier enable would sidestep the window). Disabling leaves
       // imported rows in place; they simply stop updating.
       const patch = input.sync_enabled
-        ? { sync_enabled: true, sync_token: null, last_error: null }
+        ? { sync_enabled: true, sync_token: null, pull_state: null, pull_version: 0, last_synced_at: null, last_full_synced_at: null, last_error: null }
         : { sync_enabled: false };
-      await sb('PATCH', `/pec_sales_member_google_calendars?id=eq.${encodeURIComponent(row.id)}`, patch);
+      const changed = await sb('PATCH', `/pec_sales_member_google_calendars?id=eq.${encodeURIComponent(row.id)}&or=(lease_until.is.null,lease_until.lt.${encodeURIComponent(new Date().toISOString())})`, patch, true);
+      if (!Array.isArray(changed) || !changed.length) return jc(409, { ok: false, error: 'This calendar is syncing. Try the change again in a moment.' });
       return jc(200, { ok: true, calendar_id: input.calendar_id, sync_enabled: input.sync_enabled });
     }
 

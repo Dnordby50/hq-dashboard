@@ -6071,6 +6071,10 @@ function switchView(v) {
   // A blocked navigation must not erase in-progress morning answers by
   // replacing the same owner's DOM with a spinner and saved responses.
   if (v === 'owner-studio' && state.view === v && document.getElementById('topcoat-owner-studio')) return;
+  if (v !== 'appointments' && state._apptStopRefresh) {
+    state._apptStopRefresh(); state._apptStopRefresh = null;
+    state._apptRefreshData = null;
+  }
   if (state.view === 'owner-studio' && v !== 'owner-studio') {
     if (!ownerStudio.canLeave()) return;
     ownerStudio.unmount();
@@ -20067,7 +20071,7 @@ async function renderSettingsAppointments() {
     // Prompt 96: the per-member calendar rows (read-only view; the table is
     // service-role only) and the pull-window knobs.
     supabase.from('pec_member_google_calendars_v').select('*').order('summary'),
-    supabase.from('settings').select('key,value').in('key', ['google_pull_window_days_past', 'google_pull_window_days_future', 'google_pull_max_pages_per_calendar', 'google_imported_default_appt_type', 'google_pull_include_all_day', 'google_pull_include_declined']),
+    supabase.from('settings').select('key,value').in('key', ['google_pull_window_days_past', 'google_pull_window_days_future', 'google_pull_max_pages_per_calendar', 'google_imported_default_appt_type', 'google_pull_include_all_day', 'google_pull_include_declined', 'google_booking_max_sync_age_minutes']),
     // Prompt 101: the Online booking card's knobs + the PEC form row.
     supabase.from('settings').select('key,value').or('key.like.booking_%,key.eq.routemize_intake_enabled,key.eq.appt_default_duration_minutes'),
     supabase.from('pec_booking_forms').select('*').eq('slug', 'pec').maybeSingle(),
@@ -20240,6 +20244,9 @@ async function renderSettingsAppointments() {
             <div class="pec-field"><label>Imported events come in as</label>
               <select id="gcDefaultType">${APPT_TYPES.map(t => `<option value="${esc(t.key)}"${(gcSettings.google_imported_default_appt_type || 'other') === t.key ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
           </div>
+          <div class="pec-field" style="max-width:460px"><label>Pause online booking when Google sync is older than (minutes)</label>
+            <input type="number" id="gcBookingMaxAge" min="15" max="1440" step="1" value="${esc(gcSettings.google_booking_max_sync_age_minutes || '45')}">
+            <div style="font-size:.68rem;color:var(--muted)">Appointments shows the same overdue warning. Use Sync now to refresh before booking.</div></div>
           <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:6px 0;cursor:pointer">
             <input type="checkbox" id="gcAllDay" style="width:auto" ${gcSettings.google_pull_include_all_day !== 'false' ? 'checked' : ''}>
             Import all-day events</label>
@@ -21069,6 +21076,10 @@ async function renderSettingsAppointments() {
     gcSaveSetting('google_pull_max_pages_per_calendar', v);
   });
   root.querySelector('#gcDefaultType')?.addEventListener('change', e => gcSaveSetting('google_imported_default_appt_type', e.target.value));
+  root.querySelector('#gcBookingMaxAge')?.addEventListener('change', e => {
+    const value = Math.min(1440, Math.max(15, parseInt(e.target.value, 10) || 45)); e.target.value = value;
+    gcSaveSetting('google_booking_max_sync_age_minutes', value);
+  });
   root.querySelector('#gcAllDay')?.addEventListener('change', e => gcSaveSetting('google_pull_include_all_day', e.target.checked ? 'true' : 'false'));
   root.querySelector('#gcDeclined')?.addEventListener('change', e => gcSaveSetting('google_pull_include_declined', e.target.checked ? 'true' : 'false'));
 
@@ -27135,11 +27146,163 @@ async function openBlockedDaysModal(members, onDone) {
   }});
 }
 
+// Keep imported blocks visible until their exclusive end, including a
+// vacation that started before the currently displayed day or week.
+function apptRowsByDay(rows, rangeStart, rangeEnd) {
+  const byDay = {};
+  for (const row of rows) {
+    const start = new Date(row.start_at), end = new Date(row.end_at);
+    const day = new Date(Math.max(start.getTime(), rangeStart.getTime()));
+    day.setHours(0, 0, 0, 0);
+    while (day < end && day < rangeEnd) {
+      const next = new Date(day); next.setDate(next.getDate() + 1);
+      if (next > start && next > rangeStart) {
+        const key = apptDateInputVal(day);
+        (byDay[key] = byDay[key] || []).push(row);
+      }
+      day.setDate(day.getDate() + 1);
+    }
+  }
+  return byDay;
+}
+
+// Staff may deliberately override a conflict, but never without seeing it.
+// This query ignores the calendar's display filters and includes Google
+// imports, all-day blocks, and events that began on an earlier day.
+async function apptConfirmOverlap(row) {
+  if (!row.sales_member_id || (row.status && row.status !== 'scheduled')) return true;
+  let result;
+  try {
+    result = await withFreshSession(() => {
+      let q = supabase.from('pec_appointments').select('id,title,start_at,end_at,all_day,source')
+        .eq('sales_member_id', row.sales_member_id).eq('status', 'scheduled')
+        .lt('start_at', row.end_at).gt('end_at', row.start_at).order('start_at').limit(12);
+      if (row.id) q = q.neq('id', row.id);
+      return q;
+    }, { label: 'appointment-conflicts' });
+    if (!result || result.error || !Array.isArray(result.data)) throw (result && result.error) || new Error('No availability response.');
+  } catch (_) {
+    throw new Error('Could not check this salesperson’s existing appointments. Nothing was booked or moved. Refresh and try again.');
+  }
+  if (!result.data.length) return true;
+  const lines = result.data.map(a => `${a.title || 'Busy'}: ${apptFmtWhen(a.start_at)} to ${apptFmtWhen(a.end_at)}${a.all_day ? ' (all day)' : ''}`);
+  return confirm(`This salesperson already has overlapping appointments:\n\n${lines.join('\n')}\n\nBook over ${result.data.length === 1 ? 'this appointment' : 'these appointments'} anyway?`);
+}
+
+function apptGoogleHealth(members, calendars, now = Date.now(), maxAgeMinutes = 45) {
+  const rows = [];
+  for (const m of members.filter(x => x.active !== false)) {
+    const selected = calendars.filter(c => c.member_id === m.id && (c.sync_enabled || c.calendar_id === m.google_calendar_id));
+    if (!m.google_connected || m.google_needs_reconnect) {
+      rows.push({ label: m.name, warning: true, message: m.google_needs_reconnect ? 'Google sign-in needs reconnecting.' : 'Google Calendar is not connected.' });
+    }
+    if (!selected.length || (m.google_calendar_id && !selected.some(c => c.calendar_id === m.google_calendar_id))) {
+      rows.push({ label: m.name, warning: true, message: 'Calendar sync setup is incomplete. Check Settings > Appointments.' });
+    }
+    for (const c of selected) {
+      const synced = Date.parse(c.last_synced_at || '');
+      let message, warning = true;
+      if (c.last_error) message = 'Sync failed: ' + c.last_error;
+      else if (Number(c.pull_version || 0) < 2) message = 'Calendar recovery has not finished. Events may be missing.';
+      else if (c.sync_in_progress) message = 'Sync is still in progress. Events may be missing.';
+      else if (!Number.isFinite(synced)) message = 'No completed sync yet. Events may be missing.';
+      else if (Date.parse(m.google_connected_at || '') > synced) message = 'No completed sync since reconnecting. Events may be missing.';
+      else if (now - synced > maxAgeMinutes * 60000) message = 'Sync is overdue. Last completed ' + apptFmtWhen(c.last_synced_at) + '.';
+      else { warning = false; message = 'Last completed ' + apptFmtWhen(c.last_synced_at) + '.'; }
+      rows.push({ label: m.name + ' · ' + (c.summary || 'Google calendar'), warning, message });
+    }
+  }
+  return rows;
+}
+
+async function renderApptSyncHealth(isCurrent = () => state.view === 'appointments') {
+  const readId = (state._apptHealthReadId || 0) + 1;
+  state._apptHealthReadId = readId;
+  let rows;
+  try {
+    const [mr, cr, sr] = await withFreshSession(() => Promise.all([
+      supabase.from('pec_sales_team_members').select('id,name,active,google_connected,google_needs_reconnect,google_calendar_id,google_connected_at').order('name'),
+      supabase.from('pec_member_google_calendars_v').select('*'),
+      supabase.from('settings').select('value').eq('key', 'google_booking_max_sync_age_minutes').maybeSingle(),
+    ]), { label: 'appointment-sync-health' });
+    if (mr.error || cr.error || sr.error) throw mr.error || cr.error || sr.error;
+    rows = apptGoogleHealth(mr.data || [], cr.data || [], Date.now(), Math.min(1440, Math.max(15, Number(sr.data && sr.data.value) || 45)));
+    if (!rows.length) rows = [{ label: 'Google Calendar', warning: true, message: 'No active salesperson calendars are configured.' }];
+  } catch (_) {
+    rows = [{ label: 'Google Calendar', warning: true, message: 'Could not check sync health. Calendar availability is not verified.' }];
+  }
+  if (!isCurrent() || state._apptHealthReadId !== readId) return;
+  const el = $('pecApptSyncHealth');
+  if (!el) return;
+  const warning = rows.some(r => r.warning);
+  const f = state.apptFilters;
+  const expanded = el.querySelector('details')?.open;
+  el.innerHTML = `<details${expanded ? ' open' : ''}><summary style="cursor:pointer;font-weight:600;color:${warning ? '#b45309' : 'var(--muted)'}">${warning ? 'Google sync needs attention. Some events may be missing.' : 'Google sync is up to date.'}</summary>
+    <div style="margin-top:6px;display:grid;gap:4px">${rows.map(r => `<div style="overflow-wrap:anywhere;color:${r.warning ? '#b45309' : 'var(--muted)'}"><strong>${esc(r.label)}:</strong> ${esc(r.message)}</div>`).join('')}</div></details>
+    ${f.hideImported || f.type ? '<div style="color:#b45309;margin-top:4px">Your filters hide some busy time. Use All types and show Google imports before choosing a time.</div>' : ''}`;
+}
+
+// Refresh only event data and the small health panel. Open appointment forms
+// and their drafts stay mounted. Every view instance owns and stops its timer.
+function apptStartLiveRefresh(refresh, isCurrent) {
+  let stopped = false, running = false;
+  const tick = async () => {
+    if (stopped || running || document.hidden || !isCurrent()) return;
+    running = true;
+    try { await refresh(); } catch (err) { console.warn('[appointments] refresh:', err.message || err); }
+    finally { running = false; }
+  };
+  const timer = setInterval(tick, 60000);
+  window.addEventListener('focus', tick);
+  document.addEventListener('visibilitychange', tick);
+  return () => {
+    stopped = true; clearInterval(timer);
+    window.removeEventListener('focus', tick);
+    document.removeEventListener('visibilitychange', tick);
+  };
+}
+
+async function apptSyncNow(button, isCurrent, refresh) {
+  if (state._apptSyncRunning) return;
+  state._apptSyncRunning = true;
+  button.disabled = true;
+  const status = $('pecApptSyncProgress');
+  try {
+    let out;
+    for (let batch = 0; batch < 10; batch++) {
+      if (!isCurrent()) break;
+      button.textContent = 'Syncing…';
+      if (status) status.textContent = batch ? 'Continuing Google sync…' : 'Checking Google calendars…';
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || !session.access_token) throw new Error('Sign in again to sync calendars.');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 45000);
+      let res;
+      try {
+        res = await fetch('/.netlify/functions/pec-google-calendar-run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: '{}', signal: controller.signal,
+        });
+      } finally { clearTimeout(timeout); }
+      out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) throw new Error(out.error || (out.failed_calendars || []).map(c => c.name + ': ' + c.error).join('; ') || 'Google sync could not finish.');
+      await refresh();
+      if (out.complete || !out.pending) break;
+    }
+    if (status && isCurrent()) status.textContent = out && out.complete ? 'Sync finished. Calendar refreshed.' : 'Sync is still in progress. Use Sync now again to continue.';
+  } catch (err) {
+    if (status && isCurrent()) status.textContent = 'Sync needs attention: ' + (err.message || err);
+    await refresh();
+  } finally {
+    state._apptSyncRunning = false;
+    if (isCurrent()) { button.disabled = false; button.textContent = 'Sync now'; }
+  }
+}
+
 async function loadAppointmentsRange(startIso, endIso) {
   const f = state.apptFilters;
   const buildQ = (sel) => {
     let q = supabase.from('pec_appointments').select(sel)
-      .gte('start_at', startIso).lt('start_at', endIso)
+      .gt('end_at', startIso).lt('start_at', endIso)
       .neq('status', 'canceled')
       .order('start_at', { ascending: true }).limit(1000);
     if (f.type) q = q.eq('appt_type', f.type);
@@ -27256,6 +27419,12 @@ function apptChipContent(arg) {
 }
 
 async function renderAppointments() {
+  if (state._apptStopRefresh) state._apptStopRefresh();
+  state._apptStopRefresh = null;
+  state._apptRefreshData = null;
+  const renderId = (state._apptRenderId || 0) + 1;
+  state._apptRenderId = renderId;
+  const isCurrent = () => state.view === 'appointments' && state._apptRenderId === renderId;
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading appointments…</div>';
 
@@ -27265,6 +27434,7 @@ async function renderAppointments() {
   const rosterRes = await withFreshSession(
     () => supabase.from('pec_sales_team_members').select('*').order('name'),
     { label: 'appointments-roster' });
+  if (!isCurrent()) return;
   if (rosterRes.error) {
     root.innerHTML = `<div class="pec-empty">Couldn't load the sales roster: ${esc(rosterRes.error.message)}</div>`;
     return;
@@ -27299,6 +27469,11 @@ async function renderAppointments() {
       </div>
     </div>
     <div class="pec-card">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:.78rem">
+        <div id="pecApptSyncHealth" style="flex:1;min-width:200px;color:#b45309">Checking Google sync health…</div>
+        <button class="pec-btn ghost sm" id="pecApptSyncNow">Sync now</button>
+        <div id="pecApptSyncProgress" role="status" style="flex-basis:100%;overflow-wrap:anywhere;color:var(--muted)"></div>
+      </div>
       <div id="pecApptMigNote" style="display:none;color:#b45309;font-size:.78rem;margin-bottom:8px"></div>
       <div id="pecApptCal"></div>
       <div class="pec-appt-legend" style="margin-top:10px">${legend}</div>
@@ -27311,8 +27486,10 @@ async function renderAppointments() {
   $('pecApptHideImported').addEventListener('change', e => { f.hideImported = e.target.checked; apptRefresh(members); });
 
   const holder = $('pecApptCal');
+  let refreshEvents = () => renderApptFallbackList(holder, members);
   try {
     await ensureFullCalendar();
+    if (!isCurrent()) return;
     const cal = new FullCalendar.Calendar(holder, {
       initialView: state.apptView || 'dayGridMonth',
       initialDate: state.apptDate || undefined,
@@ -27334,6 +27511,7 @@ async function renderAppointments() {
           loadAppointmentsRange(info.start.toISOString(), info.end.toISOString()),
           loadBlockedDaysRange(info.start.toISOString(), info.end.toISOString()),
         ]).then(([{ rows, error }, blocked]) => {
+          if (!isCurrent()) return;
           const note = $('pecApptMigNote');
           if (note) {
             note.style.display = error ? '' : 'none';
@@ -27364,12 +27542,22 @@ async function renderAppointments() {
     });
     state._apptCal = cal;
     cal.render();
+    refreshEvents = () => cal.refetchEvents();
   } catch (err) {
     // CDN blocked/offline: month-list fallback. Same data, same modal, no
     // drag/resize; edits go through the form instead.
     console.warn('[appointments] FullCalendar unavailable, using list fallback:', err.message || err);
     await renderApptFallbackList(holder, members);
   }
+  if (!isCurrent()) return;
+  const refresh = async () => {
+    if (!isCurrent()) return;
+    await Promise.all([refreshEvents(), renderApptSyncHealth(isCurrent)]);
+  };
+  state._apptRefreshData = refresh;
+  state._apptStopRefresh = apptStartLiveRefresh(refresh, () => isCurrent() && holder.getClientRects().length > 0);
+  $('pecApptSyncNow').addEventListener('click', e => apptSyncNow(e.currentTarget, isCurrent, refresh));
+  renderApptSyncHealth(isCurrent);
 
   // Bell tap / deep link: open the requested appointment once mounted.
   if (state.openAppointmentId) {
@@ -27385,8 +27573,8 @@ async function renderAppointments() {
 // starts from a fresh read anyway.
 function apptRefresh() {
   if (state.view !== 'appointments') return;
-  if (state._apptCal) state._apptCal.refetchEvents();
-  else renderAppointments();
+  if (state._apptRefreshData) state._apptRefreshData();
+  else if (state._apptCal) state._apptCal.refetchEvents();
 }
 
 // Drag / resize commit: idempotent full-value patch, safe to retry. On any
@@ -27402,6 +27590,13 @@ async function apptCommitMove(info, members) {
     all_day: ev.allDay,
   };
   try {
+    const current = await withFreshSession(() => supabase.from('pec_appointments').select('*').eq('id', ev.id).single(), { label: 'appt-move-current' });
+    if (current.error || !current.data) throw new Error('Could not check this appointment. Refresh and try again.');
+    const row = { ...current.data, ...patch };
+    if (row.source === 'google' && row.google_readonly_reason) throw new Error('This Google event is read-only.');
+    const blocks = await apptDayBlockedInfo(apptDateInputVal(new Date(patch.start_at)), row.sales_member_id);
+    if (blocks.length && !confirm('That day is blocked off: ' + blocks.map(b => b.reason || 'Day off').join('; ') + '. Move it anyway?')) { info.revert(); return; }
+    if (!await apptConfirmOverlap(row)) { info.revert(); return; }
     const res = await withFreshWriteRetry(() => supabase.from('pec_appointments').update(patch).eq('id', ev.id), { label: 'appt-move' });
     if (res.error) throw res.error;
     showToast('Appointment moved', { ttl: 1600 });
@@ -27431,11 +27626,8 @@ async function renderApptFallbackList(holder, members) {
     note.style.display = '';
     note.textContent = 'Appointments could not load: ' + (error.message || error) + ' (has the appointments migration been applied?)';
   }
-  const byDay = {};
-  for (const r of rows) {
-    const k = apptDateInputVal(new Date(r.start_at));
-    (byDay[k] = byDay[k] || []).push(r);
-  }
+  if (state.view !== 'appointments' || $('pecApptCal') !== holder) return;
+  const byDay = apptRowsByDay(rows, mStart, mEnd);
   const days = Object.keys(byDay).sort();
   holder.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
@@ -28072,6 +28264,9 @@ async function openAppointmentForm(existing, prefill = {}) {
       const btn = modal.querySelector('#afSave');
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
+        if (!await apptConfirmOverlap({ ...row, id: a.id, status: a.status || 'scheduled' })) {
+          btn.disabled = false; btn.textContent = isNew ? 'Book it' : 'Save'; return;
+        }
         // Complete the customer profile from this form (2026-08-19), BEFORE
         // the appointment write so a booked quote never precedes its profile.
         // Email overwrites when it differs (typing it here is an explicit
@@ -28196,6 +28391,9 @@ async function openAppointmentForm(existing, prefill = {}) {
       const toStatus = a.status === 'canceled' ? 'scheduled' : 'canceled';
       cancelBtn.disabled = true;
       try {
+        if (toStatus === 'scheduled' && !await apptConfirmOverlap({ ...a, status: 'scheduled' })) {
+          cancelBtn.disabled = false; return;
+        }
         const res = await withFreshWriteRetry(() => supabase.from('pec_appointments').update({ status: toStatus }).eq('id', a.id), { label: 'appt-cancel' });
         if (res.error) throw res.error;
         closeModal();

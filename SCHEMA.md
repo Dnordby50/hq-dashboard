@@ -2105,11 +2105,19 @@ RLS: enabled (NO policies — default-deny, service-role only; browser reads go 
 | last_error | text | yes |  |
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
+| pull_state | jsonb | yes |  |
+| pull_version | integer | no | 0 |
+| last_attempt_at | timestamptz | yes |  |
+| last_full_synced_at | timestamptz | yes |  |
+| lease_id | uuid | yes |  |
+| lease_until | timestamptz | yes |  |
 
 PK: id
 FK: member_id → pec_sales_team_members.id (on delete cascade)
 Unique: (member_id, calendar_id)
 Note: added 2026-08-18 (prompt 96). One row per (member, Google calendar): the per-calendar sync ledger for the multi-calendar pull. sync_token is PER CALENDAR (Google sync tokens are per-calendar); access_role is Google's accessRole at the last calendarList refresh (owner/writer = TopCoat may write the rep's own events back, reader/freeBusyReader = import-only); sync_enabled is the Settings > Appointments toggle. The member's dedicated TopCoat calendar is seeded sync_enabled=true but the pull loop always skips it (it is the push target) and the toggle endpoint refuses to flip it. Writes go through pec-google-calendars.cjs (list refresh + toggles) and the pull runner (tokens, last_synced_at, last_error).
+
+September 9, 2026 live refresh: the six recovery columns above and the dashboard view were confirmed against production information_schema after applying `google_calendar_sync_recovery`. `pull_state` retains the immutable query, continuation cursor and reconciliation state; it and `sync_token`/lease columns remain private. `pull_version=2` marks a completed repaired baseline. `last_synced_at` advances only on completed calendar sync, `last_full_synced_at` on completed bounded reconciliation, and `last_attempt_at` supports fair scheduling. The existing safe view adds last_attempt_at, last_full_synced_at, pull_version, and sync_in_progress (pull_state IS NOT NULL). Both source imports and the dedicated TopCoat calendar now use this ledger. The older note above describes the pre-recovery dedicated-calendar path; the repaired worker no longer skips it.
 
 ### pec_sales_member_google_tokens
 RLS: enabled (NO policies — default-deny token vault, service-role only) · rows: 0
@@ -2437,6 +2445,8 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
+Google calendar booking protection (2026-09-09, verified live): google_booking_max_sync_age_minutes ('45', clamped 15–1440), under Settings > Appointments > Google Advanced. Public availability and the service-role-only five-argument book_appointment_slot RPC both require every selected rep's enabled source calendars and dedicated calendar to have completed recovery (pull_version >= 2), no error, a completion after reconnect, and a completion within this freshness limit. Disconnected dependencies fail closed; never-connected reps without source dependencies remain bookable. Ordinary in-progress work can coexist with a fresh completed baseline. The RPC checks health after acquiring its existing per-rep/day advisory lock, before overlap checks and writes, and returns calendar_unavailable when unverified.
+
 Owner MBP refresh settings (2026-09-08): owner_mbp_live_enabled ('true') and owner_mbp_refresh_minutes ('5', whole minutes 1–60), editable in the private owner Routine settings. Insert-only seed; the existing owner_* settings RLS boundary applies.
 Owner workspace settings (2026-09-07): owner_studio_enabled ('false' until release), owner_morning_time ('06:20'), owner_morning_days ('[1,2,3,4,5]'), owner_morning_target_minutes ('10'), owner_weekly_time ('08:00'), owner_weekly_day ('1'), owner_weekly_target_minutes ('30'), owner_timezone ('America/Phoenix'). Restrictive owner_settings_boundary applies to authenticated SELECT/INSERT/UPDATE/DELETE for owner_* keys, in addition to existing policies. Non-owner users retain normal access to other keys. These rows contain configuration only, never private state or AI caches.
 

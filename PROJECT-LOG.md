@@ -1,3 +1,18 @@
+## [2026-09-09 07:45 MST] appointments: recover Google imports and guard stale availability
+
+By: Codex
+
+Changed: Replaced the one-shot Google pull with a bounded, leased worker that preserves each calendar's query and continuation state, rotates fairly across enabled sources, retries failed pages without advancing tokens, and reconciles a complete bounded baseline before reporting success. Native booking links and ownership remain protected. The staff-only Sync now endpoint runs the same worker. Appointments now shows per-source sync health, refreshes visible events each minute/on return, includes events spanning the displayed dates, and warns on staff-created overlaps even when filters hide the conflicting event. Public slot reads, booking submissions and reschedules reject stale/incomplete Google availability, with the same guard repeated inside the existing locked database write.
+
+Why: Dylan's connected primary calendar had never completed a sync; enabled secondary sources last completed August 31. Live Google events missing from TopCoat included the September 9 Dusty/Anne/Doug meeting, already overlapping a customer estimate. Pagination discarded the original range, partial runs restarted, and failed saves could advance the token. The office had no freshness warning and public booking trusted incomplete imports.
+
+Verified: Full npm test passed, including 107 booking assertions, 22 mapping cases, durable worker regression checks, 43 multi-calendar cases, and 12 executable calendar UI checks. The final worker-only additions passed 34 recovery checks. Changed CJS files, all six actual inline scripts, JSON manifests and esbuild endpoint bundles parse/build; git diff --check passes. Applied 20260909143036_google_calendar_sync_recovery.sql after a rolled-back 14-case live database rehearsal covering missing/stale/failed/reconnected calendars, healthy completion, collision/day-off preservation, reschedules and grants. Confirmed six private recovery columns, safe view fields, the 45-minute setting and locked guard live. Security advisor findings are unchanged. Staff overlap confirmation is advisory; concurrent staff writes are not serialized by this UI check.
+
+Files touched: Google pull/auth/calendar functions, booking function and health helper, index.html, migration and manifest, SCHEMA.md, regression tests, package.json, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Publish, run the authenticated catch-up, verify every enabled source and the previously missing events in the live office calendar, then check public availability resumes. Existing customer conflicts require a scheduling decision; the repair will not move or cancel them.
+Handoff to Cowork: None.
+Handoff to Dylan: None for publication or catch-up.
+
 ## [2026-09-09 05:46 MST] estimates: simplified builder and loading correction verified live
 
 By: Codex

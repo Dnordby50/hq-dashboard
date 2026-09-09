@@ -3508,6 +3508,58 @@
           "name": "owner_timezone"
         }
       ]
+    },
+    {
+      "file": "20260909024453_owner_mbp_live_refresh_settings.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "owner_mbp_live_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_mbp_refresh_minutes"
+        }
+      ]
+    },
+    {
+      "file": "20260909143036_google_calendar_sync_recovery.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_sales_member_google_calendars.pull_state"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_member_google_calendars.pull_version"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_member_google_calendars.last_attempt_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_member_google_calendars.last_full_synced_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_member_google_calendars.lease_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_member_google_calendars.lease_until"
+        },
+        {
+          "kind": "setting",
+          "name": "google_booking_max_sync_age_minutes"
+        }
+      ]
     }
   ],
   "knownTables": [
