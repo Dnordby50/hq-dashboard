@@ -1,3 +1,14 @@
+## [2026-09-09 05:46 MST] estimates: simplified builder and loading correction verified live
+
+By: Codex
+
+Verified: Published 48bfc93 and the loading correction 07bf5c5 to origin/main. The live dashboard and What's New match local SHA-256 checksums; estimator CSS index-DM-83V1f.css also matches. Live JavaScript index-C8QeFPX6.js contains the new layout (its build-time environment differs from the local bundle). A fresh authenticated estimate load now completes without the earlier startup failure. After the existing service-worker update notice and reload, the real draft showed Estimate / Job details / Payments / Notes, Add item / Other items, a compact total/Save card, the reduced Preview / More / Send toolbar, and collapsed Photos, messages & activity. Verified the new What's New entry remains open until explicitly closed. No live fields were edited and no estimate, message or acknowledgment was saved during verification. The temporary fixture server was stopped.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Reload TopCoat to load the simpler builder; if the estimator shows its update notice, reload again after saving existing work.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-09 05:43 MST] estimates: ignore stale page loads during startup and navigation
 
 By: Codex
