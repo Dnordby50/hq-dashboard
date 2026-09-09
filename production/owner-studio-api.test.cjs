@@ -11,7 +11,7 @@ function fixture(overrides={}) {
     let data;
     if(url.endsWith('/auth/v1/user')) data=overrides.user??{id:uid};
     else if(url.endsWith('/rpc/pec_owner_authorized')) data=overrides.allowed??true;
-    else if(url.includes('/settings?')) data=[{key:'owner_studio_enabled',value:'true'}];
+    else if(url.includes('/settings?')) data=overrides.settings??[{key:'owner_studio_enabled',value:'true'}];
     else if(url.includes('/pec_owner_documents?')) {
       const params=new URL(url).searchParams,key=params.get('doc_key'),owner=params.get('auth_user_id')?.slice(3);
       const rows=overrides.docMap ? Object.entries(overrides.docMap).map(([doc_key,doc])=>({doc_key,...doc})) : overrides.documents??[];
@@ -19,18 +19,29 @@ function fixture(overrides={}) {
       if(params.get('order')==='doc_key.desc')data.sort((a,b)=>b.doc_key.localeCompare(a.doc_key));
     }
     else if(url.startsWith('https://api.anthropic.com/')) data={content:[{type:'text',text:'Synthetic analysis'}]};
-    else if(url.includes('/leads?')) data=[{id:'lead-one'}];
-    else if(url.includes('/jobs?')) data=overrides.jobs??[{id:'job-one',price:2500,dripjobs_deal_id:'deal-one'}];
+    else if(url.includes('/leads?')||url.includes('/jobs?')) {
+      const isLead=url.includes('/leads?'),source=isLead?overrides.liveLeads:overrides.liveJobs,params=new URL(url).searchParams;
+      if(source) {
+        data=source.filter(row=>isLead?(!row.brand||row.brand==='PEC')&&!row.deleted_at:(!row.company||row.company==='prescott-epoxy')&&!row.archived_at&&!row.voided_at);
+        const order=params.get('order');
+        if(order?.endsWith('.asc')){const field=order.slice(0,-4);data=data.filter(row=>row[field]).sort((a,b)=>a[field].localeCompare(b[field])).slice(0,1);}
+        else {
+          if(isLead)for(const filter of params.getAll('created_at'))data=data.filter(row=>filter.startsWith('gte.')?row.created_at>=filter.slice(4):row.created_at<filter.slice(3));
+          else {const range=params.get('or')||'',start=range.match(/signed_date\.gte\.([\d-]+)/)?.[1],end=range.match(/signed_date\.lt\.([\d-]+)/)?.[1];if(start&&end)data=data.filter(row=>[row.signed_date,row.completed_date].some(date=>date&&date>=start&&date<end));}
+          const offset=Number(params.get('offset')||0);data=data.sort((a,b)=>a.id.localeCompare(b.id)).slice(offset,offset+Number(params.get('limit')||1000));
+        }
+      } else data=isLead?[{id:'lead-one'}]:overrides.jobs??[{id:'job-one',price:2500,dripjobs_deal_id:'deal-one'}];
+    }
     else if(url.includes('/pec_owner_revisions?')) {
       const params=new URL(url).searchParams;
-      data=(overrides.revisions??[]).filter(row=>(!row.auth_user_id||row.auth_user_id===params.get('auth_user_id')?.slice(3))&&row.doc_key===params.get('doc_key')?.slice(3)&&(!params.has('revision')||row.revision===Number(params.get('revision').slice(3))));
+      data=(overrides.revisions??[]).filter(row=>(!row.auth_user_id||row.auth_user_id===params.get('auth_user_id')?.slice(3))&&(!params.has('doc_key')||row.doc_key===params.get('doc_key').slice(3))&&(!params.has('revision')||row.revision===Number(params.get('revision').slice(3)))&&(!params.has('request_id')||row.request_id===params.get('request_id').slice(3)));
     }
-    else if(url.endsWith('/rpc/pec_owner_save_document')) data=overrides.save??{ok:true,revision:1,replayed:false};
+    else if(url.endsWith('/rpc/pec_owner_save_document')) data=typeof overrides.save==='function'?await overrides.save({url,opts}):overrides.save??{ok:true,revision:1,replayed:false};
     else throw new Error('Unexpected network request');
     if(overrides.fail && url.includes(overrides.fail)) return {ok:false,status:500};
     return {ok:true,status:200,json:async()=>data};
   };
-  return {calls,handler:createHandler({fetchImpl,env:{...env,...overrides.env},now:()=>new Date('2026-09-07T15:00:00Z')})};
+  return {calls,handler:createHandler({fetchImpl,env:{...env,...overrides.env},now:overrides.now??(()=>new Date('2026-09-07T15:00:00Z'))})};
 }
 const event=(action='status',body)=>({httpMethod:body===undefined?'GET':'POST',headers:{authorization:'Bearer user-test-token'},queryStringParameters:{action},...(body===undefined?{}:{body:JSON.stringify(body)})});
 const draft={key:'focus:2026-09-07',revision:0,requestId,body:{status:'draft',answers:{commitment:'Plan tomorrow'}}};
@@ -39,6 +50,16 @@ const financeFixture=()=>({schemaVersion:1,year:2026,source:{name:'Synthetic'},s
   {id:'income',name:'Income Statement - 2',kind:'income',rows:10,cols:10,cells:{A1:{v:null,f:"='Budget - 2'!B1"},B1:{v:75,editable:true,role:'actual'}}},
 ]});
 const keyedEvent=(action,key)=>({...event(action),queryStringParameters:{action,key}});
+const liveEvent=year=>({...event('mbp-live'),queryStringParameters:{action:'mbp-live',year:String(year)}});
+async function mbpFixture(overrides={}){
+  const {ownerFixture}=await import('./owner-test-fixture.js');
+  const body={status:'draft',source:{file:'Synthetic workbook'},mbp:ownerFixture()};
+  const docMap={'mbp:2026':{revision:3,body}},revisions=[];
+  const liveLeads=[{id:'lead-start',created_at:'2026-07-11T12:00:00Z'},{id:'lead-sunday',created_at:'2026-09-07T06:59:59Z'},{id:'lead-monday',created_at:'2026-09-07T07:00:00Z'},{id:'lead-future',created_at:'2026-09-08T12:00:00Z'},{id:'lead-ftp',brand:'FTP',created_at:'2026-09-07T08:00:00Z'}];
+  const liveJobs=[{id:'job-start',signed_date:'2026-05-06',completed_date:'2026-05-22',price:100,dripjobs_deal_id:'first'},{id:'job-prior',signed_date:'2026-09-03',completed_date:'2026-09-04',price:1100,dripjobs_deal_id:'prior'},{id:'job-current',signed_date:'2026-09-07',completed_date:null,price:1200,dripjobs_deal_id:'current'},{id:'job-future',signed_date:'2026-09-08',completed_date:null,price:1300,dripjobs_deal_id:'future'},{id:'job-ftp',company:'finishing-touch',signed_date:'2026-09-07',price:9000}];
+  const save=async({opts})=>{const row=JSON.parse(opts.body),doc={doc_key:row.p_doc_key,revision:row.p_expected_revision+1,body:row.p_body};docMap[row.p_doc_key]=doc;revisions.push({...doc,auth_user_id:row.p_auth_user_id,request_id:row.p_request_id});return {ok:true,revision:doc.revision,replayed:false};};
+  return {body,docMap,revisions,...fixture({docMap,revisions,liveLeads,liveJobs,save,...overrides})};
+}
 
 test('no token, invalid user, anonymous account, and other admin never reach private records',async()=>{
   const f=fixture();
@@ -227,4 +248,125 @@ test('PEC CRM preview uses Phoenix weeks and distinct date definitions, leaves u
   assert.ok(f.calls.every(c=>c.opts.method!=='PATCH'&&!c.url.includes('pec_owner_save_document')));
   const missing=await fixture({jobs:[{id:'job',price:null}]}).handler(e);assert.equal(JSON.parse(missing.body).actual.bookedDollars,null);
   for(const week of ['2026-09-13','2026-09-05','2026-02-30','bad']){e.queryStringParameters.week=week;assert.equal((await fixture().handler(e)).statusCode,400);}
+});
+
+test('MBP live feed batches source reads, uses Phoenix weeks, and never fills uncovered history or future weeks with zero',async()=>{
+  const f=await mbpFixture(),r=await f.handler(liveEvent(2026)),feed=JSON.parse(r.body);
+  assert.equal(r.statusCode,200);assert.equal(feed.throughWeek,'2026-09-13');assert.match(r.headers['Cache-Control'],/private.*no-store/);
+  const prior=feed.weeks.find(w=>w.weekEnding==='2026-09-06'),current=feed.weeks.find(w=>w.weekEnding==='2026-09-13');
+  assert.deepEqual(prior.actual,{leads:1,estimates:null,jobsBooked:1,bookedDollars:1100,producedDollars:1100,laborHours:null});
+  assert.equal(prior.partial,false);assert.equal(current.partial,true);assert.equal(current.actual.leads,1);assert.equal(current.actual.bookedDollars,1200);
+  assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-12').available.leads,false);
+  assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-12').actual.leads,null);
+  assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-19').actual.leads,0);
+  assert.equal(feed.coverageStarts.leads,'2026-07-13');assert.equal(feed.coverageStarts.jobsBooked,'2026-05-11');assert.equal(feed.coverageStarts.producedDollars,'2026-05-25');
+  assert.ok(feed.weeks.every(w=>w.weekEnding<='2026-09-13'&&!w.available.estimates&&!w.available.laborHours));
+  assert.equal(f.calls.filter(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')).length,5);
+  assert.ok(f.calls.some(c=>c.url.includes('created_at=gte.2025-12-29T07:00:00Z')));
+  assert.ok(!f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
+});
+
+test('MBP live source failures and incomplete prices remain unavailable while successful sources refresh',async()=>{
+  const f=await mbpFixture({fail:'/leads?'}),feed=JSON.parse((await f.handler(liveEvent(2026))).body),current=feed.weeks.at(-1);
+  assert.equal(current.actual.leads,null);assert.equal(current.available.leads,false);assert.equal(current.actual.bookedDollars,1200);
+  assert.match(feed.warnings.join(' '),/could not be refreshed/);
+  const bad=await mbpFixture({liveJobs:[{id:'first',signed_date:'2026-05-06',completed_date:'2026-05-22',price:100},{id:'missing',signed_date:'2026-09-07',completed_date:'2026-09-07',price:null}]});
+  const missing=JSON.parse((await bad.handler(liveEvent(2026))).body).weeks.at(-1);
+  assert.equal(missing.actual.jobsBooked,1);assert.equal(missing.available.jobsBooked,true);
+  assert.equal(missing.actual.bookedDollars,null);assert.equal(missing.actual.producedDollars,null);
+  const repeated=await mbpFixture({liveJobs:[{id:'first',signed_date:'2026-05-06',price:100},{id:'a',signed_date:'2026-09-03',price:100,dripjobs_deal_id:'same'},{id:'b',signed_date:'2026-09-07',price:200,dripjobs_deal_id:'same'}]});
+  const duplicate=JSON.parse((await repeated.handler(liveEvent(2026))).body);
+  assert.equal(duplicate.weeks.at(-1).available.jobsBooked,false);assert.equal(duplicate.weeks.at(-2).available.bookedDollars,false);
+});
+
+test('MBP source pagination includes all rows and cannot disclose another owner or run while disabled',async()=>{
+  const liveLeads=Array.from({length:1001},(_,i)=>({id:`lead-${String(i).padStart(4,'0')}`,created_at:'2026-09-01T12:00:00Z'}));
+  liveLeads.push({id:'lead-earliest',created_at:'2026-07-11T12:00:00Z'});
+  const f=await mbpFixture({liveLeads}),feed=JSON.parse((await f.handler(liveEvent(2026))).body);
+  assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-09-06').actual.leads,1001);
+  assert.ok(f.calls.some(c=>c.url.includes('/leads?')&&c.url.includes('offset=1000')));
+  const disabled=await mbpFixture({settings:[{key:'owner_mbp_live_enabled',value:'false'}]}),off=await disabled.handler(liveEvent(2026));
+  assert.equal(JSON.parse(off.body).disabled,true);assert.ok(!disabled.calls.some(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')));
+  const denied=await mbpFixture({allowed:false});assert.equal((await denied.handler(liveEvent(2026))).statusCode,403);
+  assert.ok(!denied.calls.some(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')||c.url.includes('/pec_owner_documents?')));
+  for(const year of ['bad',2019,2101])assert.equal((await (await mbpFixture()).handler(liveEvent(year))).statusCode,400);
+});
+
+test('MBP patch saves server-derived sources and explicit manual overrides together, preserving imported and FTP values',async()=>{
+  const f=await mbpFixture();
+  f.body.mbp.lines[1].sales.weekly.find(w=>w.weekEnding==='2026-08-30').actual.leads=8;
+  const patch={year:2026,revision:3,requestId,edits:[{key:'epoxy/sales/2026-09-06/leads',value:7},{key:'painting/revenue/2026-09-06/laborHours',value:3.5}],plan:{status:'active',asOfWeekEnding:'2026-09-06'}};
+  const r=await f.handler(event('mbp-inputs',patch));assert.equal(r.statusCode,200,r.body);
+  const saved=JSON.parse(r.body).document.body;
+  assert.equal(saved.status,'active');assert.equal(saved.mbp.asOfWeekEnding,'2026-09-06');
+  assert.equal(saved.mbp.lines[1].sales.weekly.find(w=>w.weekEnding==='2026-08-30').actual.leads,8);
+  assert.equal(saved.mbp.lines[0].revenue.weekly.find(w=>w.weekEnding==='2026-09-06').actual.laborHours,3.5);
+  assert.equal(saved.mbp.lines[0].sales.weekly.find(w=>w.weekEnding==='2026-09-06').actual.leads,undefined);
+  assert.equal(saved.mbpCellState['epoxy/sales/2026-09-06/leads'].origin,'manual');
+  assert.equal(saved.mbpCellState['epoxy/sales/2026-09-06/leads'].sourceValue,1);
+  const writes=f.calls.filter(c=>c.url.endsWith('/rpc/pec_owner_save_document'));assert.equal(writes.length,1);
+  assert.equal(JSON.parse(writes[0].opts.body).p_auth_user_id,uid);
+});
+
+test('MBP patch retries confirm the immutable request before reading changed sources or attempting another write',async()=>{
+  const f=await mbpFixture(),patch={year:2026,revision:3,requestId,edits:[{key:'epoxy/sales/2026-09-06/leads',value:7}]};
+  assert.equal((await f.handler(event('mbp-inputs',patch))).statusCode,200);
+  const before=f.calls.length,replayed=await f.handler(event('mbp-inputs',patch));
+  assert.equal(replayed.statusCode,200);assert.equal(JSON.parse(replayed.body).replayed,true);
+  assert.ok(!f.calls.slice(before).some(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')||c.url.endsWith('/rpc/pec_owner_save_document')));
+  const mismatch=await f.handler(event('mbp-inputs',{...patch,edits:[{key:patch.edits[0].key,value:9}]}));assert.equal(mismatch.statusCode,409);
+  const replayRead=f.calls.find(c=>c.url.includes('/pec_owner_revisions?')&&c.url.includes('request_id='));
+  assert.equal(new URL(replayRead.url).searchParams.get('auth_user_id'),`eq.${uid}`);
+});
+
+test('MBP uncertain saves confirm the committed request without repeating the write',async()=>{
+  const f=await mbpFixture({fail:'/rpc/pec_owner_save_document'}),patch={year:2026,revision:3,requestId,edits:[{key:'epoxy/sales/2026-09-06/leads',value:7}]};
+  const response=await f.handler(event('mbp-inputs',patch));
+  assert.equal(response.statusCode,200,response.body);assert.equal(JSON.parse(response.body).replayed,true);
+  assert.equal(f.calls.filter(c=>c.url.endsWith('/rpc/pec_owner_save_document')).length,1);
+  assert.equal(f.calls.filter(c=>c.url.includes('/pec_owner_revisions?')&&c.url.includes('request_id=')).length,2);
+});
+
+test('MBP use-TopCoat resets use a freshly available server value and reject unsupported sources',async()=>{
+  const f=await mbpFixture(),key='epoxy/sales/2026-09-06/leads';
+  f.body.mbp.lines[1].sales.weekly.find(w=>w.weekEnding==='2026-09-06').actual.leads=7;
+  f.body.mbpCellState={[key]:{origin:'manual',updatedAt:'2026-09-01T15:00:00Z',sourceValue:99,sourceUpdatedAt:'2026-09-01T15:00:00Z',sourceAvailable:true}};
+  const response=await f.handler(event('mbp-inputs',{year:2026,revision:3,requestId,edits:[{key,mode:'topcoat'}]}));
+  assert.equal(response.statusCode,200,response.body);
+  const saved=JSON.parse(response.body).document.body;
+  assert.equal(saved.mbp.lines[1].sales.weekly.find(w=>w.weekEnding==='2026-09-06').actual.leads,1);
+  assert.equal(saved.mbpCellState[key].origin,'topcoat');
+  for(const sourceKey of ['epoxy/sales/2026-09-06/estimates','epoxy/revenue/2026-09-06/laborHours','painting/sales/2026-09-06/leads']){
+    const unavailable=await mbpFixture(),r=await unavailable.handler(event('mbp-inputs',{year:2026,revision:3,requestId,edits:[{key:sourceKey,mode:'topcoat'}]}));
+    assert.equal(r.statusCode,400);assert.ok(!unavailable.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
+  }
+});
+
+test('MBP patches reject stale revisions, invalid fields and plan settings, and legacy whole-document saves',async()=>{
+  const base={year:2026,revision:3,requestId,edits:[]};
+  for(const change of [{revision:2},{requestId:'invalid'},{edits:[{key:'total/sales/2026-09-06/leads',value:5}]},{edits:[{key:'epoxy/sales/2026-09-06/leads',value:-1}]},{plan:{status:'wrong'}},{plan:{asOfWeekEnding:'2026-09-07'}},{plan:{unknown:'value'}}]){
+    const f=await mbpFixture(),r=await f.handler(event('mbp-inputs',{...base,...change}));
+    assert.ok([400,409].includes(r.statusCode),r.body);assert.ok(!f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
+  }
+  const legacy=await mbpFixture(),old=await legacy.handler(event('save',{key:'mbp:2026',revision:3,requestId,body:legacy.body}));
+  assert.equal(old.statusCode,400);assert.match(old.body,/Reload Growth and Development/);
+  assert.ok(!legacy.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
+});
+
+test('disabled automatic updates still allow manual MBP patches but reject use-TopCoat resets',async()=>{
+  const settings=[{key:'owner_mbp_live_enabled',value:'false'}],base={year:2026,revision:3,requestId,edits:[{key:'epoxy/sales/2026-09-06/leads',value:5}]};
+  const manual=await mbpFixture({settings});assert.equal((await manual.handler(event('mbp-inputs',base))).statusCode,200);
+  assert.ok(!manual.calls.some(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')));
+  const reset=await mbpFixture({settings});assert.equal((await reset.handler(event('mbp-inputs',{...base,edits:[{key:base.edits[0].key,mode:'topcoat'}]}))).statusCode,400);
+});
+
+test('MBP source settings accept only a boolean switch and bounded refresh minutes',async()=>{
+  const f=fixture(),r=await f.handler(event('settings',{values:{owner_mbp_live_enabled:'false',owner_mbp_refresh_minutes:'10'}}));
+  assert.equal(r.statusCode,200,r.body);
+  const patches=f.calls.filter(c=>c.opts.method==='PATCH');assert.equal(patches.length,2);
+  assert.ok(patches.every(c=>c.opts.headers.Authorization==='Bearer user-test-token'));
+  for(const values of [{owner_mbp_live_enabled:'yes'},{owner_mbp_refresh_minutes:'0'},{owner_mbp_refresh_minutes:'61'},{owner_mbp_refresh_minutes:'1.5'}]){
+    const invalid=fixture();assert.equal((await invalid.handler(event('settings',{values}))).statusCode,400);
+    assert.ok(!invalid.calls.some(c=>c.opts.method==='PATCH'));
+  }
 });

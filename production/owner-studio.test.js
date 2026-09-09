@@ -50,7 +50,7 @@ test('top navigation retains every owner destination and marks only the selected
   assert.ok(renderOwnerHeader('sales','<test>').includes('&lt;test&gt;'));
 });
 test('six rendered grids retain original source groups, 52 weeks, quarter filters and missing markers',()=>{
-  for(const sheet of calculateMbp(ownerFixture()).sheets){const html=renderMbpGrid(sheet);assert.equal((html.match(/data-action="edit-week"/g)||[]).length,52);assert.equal((renderMbpGrid(sheet,'4').match(/data-action="edit-week"/g)||[]).length,13);assert.ok(html.includes('Missing inputs'));assert.ok(html.includes(sheet.sourceTabName));}
+  for(const sheet of calculateMbp(ownerFixture()).sheets){const html=renderMbpGrid(sheet);assert.equal((html.match(/data-week=/g)||[]).length,52);assert.equal((renderMbpGrid(sheet,'4').match(/data-week=/g)||[]).length,13);if(sheet.kind==='sales'&&sheet.businessLineId==='total')assert.doesNotMatch(html,/data-action="edit-week"/);assert.ok(html.includes('Missing inputs'));assert.ok(html.includes(sheet.sourceTabName));}
   assert.equal(mbpGroups('sales').flatMap(g=>g.cols).length,26);
   assert.equal(mbpGroups('revenue').flatMap(g=>g.cols).length,18);
 });

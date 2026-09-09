@@ -2,6 +2,36 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ownerConfig, routineStatus, localClock, validateFocus, FOCUS_FIELDS } from './owner-routine.js';
 const enabled = ownerConfig([{key:'owner_studio_enabled',value:'true'}]);
+test('MBP live refresh defaults do not enable or alter the existing morning routine', () => {
+  assert.deepEqual(ownerConfig(), {
+    enabled:false, timezone:'America/Phoenix', morningDays:[1,2,3,4,5],
+    morningTime:'06:20', morningMinutes:10, weeklyDay:1, weeklyTime:'08:00', weeklyMinutes:30,
+    mbpLiveEnabled:true, mbpRefreshMinutes:5,
+  });
+  const config=ownerConfig([
+    {key:'owner_studio_enabled',value:'true'},
+    {key:'owner_morning_days',value:'[2,4]'},
+    {key:'owner_morning_time',value:'07:15'},
+    {key:'owner_mbp_live_enabled',value:'false'},
+  ]);
+  assert.equal(config.enabled,true);
+  assert.deepEqual(config.morningDays,[2,4]);
+  assert.equal(config.morningTime,'07:15');
+  assert.equal(config.mbpLiveEnabled,false);
+  assert.equal(config.mbpRefreshMinutes,5);
+});
+test('MBP live refresh accepts only explicit true and false setting strings', () => {
+  for (const value of ['true','false']) assert.equal(ownerConfig([{key:'owner_mbp_live_enabled',value}]).mbpLiveEnabled,value==='true');
+  for (const value of ['TRUE','False',' true','false ','1','0','',true,false,1,0,null,{},[]]) {
+    assert.throws(()=>ownerConfig([{key:'owner_mbp_live_enabled',value}]), /MBP live refresh setting is invalid/);
+  }
+});
+test('MBP refresh interval accepts whole minutes from one through sixty', () => {
+  for (const value of ['1','5','30','60',1,60]) assert.equal(ownerConfig([{key:'owner_mbp_refresh_minutes',value}]).mbpRefreshMinutes,Number(value));
+  for (const value of ['0','61','1.5','-1','','minutes','Infinity',0,61,1.5,NaN,Infinity,true,false,null,{},[]]) {
+    assert.throws(()=>ownerConfig([{key:'owner_mbp_refresh_minutes',value}]), /MBP refresh interval setting is invalid/);
+  }
+});
 test('weekday Phoenix 6:20 gate has precise boundaries and no daylight-saving drift', () => {
   assert.equal(routineStatus('2026-09-07T13:19:59Z',enabled).due,false);
   assert.equal(routineStatus('2026-09-07T13:20:00Z',enabled).due,true);

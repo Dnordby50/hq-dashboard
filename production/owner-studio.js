@@ -1,4 +1,6 @@
 import { calculateMbp } from './owner-mbp.js';
+import { mbpInputFields, applyMbpLive, applyMbpEdits } from './owner-mbp-inputs.js';
+import { renderMbpInput, mbpSheetFields, parseMbpInput } from './owner-mbp-ui.js';
 import { FOCUS_FIELDS, routineStatus } from './owner-routine.js';
 import { calculateFinance } from './owner-finance.js';
 import { renderFinanceSheet, financeSnapshotView, financeInputCell, financeInputValue, parseFinanceInput } from './owner-finance-ui.js';
@@ -86,22 +88,25 @@ export function renderMbpPeriodFilter(period='all') {
   return `<label class="tc-field">Period<select aria-label="Period" name="period" data-change="period">${options([['all','Full year']])}<optgroup label="Quarters">${options([['1','Q1 · Jan–Mar'],['2','Q2 · Apr–Jun'],['3','Q3 · Jul–Sep'],['4','Q4 · Oct–Dec']])}</optgroup><optgroup label="Months">${options(MONTHS.map((label,i)=>[`month:${String(i+1).padStart(2,'0')}`,label]))}</optgroup></select></label>`;
 }
 
-export function renderMbpGrid(sheet, period='all') {
+export function renderMbpGrid(sheet, period='all', {body=null,readOnly=false}={}) {
+  const fields=body&&!readOnly?new Map(mbpSheetFields(body,sheet).filter(f=>f.scope!=='annual').map(f=>[f.sourceAddress,f])):new Map();
   const groups=mbpGroups(sheet.kind), cols=groups.flatMap(g=>g.cols.map((col,i)=>({col,type:g.type,start:i===0,actual:g.heads[i]==='Actual'})));
   const rows=sheet.rows.filter(r=>period==='all'||(period.startsWith('month:')?r.weekEnding.slice(5,7)===period.slice(6):String(r.quarter).replace('Q','')===period.replace('Q','')));
-  const cell=(r,c)=>{ const coverage=r.coverage?.[c.col], incomplete=coverage&&coverage.state!=='complete'; return `<td class="${c.start?'tc-mbp-divider':''} ${c.actual?'tc-mbp-actual':''}" title="${e(sheet.sourceTabName)}!${c.col}${r.sourceRow??''}${incomplete?' · Missing inputs; not a confirmed zero':''}">${fmt(r.v[c.col],c.type)}${incomplete?'<span class="tc-incomplete" aria-label="Missing inputs">*</span>':''}</td>`; };
-  return `<div class="tc-mbp-scroll" tabindex="0" role="region" aria-label="${e(sheet.sourceTabName)}. Scroll within the table for weeks and columns. Headers stay visible."><table class="tc-mbp-table"><caption class="tc-sr-only">${e(sheet.sourceTabName)} weekly plan and actuals</caption><thead><tr><th rowspan="3">QTR</th><th rowspan="3" class="tc-mbp-date">WEEK ENDING</th>${groups.map((g,i)=>`<th colspan="${g.cols.length}" data-mbp-group="${i}" class="tc-mbp-divider">${g.label}</th>`).join('')}</tr><tr>${groups.map(g=>g.sub.map(([text,n])=>`<th colspan="${n}">${text}</th>`).join('')).join('')}</tr><tr>${groups.map(g=>g.heads.map(h=>`<th scope="col">${h}</th>`).join('')).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><td>Q${String(r.quarter).replace('Q','')}</td><th scope="row" class="tc-mbp-date"><button type="button" data-action="edit-week" data-week="${r.weekEnding}">${r.weekEnding}</button></th>${cols.map(c=>cell(r,c)).join('')}</tr>`).join('')}</tbody><tfoot><tr><td></td><td class="tc-mbp-date">Full-year footer</td>${cols.map(c=>cell({v:sheet.footer},c)).join('')}</tr></tfoot></table></div><div class="tc-mbp-foot"><span>${rows.length} of ${sheet.rows.length} weeks. ${period.startsWith('month:')?'Month uses the week-ending date. ':''}Headers stay visible while scrolling. Summary and footer remain full-year.</span><span>* Missing inputs, not a confirmed zero.</span></div>`;
+  const cell=(r,c)=>{ const coverage=r.coverage?.[c.col], incomplete=coverage&&coverage.state!=='complete',input=fields.get(`${c.col}${r.sourceRow}`); return `<td class="${c.start?'tc-mbp-divider':''} ${c.actual?'tc-mbp-actual':''}" title="${e(sheet.sourceTabName)}!${c.col}${r.sourceRow??''}${incomplete?' · Missing inputs; not a confirmed zero':''}">${input?renderMbpInput(body,input):fmt(r.v[c.col],c.type)}${incomplete?'<span class="tc-incomplete" aria-label="Missing inputs">*</span>':''}</td>`; };
+  return `<div class="tc-mbp-scroll" tabindex="0" role="region" aria-label="${e(sheet.sourceTabName)}. Scroll within the table for weeks and columns. Headers stay visible."><table class="tc-mbp-table"><caption class="tc-sr-only">${e(sheet.sourceTabName)} weekly plan and actuals</caption><thead><tr><th rowspan="3">QTR</th><th rowspan="3" class="tc-mbp-date">WEEK ENDING</th>${groups.map((g,i)=>`<th colspan="${g.cols.length}" data-mbp-group="${i}" class="tc-mbp-divider">${g.label}</th>`).join('')}</tr><tr>${groups.map(g=>g.sub.map(([text,n])=>`<th colspan="${n}">${text}</th>`).join('')).join('')}</tr><tr>${groups.map(g=>g.heads.map(h=>`<th scope="col">${h}</th>`).join('')).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><td>Q${String(r.quarter).replace('Q','')}</td><th scope="row" class="tc-mbp-date">${readOnly||sheet.businessLineId==='total'&&sheet.kind==='sales'?`<span data-week="${r.weekEnding}">${r.weekEnding}</span>`:`<button type="button" data-action="edit-week" data-week="${r.weekEnding}">${r.weekEnding}</button>`}</th>${cols.map(c=>cell(r,c)).join('')}</tr>`).join('')}</tbody><tfoot><tr><td></td><td class="tc-mbp-date">Full-year footer</td>${cols.map(c=>cell({v:sheet.footer},c)).join('')}</tr></tfoot></table></div><div class="tc-mbp-foot"><span>${rows.length} of ${sheet.rows.length} weeks. ${period.startsWith('month:')?'Month uses the week-ending date. ':''}Headers stay visible while scrolling. Summary and footer remain full-year.</span><span>* Missing inputs, not a confirmed zero.</span></div>`;
 }
 
 export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetchImpl=fetch, now=()=>new Date() }) {
   let uid=null, epoch=0, allowed=false, status=null, mount=null, page='focus', docs=new Map(), requests=new Set(), pending=new Map(), dirty=false, busy=false, message='', bootstrapPromise=null;
-  let brand='total', period='all', week=null, editor=false, sourceView=false, insight='', crmPreview=null;
+  let brand='total', period='all', week=null, editor=false, sourceView=false, insight='';
+  let mbpLiveMessage='',mbpLastCheck=0,mbpSaveRequest=null;
   let financeYear=null, financeYears=[], financeSource=false, financeHidden=false, financeCreate=false, financeCreateRequest=null;
   let denied=false, retryAt=0, failures=0;
   const endpoint='/.netlify/functions/pec-owner-studio';
   const detach=()=>{if(mount){mount.oninput=null;mount.onchange=null;mount.onclick=null;}};
   const reset=()=>{
-    epoch++; requests.forEach(c=>c.abort()); requests.clear(); uid=null; allowed=false; status=null; docs.clear(); pending.clear(); dirty=false; busy=false; bootstrapPromise=null; insight=''; crmPreview=null; page='focus'; message='';denied=false;retryAt=0;failures=0;
+    epoch++; requests.forEach(c=>c.abort()); requests.clear(); uid=null; allowed=false; status=null; docs.clear(); pending.clear(); dirty=false; busy=false; bootstrapPromise=null; insight=''; page='focus'; message='';denied=false;retryAt=0;failures=0;
+    mbpLiveMessage='';mbpLastCheck=0;mbpSaveRequest=null;
     financeYear=null;financeYears=[];financeSource=false;financeCreate=false;financeCreateRequest=null;financeHidden=false;
     detach(); if(mount?.isConnected) mount.replaceChildren(); mount=null; onAccess(false);
   };
@@ -146,6 +151,48 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     if(!docs.has(key)) { const result=await api('document',undefined,{key}); docs.set(key,result.document||{doc_key:key,revision:0,body}); }
     return docs.get(key);
   };
+  async function refreshMbpLive() {
+    const key=`mbp:${year()}`,doc=docs.get(key),generation=epoch;
+    if(!doc?.body.mbp)return;
+    mbpLastCheck=new Date(now()).getTime();
+    if(status.config.mbpLiveEnabled===false){mbpLiveMessage='PEC automatic updates are paused in Routine settings.';return;}
+    try {
+      const feed=await api('mbp-live',undefined,{year:year()});
+      if(generation!==epoch)return;
+      docs.set(key,{...doc,body:applyMbpLive(doc.body,feed)});
+      mbpLiveMessage=feed.disabled?'PEC automatic updates are paused.':'Saved historical inputs and manual edits are preserved.';
+    } catch(err) {if(generation===epoch)mbpLiveMessage=`PEC refresh unavailable. Your saved inputs are still available. ${err.message}`;}
+  }
+  function collectMbpEdits() {
+    const body=docs.get(`mbp:${year()}`).body,fields=new Map(mbpInputFields(body).map(f=>[f.key,f])),edits=new Map();
+    for(const input of mount.querySelectorAll('[data-mbp-key]')) {
+      if(input.value===input.defaultValue)continue;
+      const descriptor=fields.get(input.dataset.mbpKey);
+      if(!descriptor)throw new Error('This calculated field cannot be changed.');
+      let value;
+      try{value=parseMbpInput(input.value,descriptor);}catch(err){input.focus();throw new Error(`${descriptor.label}: ${err.message}`);}
+      edits.set(descriptor.key,{key:descriptor.key,value});
+    }
+    return [...edits.values()];
+  }
+  async function saveMbpInputs(target,resetKey=null) {
+    const key=`mbp:${year()}`,doc=docs.get(key),generation=epoch;
+    let edits=collectMbpEdits();
+    if(resetKey)edits=[...edits.filter(edit=>edit.key!==resetKey),{key:resetKey,mode:'topcoat'}];
+    let plan;
+    if(page==='assumptions') {const data=formData('assumptions');if(data.status!==doc.body.status||data.asOfWeekEnding!==doc.body.mbp.asOfWeekEnding)plan={status:data.status,asOfWeekEnding:data.asOfWeekEnding};}
+    if(!edits.length&&!plan){dirty=false;message='No changed inputs to save.';editor=false;return;}
+    applyMbpEdits(doc.body,edits,new Date(now()).toISOString());
+    const payload={year:year(),revision:doc.revision,edits,...(plan?{plan}:{})},encoded=JSON.stringify(payload);
+    if(mbpSaveRequest?.encoded!==encoded)mbpSaveRequest={encoded,id:crypto.randomUUID()};
+    const release=showOwnerSaving(mount,target,'Saving plan inputs…');
+    try {
+      const result=await api('mbp-inputs',{...payload,requestId:mbpSaveRequest.id});
+      if(generation!==epoch)return;
+      docs.set(key,result.document);mbpSaveRequest=null;dirty=false;editor=false;
+      message=resetKey?'TopCoat value restored. This field will update automatically.':'Saved. Manually edited inputs are highlighted yellow.';
+    } finally {release();}
+  }
   const save=async(key,body)=>{
     const doc=docs.get(key), encoded=JSON.stringify(body), previous=pending.get(key);
     const request=previous?.encoded===encoded?previous:{encoded,id:crypto.randomUUID()}; pending.set(key,request);
@@ -175,22 +222,28 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     const week=rockWeekStart(status.routine.day), milestones=weeklyRockFocus(items,week),done=milestones.filter(m=>m.done).length;
     return `<section class="tc-panel tc-weekly-rocks"><div class="tc-row"><div><h2>This week’s quarterly rocks</h2><p class="tc-small tc-muted">Week of ${week} · ${status.routine.weekday===1?'Set the week on Monday.':'Keep moving the same commitments forward.'}</p></div>${button('Choose this week’s milestones','plan-rock-week')}</div><div class="tc-milestone-progress"><progress max="${Math.max(milestones.length,1)}" value="${done}" aria-label="Weekly rock milestones completed"></progress><span data-weekly-rock-progress role="status">${done} of ${milestones.length} completed</span></div>${milestones.map((m,i)=>`<label class="tc-weekly-rock ${m.done?'is-done':''}"><input type="checkbox" data-focus-milestone data-rock="${m.rockIndex}" data-index="${m.milestoneIndex}" aria-label="Complete weekly milestone ${i+1}" ${m.done?'checked':''}><span><small>${e(m.rockTitle)}${m.focusWeek<week&&!m.done?' · Carried forward':''}</small><span>${e(m.title)}</span></span></label>`).join('')||'<p class="tc-small tc-muted">Choose your rock milestones for this week. They will stay here through the week; unfinished ones carry forward.</p>'}<p class="tc-small tc-muted">Check off progress and record your update below. Save draft or Complete check-in saves both your milestones and your answers.</p></section>`;
   }
-  function summary(sheet) {
-    const t=sheet.top;
-    const table=(title,heads,rows)=>`<section><h3>${title}</h3><table><thead><tr><th></th>${heads.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(([label,a,b,type])=>`<tr><th scope="row">${label}</th><td>${fmt(a,type)}</td><td>${fmt(b,type)}</td></tr>`).join('')}</tbody></table></section>`;
-    return `<div class="tc-mbp-summary">${sheet.kind==='sales'?table('Annual sales plan',['Plan','Trend*'],[['TOTAL Sales',t.C4,t.E4,'money'],['New Sales',t.C5,t.E5,'money'],['Carry Over Sales',t.C6,t.E6,'money'],['Recurring Contracts',t.C7,t.E7,'money']])+table('Planning assumptions',['Plan','Recorded YTD'],[['Lead Conversion',t.K4,t.L4,'percent'],['Sales Ratio',t.K5,t.L5,'percent'],['Average Job Size',t.K6,t.L6,'money']]):table('Annual production plan',['Plan','Trend*'],[['$ Produced',t.C4,t.D4,'money']])+table('Charge rate',['Plan','Recorded YTD'],[['$ per hour produced',t.C6,t.D6,'money']])}</div>`;
+  function summary(sheet,body,readOnly=false) {
+    const t=sheet.top,fields=body&&!readOnly?new Map(mbpSheetFields(body,sheet).filter(f=>f.scope==='annual').map(f=>[f.sourceAddress,f])):new Map();
+    const table=(title,heads,rows)=>`<section><h3>${title}</h3><table><thead><tr><th></th>${heads.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(([label,a,b,type,address])=>`<tr><th scope="row">${label}</th><td>${fields.has(address)?renderMbpInput(body,fields.get(address)):fmt(a,type)}</td><td>${fmt(b,type)}</td></tr>`).join('')}</tbody></table></section>`;
+    return `<div class="tc-mbp-summary">${sheet.kind==='sales'?table('Annual sales plan',['Plan','Trend*'],[['TOTAL Sales',t.C4,t.E4,'money','C4'],['New Sales',t.C5,t.E5,'money','C5'],['Carry Over Sales',t.C6,t.E6,'money','C6'],['Recurring Contracts',t.C7,t.E7,'money','C7']])+table('Planning assumptions',['Plan','Recorded YTD'],[['Lead Conversion',t.K4,t.L4,'percent','K4'],['Sales Ratio',t.K5,t.L5,'percent','K5'],['Average Job Size',t.K6,t.L6,'money','K6']]):table('Annual production plan',['Plan','Trend*'],[['$ Produced',t.C4,t.D4,'money','C4']])+table('Charge rate',['Plan','Recorded YTD'],[['$ per hour produced',t.C6,t.D6,'money','C6']])}</div>`;
+  }
+  function mbpLiveNotice(body) {
+    if(sourceView)return '';
+    const live=body.mbpLiveState,checked=live?.queriedAt?new Date(live.queriedAt).toLocaleString('en-US',{timeZone:'America/Phoenix',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):null;
+    return `<div class="tc-mbp-live"><p>${status.config.mbpLiveEnabled===false?'PEC automatic updates are paused.':`PEC updates on opening these plans and every ${status.config.mbpRefreshMinutes||5} minutes while they are open.`} FTP stays manual. <mark>Yellow fields were manually edited</mark>; PEC overrides stay in place until you choose Use TopCoat.</p>${checked?`<p>TopCoat checked ${e(checked)} Arizona time. The current week is still in progress.</p>`:''}${mbpLiveMessage?`<p role="status">${e(mbpLiveMessage)}</p>`:''}${live?.warnings?.length?`<details><summary>Weekly source details</summary>${live.warnings.map(w=>`<p>${e(w)}</p>`).join('')}</details>`:''}</div>`;
   }
   function workbookPage(kind) {
     const doc=docs.get(mbpKey());
     if(!doc?.body.mbp) return head('YOUR MBP',kind==='sales'?'Sales Plan':'Revenue Produced','Private workbook connection')+note('Your original workbook is not imported yet. No sample numbers are being substituted.');
-    const computed=calculateMbp(doc.body.mbp), sheet=computed.sheets.find(s=>s.kind===kind&&s.businessLineId===brand);
-    return head('YOUR MBP · '+year(),kind==='sales'?'Sales Plan':'Revenue Produced','The original weekly plan, actuals, and cumulative view.')+
-      `<div class="tc-mbp-tabs" aria-label="Workbook tabs">${computed.sheets.filter(s=>s.kind===kind).map(s=>`<button type="button" data-action="brand" data-brand="${s.businessLineId}" aria-pressed="${brand===s.businessLineId}">${e(s.sourceTabName)}</button>`).join('')}</div>`+summary(sheet)+snapshotNotice(doc.body)+
-      `<div class="tc-mbp-bar">${renderMbpPeriodFilter(period)}<div class="tc-row">${button(sourceView?'Return to working plan':'View original snapshot','source')}${sourceView?'':button('Plan assumptions','assumptions')}${sourceView?'':button('Weekly entry','edit-week',true)}</div></div>`+
-      `<p class="tc-small tc-muted">* Seasonal annualization through ${e(doc.body.mbp.asOfWeekEnding)}; incomplete inputs are not a current forecast. Painting = FTP (manual). Epoxy = PEC (CRM review).</p>`+
-      (editor&&!sourceView?weeklyEditor(kind,doc.body.mbp):'')+
-      `<div class="tc-mbp-jumps"><span>Jump to</span>${mbpGroups(kind).map((g,i)=>button(g.label,'jump',false,`data-group="${i}"`)).join('')}</div>`+renderMbpGrid(sheet,period)+
-      `<details class="tc-mbp-sources"><summary>Workbook details and data rules</summary><p>Original week-ending dates and source-cell references are retained. Blue columns are actuals. TOTAL combines Painting and Epoxy with missing-input markers. A blank is not a confirmed zero. Future cumulative gaps are workbook arithmetic, not a current performance verdict.</p><p>Sales means booked work. Revenue means produced work, not cash collected. Year-footer ratios average weekly ratios, while summary ratios use totals, matching the source. The source’s disabled claims scenario is not activated. Custom Option totals in the working plan sum entered values; the original workbook had a literal-zero custom footer.</p><p>Edits save only to your private TopCoat working copy. They never change the uploaded workbook, source snapshot, or customer/job records. Revision conflicts do not overwrite another window.</p></details>`;
+    const computed=calculateMbp(doc.body.mbp), sheet=computed.sheets.find(s=>s.kind===kind&&s.businessLineId===brand),canWeekly=brand!=='total'||kind==='revenue';
+    return head('YOUR MBP · '+year(),kind==='sales'?'Sales Plan':'Revenue Produced','Edit the original input fields. Calculated totals and cumulative values update when you save.')+
+      `<div class="tc-mbp-tabs" aria-label="Workbook tabs">${computed.sheets.filter(s=>s.kind===kind).map(s=>`<button type="button" data-action="brand" data-brand="${s.businessLineId}" aria-pressed="${brand===s.businessLineId}">${e(s.sourceTabName)}</button>`).join('')}</div>`+summary(sheet,doc.body,sourceView||editor)+snapshotNotice(doc.body)+mbpLiveNotice(doc.body)+
+      `<div class="tc-mbp-bar">${renderMbpPeriodFilter(period)}<div class="tc-row">${button(sourceView?'Return to working plan':'View original snapshot','source')}${sourceView?'':button('Plan assumptions','assumptions')}${sourceView||!canWeekly?'':button('Weekly entry','edit-week')}${sourceView?'':button('Refresh PEC values','mbp-refresh')}${sourceView||editor?'':button('Save changes','save-mbp-inputs',true)}</div></div>`+
+      `<p class="tc-small tc-muted">* Seasonal annualization through ${e(doc.body.mbp.asOfWeekEnding)}. Missing inputs remain marked. Totals and formula cells stay calculated. ${brand==='total'?'Edit the business-line tabs for core plans and actuals.':''}</p>`+
+      (editor&&!sourceView?weeklyEditor(kind,doc.body):'')+
+      `<div class="tc-mbp-jumps"><span>Jump to</span>${mbpGroups(kind).map((g,i)=>button(g.label,'jump',false,`data-group="${i}"`)).join('')}</div>`+renderMbpGrid(sheet,period,{body:doc.body,readOnly:sourceView||editor})+
+      (sourceView||editor?'':`<div class="tc-actionbar"><span class="tc-small tc-muted">Save changes keeps edited inputs and yellow markers.</span>${button('Save changes','save-mbp-inputs',true)}</div>`)+
+      `<details class="tc-mbp-sources"><summary>Workbook details and data rules</summary><p>Original weeks, inputs and formulas follow the MBP. Annual assumptions, seasonal allocations, actuals and designated weekly conversion overrides are editable. Formula totals, cumulative values, ratios and gaps stay calculated.</p><p>FTP values are manual. PEC uses supported TopCoat weekly sources. Saved historical inputs are retained; Use TopCoat adopts an available live value. A manual blank or zero is an explicit override and remains in place during refreshes. Estimates and labor hours remain manual where weekly source coverage is incomplete.</p><p>Edits save only to your private TopCoat plan. They never change the original source snapshot or customer/job records. Revision conflicts preserve your draft.</p></details>`;
   }
   function financePage() {
     const doc=docs.get(financeKey()),body=financeSource&&doc?.body.sheets?financeSnapshotView(doc.body,docs.get(`finance:${financeYear}`)?.body):doc?.body,title=page==='budget'?'Budget Plans':'Income Statement';
@@ -234,18 +287,16 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       financeYear=String(nextYear);financeSource=nextSource;financeCreate=false;financeCreateRequest=null;dirty=false;message='';
     } finally {release();}
   }
-  function weeklyEditor(kind,input) {
-    const selected=brand==='total'?'painting':brand, line=input.lines.find(l=>l.id===selected);
-    const row=line[kind].weekly.find(r=>r.weekEnding===week)||line[kind].weekly[0]; week=row.weekEnding;
-    const fields=kind==='sales'?[['leads','Leads'],['estimates','Estimates'],['jobsBooked','Jobs booked'],['bookedDollars','$ booked']]:[['producedDollars','$ produced'],['laborHours','Hours produced'],['custom','Custom actual']];
-    return `<form class="tc-mbp-editor" data-form="weekly"><h3>Week ending ${week} · ${line.label} (${selected==='painting'?'FTP manual':'PEC reviewed actuals'})</h3>${select('Week ending','week',week,input.weekEndings.map(d=>[d,d]),'data-change="week"')}<div class="tc-two-fields">${fields.map(([key,label])=>field(label,key,row.actual?.[key]??'','number',`step="${/Dollars|Hours|custom/.test(key)?'any':'1'}" ${/leads|estimates|jobsBooked|laborHours/.test(key)?'min="0"':''} placeholder="Not entered"`)).join('')}</div>${kind==='revenue'?field('Custom weekly plan','customPlan',row.customPlan??'','number','step="any"'):''}<div class="tc-actionbar"><span class="tc-small tc-muted">Blank stays unknown. Zero is an explicit entry.</span><div class="tc-row">${selected==='epoxy'?button('Preview PEC CRM actuals','crm-preview'):''}${button('Cancel','close-editor')}${button('Save this week','save-week',true)}</div></div><div data-crm-preview></div></form>`;
+  function weeklyEditor(kind,body) {
+    const weeks=body.mbp.weekEndings;week=weeks.includes(week)?week:weeks.find(d=>d>=status.routine.day)||weeks.at(-1);
+    const fields=mbpInputFields(body).filter(f=>f.lineId===brand&&f.kind===kind&&f.weekEnding===week),primary=fields.filter(f=>!f.field.endsWith('Override')),overrides=fields.filter(f=>f.field.endsWith('Override'));
+    return `<form class="tc-mbp-editor" data-form="weekly"><h3>Week ending ${e(week)} · ${brand==='painting'?'FTP manual':brand==='epoxy'?'PEC':'TOTAL custom metric'}</h3>${select('Week ending','week',week,weeks.map(d=>[d,d]),'data-change="week"')}<div class="tc-two-fields">${primary.map(f=>renderMbpInput(body,f,{label:true})).join('')}</div>${overrides.length?`<details><summary>Weekly conversion overrides</summary><p>Optional MBP inputs. Leave blank to use the annual planning assumptions.</p><div class="tc-two-fields">${overrides.map(f=>renderMbpInput(body,f,{label:true})).join('')}</div></details>`:''}<div class="tc-actionbar">${button('Cancel','close-editor')}${button('Save this week','save-mbp-inputs',true)}</div></form>`;
   }
   function assumptionsPage() {
     const doc=docs.get(`mbp:${year()}`);
     if(!doc?.body.mbp) return note('Import your MBP before editing plan assumptions.');
-    const input=doc.body.mbp;
-    const sales=[['newSales','New sales ($)'],['carryOver','Carry-over sales ($)'],['recurring','Recurring contracts ($)'],['leadConversion','Lead conversion (0–1)'],['salesRatio','Sales ratio (0–1)'],['averageJobSize','Average job size ($)']];
-    return head('PLAN SETUP','Make the targets yours.','Imported assumptions are a starting point. Set Q4 rocks separately; nothing activates automatically.')+`<form data-form="assumptions" class="tc-panel">${select('Review through week','asOfWeekEnding',input.asOfWeekEnding,input.weekEndings.map(d=>[d,d]))}${select('Plan status','status',doc.body.status,[['draft','Draft, still planning'],['active','Active, approved by me']])}${input.lines.map(line=>`<section><h2>${e(line.label)} · ${line.id==='painting'?'FTP':'PEC'}</h2><div class="tc-two-fields">${sales.map(([key,label])=>field(label,`${line.id}.sales.${key}`,line.sales[key]??'','number','step="any"')).join('')}${field('Annual produced revenue ($)',`${line.id}.revenue.annualProduced`,line.revenue.annualProduced,'number','step="any"')}${field('Production charge rate ($/hour)',`${line.id}.revenue.chargeRate`,line.revenue.chargeRate,'number','step="any"')}</div><details class="tc-mbp-sources"><summary>Advanced: weekly seasonal allocations</summary><p>Weights are fractions. Each column must total 1 (100%). No silent redistribution.</p><div class="tc-weight-scroll"><table class="tc-table"><thead><tr><th>Week ending</th><th>Sales weight</th><th>Revenue weight</th></tr></thead><tbody>${input.weekEndings.map((d,i)=>`<tr><th>${d}</th><td>${field('Sales '+d,`${line.id}.sales.weight.${i}`,line.sales.weekly[i].weight,'number','step="any" min="0" max="1"')}</td><td>${field('Revenue '+d,`${line.id}.revenue.weight.${i}`,line.revenue.weekly[i].weight,'number','step="any" min="0" max="1"')}</td></tr>`).join('')}</tbody></table></div></details></section>`).join('')}<div class="tc-actionbar">${button('Back to workbook','back-workbook')}${button('Save plan assumptions','save-assumptions',true)}</div></form>`;
+    const input=doc.body.mbp,fields=mbpInputFields(doc.body);
+    return head('PLAN SETUP','Make the targets yours.','Original MBP inputs. Yellow marks saved manual edits.')+`<form data-form="assumptions" class="tc-panel">${select('Review through week','asOfWeekEnding',input.asOfWeekEnding,input.weekEndings.map(d=>[d,d]))}${select('Plan status','status',doc.body.status,[['draft','Draft, still planning'],['active','Active, approved by me']])}${input.lines.map(line=>`<section><h2>${e(line.label)} · ${line.id==='painting'?'FTP manual':'PEC'}</h2><div class="tc-two-fields">${fields.filter(f=>f.lineId===line.id&&f.scope==='annual').map(f=>renderMbpInput(doc.body,f,{label:true})).join('')}</div><details class="tc-mbp-sources"><summary>Advanced: weekly seasonal allocations</summary><p>Each annual set must total 100%. Change the affected weeks together, then save.</p><div class="tc-weight-scroll"><table class="tc-table"><thead><tr><th>Week ending</th><th>Sales weight</th><th>Revenue weight</th></tr></thead><tbody>${input.weekEndings.map(d=>`<tr><th>${d}</th>${['sales','revenue'].map(kind=>`<td>${renderMbpInput(doc.body,fields.find(f=>f.lineId===line.id&&f.kind===kind&&f.weekEnding===d&&f.field==='weight'))}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details></section>`).join('')}<div class="tc-actionbar">${button('Back to workbook','back-workbook')}${button('Save plan assumptions','save-mbp-inputs',true)}</div></form>`;
   }
   function reviewPage() {
     const doc=docs.get(reviewKey()), body=doc.body;
@@ -260,7 +311,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   function insightsPage() { return head('PRIVATE · ON REQUEST','Turn numbers into decisions.','A direct, practical second look at your goals and progress.')+`<section class="tc-panel"><p>Generate sends your saved Q4 goals and MBP KPI summaries to Anthropic. Private check-in answers and problem notes are included only if selected below. No request is made until you click the button. Suggestions never change your plan or calendar.</p><label class="tc-check"><input type="checkbox" name="includeFocus"> Include today’s saved check-in answers</label><label class="tc-check"><input type="checkbox" name="includeProblems"> Include saved problem-solving notes</label>${button('Generate insights','generate-insights',true)}<p class="tc-small tc-muted">AI can make mistakes. Verify the numbers and choose the actions yourself.</p></section><section class="tc-panel tc-insight" data-insight aria-live="polite">${e(insight||'Your requested analysis will appear here. Nothing has been sent automatically.')}</section>`; }
   function settingsPage() {
     const c=status.config;
-    return head('YOUR ROUTINE','Protect the time.','Private owner settings. All schedule times use the selected timezone.')+`<form data-form="settings" class="tc-panel">${select('Morning check-in required','owner_studio_enabled',String(c.enabled),[['true','On'],['false','Off']])}${field('Morning start','owner_morning_time',c.morningTime,'time')}<details class="tc-mbp-sources"><summary>Advanced schedule</summary><div class="tc-two-fields">${select('Weekly review day','owner_weekly_day',c.weeklyDay,DAYS.map((d,i)=>[i,d]))}${field('Weekly review start','owner_weekly_time',c.weeklyTime,'time')}${field('Morning target minutes','owner_morning_target_minutes',c.morningMinutes,'number','min="1" max="180"')}${field('Weekly target minutes','owner_weekly_target_minutes',c.weeklyMinutes,'number','min="1" max="180"')}${field('Timezone','owner_timezone',c.timezone)}</div><fieldset><legend>Morning days</legend>${DAYS.map((d,i)=>`<label class="tc-check"><input type="checkbox" name="day" value="${i}" ${c.morningDays.includes(i)?'checked':''}>${d}</label>`).join('')}</fieldset></details><div class="tc-actionbar">${button('Save routine','save-settings',true)}</div><p class="tc-small tc-muted">This controls TopCoat’s opening requirement, not a computer alarm. Calendar block creation and automated calendar adherence checks are not connected in this release.</p></form>`;
+    return head('YOUR ROUTINE','Protect the time.','Private owner settings. All schedule times use the selected timezone.')+`<form data-form="settings" class="tc-panel">${select('Morning check-in required','owner_studio_enabled',String(c.enabled),[['true','On'],['false','Off']])}${field('Morning start','owner_morning_time',c.morningTime,'time')}<fieldset><legend>PEC Sales and Revenue plans</legend>${select('Automatic PEC values','owner_mbp_live_enabled',String(c.mbpLiveEnabled??true),[['true','On'],['false','Paused']])}${field('Refresh while open (minutes)','owner_mbp_refresh_minutes',c.mbpRefreshMinutes||5,'number','min="1" max="60" step="1"')}<p class="tc-small tc-muted">FTP stays manual. Yellow manual overrides are retained during PEC refreshes.</p></fieldset><details class="tc-mbp-sources"><summary>Advanced schedule</summary><div class="tc-two-fields">${select('Weekly review day','owner_weekly_day',c.weeklyDay,DAYS.map((d,i)=>[i,d]))}${field('Weekly review start','owner_weekly_time',c.weeklyTime,'time')}${field('Morning target minutes','owner_morning_target_minutes',c.morningMinutes,'number','min="1" max="180"')}${field('Weekly target minutes','owner_weekly_target_minutes',c.weeklyMinutes,'number','min="1" max="180"')}${field('Timezone','owner_timezone',c.timezone)}</div><fieldset><legend>Morning days</legend>${DAYS.map((d,i)=>`<label class="tc-check"><input type="checkbox" name="day" value="${i}" ${c.morningDays.includes(i)?'checked':''}>${d}</label>`).join('')}</fieldset></details><div class="tc-actionbar">${button('Save routine','save-settings',true)}</div><p class="tc-small tc-muted">This controls TopCoat’s opening requirement, not a computer alarm. Calendar block creation and automated calendar adherence checks are not connected in this release.</p></form>`;
   }
   async function loadPage() {
     if(['budget','income'].includes(page)) {
@@ -270,7 +321,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(financeSource)await getDoc(`finance:${financeYear}`,{});
     }
     if(page==='focus') { await getDoc(focusKey(),{status:'draft',answers:{}}); await getDoc(planKey(),{items:[]}); }
-    if(['sales','revenue','assumptions'].includes(page)) await getDoc(page==='assumptions'?`mbp:${year()}`:mbpKey(),{});
+    if(['sales','revenue','assumptions'].includes(page)) {await getDoc(page==='assumptions'?`mbp:${year()}`:mbpKey(),{});if(!sourceView&&page!=='assumptions')await refreshMbpLive();}
     if(page==='review') await getDoc(reviewKey(),{status:'draft'});
     if(page==='rocks') await getDoc(planKey(),{items:[]});
     if(page==='problems') await getDoc('problems',{items:[]});
@@ -282,7 +333,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     const nav=mount.querySelector('.tc-nav'), current=nav.querySelector('[aria-current="page"]');
     // Keep the active tab visible on narrow screens, without scrolling the page.
     if(current) nav.scrollLeft=Math.max(0,current.offsetLeft-(nav.clientWidth-current.offsetWidth)/2);
-    mount.oninput=event=>{if(!mount||event.target.dataset.change||page==='insights')return;dirty=true; mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent='Unsaved changes. Save before leaving.');};
+    mount.oninput=event=>{if(!mount||event.target.dataset.change||page==='insights')return;if(event.target.dataset.mbpKey){const entry=event.target.closest('.tc-mbp-entry');entry.classList.toggle('is-manual',entry.dataset.savedManual==='true'||event.target.value!==event.target.defaultValue);entry.querySelector('.tc-mbp-input-source').textContent=event.target.value!==event.target.defaultValue?'Edited · unsaved':entry.dataset.savedManual==='true'?'Manually edited':'Unchanged';}dirty=true; mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent='Unsaved changes. Save before leaving.');};
     mount.onchange=async event=>{if(event.target.hasAttribute('data-milestone-toggle'))updateMilestoneProgress(event.target.closest('.tc-milestones'));if(event.target.hasAttribute('data-focus-milestone'))updateMilestoneProgress(event.target.closest('.tc-weekly-rocks'),true);const change=event.target.dataset.change; if(change){
       if(change==='finance-section'){const scroll=mount.querySelector('.tc-finance-scroll'),row=mount.querySelector(`[data-finance-row="${event.target.value}"]`);if(row)scroll.scrollTop=row.offsetTop-scroll.querySelector('thead').offsetHeight;return;}
       if(dirty&&!confirm('Discard unsaved edits and change this view?')) {event.target.value=change==='finance-year'?financeYear:change==='week'?week:period;return;}
@@ -295,7 +346,6 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     dirty=false; page=next; editor=false; message=''; await loadPage(); draw();
   }
   const formData=name=>Object.fromEntries(new FormData(mount.querySelector(`[data-form="${name}"]`)));
-  const numeric=value=>value===''?null:Number(value);
   function collectItems() {
     const key=page==='rocks'?planKey():'problems', existing=docs.get(key), data=formData('items');
     const fields=page==='rocks'?['title','target','date','notes','status']:['title','target','checkpoint','date','notes','status'];
@@ -349,7 +399,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(action==='leave') { if(due()) throw new Error('Complete your saved check-in or record an emergency bypass first.'); if(!dirty||confirm('Discard unsaved edits and return to TopCoat?')) {dirty=false; window.pecSwitchView?.('dashboard');} return; }
       if(action==='source') { if(dirty&&!confirm('Discard unsaved edits?'))return; dirty=false;sourceView=!sourceView;editor=false;await loadPage(); }
       if(action==='brand') { if(dirty&&!confirm('Discard unsaved edits?'))return;dirty=false;brand=target.dataset.brand;editor=false; }
-      if(action==='edit-week') { if(sourceView)throw new Error('The original snapshot is read-only. Return to the working plan to edit.'); editor=true; week=target.dataset.week||week||status.routine.priorWeekEnding; }
+      if(action==='edit-week') {if(sourceView)throw new Error('The original snapshot is read-only. Return to the working plan to edit.');if(brand==='total'&&page==='sales')throw new Error('Choose FTP or PEC to edit the inputs behind this total.');if(dirty&&!confirm('Discard unsaved inputs and open weekly entry?'))return;dirty=false;editor=true;week=target.dataset.week||week||status.routine.priorWeekEnding;}
       if(action==='close-editor') {if(dirty&&!confirm('Discard unsaved weekly entries?'))return;editor=false;dirty=false;}
       if(action==='jump') { const scroller=mount.querySelector('.tc-mbp-scroll'), group=mount.querySelector(`[data-mbp-group="${target.dataset.group}"]`);scroller.scrollTo({left:group.offsetLeft-130,behavior:'smooth'});return; }
       if(action==='assumptions') { await navigate('assumptions');return; }
@@ -363,23 +413,12 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
           saved=true;message=checkinSaveMessage(doc.body.status);
         } finally {if(!saved)dirty=wasDirty;release();}
       }
-      if(action==='save-week') {
-        const data=formData('weekly'), doc=docs.get(`mbp:${year()}`), body=structuredClone(doc.body), selected=brand==='total'?'painting':brand;
-        const row=body.mbp.lines.find(l=>l.id===selected)[page].weekly.find(r=>r.weekEnding===week);
-        const keys=page==='sales'?['leads','estimates','jobsBooked','bookedDollars']:['producedDollars','laborHours','custom'];
-        row.actual={...row.actual,...Object.fromEntries(keys.map(k=>[k,numeric(data[k])]))};
-        // Hidden source overrides remain unchanged when saving visible actuals.
-        if(page==='revenue') row.customPlan=numeric(data.customPlan);
-        calculateMbp(body.mbp); await save(`mbp:${year()}`,body);editor=false;
+      if(action==='save-mbp-inputs'||action==='mbp-use-topcoat') {
+        const scroll=mount.querySelector('.tc-mbp-scroll'),position=scroll?{top:scroll.scrollTop,left:scroll.scrollLeft}:null;
+        await saveMbpInputs(target,action==='mbp-use-topcoat'?target.dataset.mbpReset:null);
+        if(generation===epoch){draw();const next=mount.querySelector('.tc-mbp-scroll');if(next&&position){next.scrollTop=position.top;next.scrollLeft=position.left;}}return;
       }
-      if(action==='save-assumptions') {
-        const data=formData('assumptions'), body=structuredClone(docs.get(`mbp:${year()}`).body);body.status=data.status;body.mbp.asOfWeekEnding=data.asOfWeekEnding;
-        for(const line of body.mbp.lines) for(const kind of ['sales','revenue']) {
-          for(const key of kind==='sales'?['newSales','carryOver','recurring','leadConversion','salesRatio','averageJobSize']:['annualProduced','chargeRate']) line[kind][key]=numeric(data[`${line.id}.${kind}.${key}`]);
-          line[kind].weekly.forEach((row,i)=>row.weight=numeric(data[`${line.id}.${kind}.weight.${i}`]));
-        }
-        calculateMbp(body.mbp);await save(`mbp:${year()}`,body);
-      }
+      if(action==='mbp-refresh') {if(dirty)throw new Error('Save your input changes before refreshing PEC values.');const release=showOwnerSaving(mount,target,'Refreshing PEC…');try{await refreshMbpLive();}finally{release();}}
       if(action==='save-review'||action==='complete-review') {const data=formData('review');await save(reviewKey(),{...data,numbersReviewed:data.numbersReviewed==='on',status:action==='complete-review'?'completed':'draft'});}
       if(action==='add-milestone'||action==='remove-milestone') {
         const {key,body}=collectItems(),item=body.items[Number(target.dataset.rock)];
@@ -397,7 +436,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(action==='save-settings') {const data=formData('settings');delete data.day;data.owner_morning_days=JSON.stringify([...mount.querySelectorAll('[name="day"]:checked')].map(el=>Number(el.value)));await api('settings',{values:data});dirty=false;message='Routine settings saved.';await bootstrap();}
       if(action==='recent-focus') {const result=await api('recent-focus');if(generation!==epoch)return;mount.querySelector('[data-recent]').innerHTML=result.documents.map(d=>`<details class="tc-panel"><summary>${e(d.doc_key.slice(6))} · ${e(d.body.status)}</summary>${FOCUS_FIELDS.map(([key,label])=>`<h3>${e(label)}</h3><p class="tc-preserve">${e(d.body.answers?.[key]||'Not entered')}</p>`).join('')}${d.body.bypassReason?`<p>Bypass reason: ${e(d.body.bypassReason)}</p>`:''}</details>`).join('')||note('No saved check-ins yet.');return;}
       if(action==='generate-insights') { const region=mount.querySelector('[data-insight]');region.textContent='Analyzing your saved goals and selected information…';const result=await api('insights',{requested:true,year:year(),includeFocus:mount.querySelector('[name="includeFocus"]').checked,includeProblems:mount.querySelector('[name="includeProblems"]').checked});insight=result.text;dirty=false; }
-      if(action==='crm-preview') {const result=await api('crm-week',undefined,{week});crmPreview=result;const region=mount.querySelector('[data-crm-preview]');region.innerHTML=`<div class="tc-notice"><strong>CRM preview only</strong><p>${e(result.description)}</p>${Object.entries(result.actual).map(([k,v])=>`<p>${e(k)}: ${fmt(v)}</p>`).join('')}<p>${e(result.warnings.join(' '))}</p><p>Review these values before entering them above. This does not overwrite your workbook.</p></div>`;return;}
+
       if(generation===epoch) draw();
     } catch(err) {if(generation===epoch&&mount?.isConnected){message=err.message;mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent=message);}}
     finally {if(generation===epoch)busy=false;}
@@ -409,7 +448,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     await loadPage(); if(mount===root&&root.isConnected)draw();
   };
   const canLeave=()=>!due()&&(!dirty||confirm('Discard unsaved owner-workspace edits?'));
-  const tick=()=>{if(getSession()?.user?.id!==uid){reset();return;}if(uid&&!denied&&retryAt&&new Date(now()).getTime()>=retryAt){void bootstrap();return;}if(allowed&&status){const current=routineStatus(now(),status.config,status.focus);if(current.day!==status.routine.day){if(dirty)return;docs.clear();status.routine=current;void bootstrap();}else if(due()&&!document.getElementById('topcoat-owner-studio'))openOwner();}};
+  const tick=()=>{if(getSession()?.user?.id!==uid){reset();return;}if(uid&&!denied&&retryAt&&new Date(now()).getTime()>=retryAt){void bootstrap();return;}if(allowed&&status){const current=routineStatus(now(),status.config,status.focus);if(current.day!==status.routine.day){if(dirty)return;docs.clear();status.routine=current;void bootstrap();}else if(due()&&!document.getElementById('topcoat-owner-studio'))openOwner();else if(mount?.isConnected&&['sales','revenue'].includes(page)&&!sourceView&&!dirty&&!busy&&!editor&&!document.hidden&&!(mount.contains(document.activeElement)&&document.activeElement?.matches('input,textarea,select'))&&status.config.mbpLiveEnabled!==false&&new Date(now()).getTime()-mbpLastCheck>=(status.config.mbpRefreshMinutes||5)*60000){const generation=epoch,activePage=page;busy=true;void refreshMbpLive().then(()=>{if(generation===epoch&&mount?.isConnected&&page===activePage&&!sourceView&&!dirty)draw();}).finally(()=>{if(generation===epoch)busy=false;});}}};
   if(typeof window!=='undefined') {
     setInterval(tick,30000);
     window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});

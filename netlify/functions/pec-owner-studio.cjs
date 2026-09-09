@@ -1,10 +1,12 @@
 // Private Owner Studio endpoint. Never log bodies, answers, tokens, or DB errors.
 // Anthropic is called only by an explicitly requested insights action. Dylan
 // approved goals/KPI summaries and separately selected private notes on 9/7.
+const { createHash } = require('node:crypto');
+const { fetchMbpLive } = require('../../production/owner-mbp-live.cjs');
 const FINANCE_YEAR = /^finance:(20[2-9]\d|2100)$/;
 const DOC = /^(mbp:\d{4}|source:\d{4}|(?:source:)?finance:(?:20[2-9]\d|2100)|focus:\d{4}-\d{2}-\d{2}|review:\d{4}-\d{2}-\d{2}|plan:\d{4}-q[1-4]|problems)$/;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone'];
+const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone','owner_mbp_live_enabled','owner_mbp_refresh_minutes'];
 const reply = (statusCode, body) => ({ statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store, max-age=0', 'Pragma': 'no-cache', 'Vary': 'Authorization', 'X-Content-Type-Options': 'nosniff' }, body: JSON.stringify(body) });
 const error = (status, message) => Object.assign(new Error(message), { status });
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -49,8 +51,18 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         if (result.conflict) return reply(409, { error:'This record changed in another window. Reload it before saving; your draft has not overwritten it.', conflict:true });
         return reply(200,{ ok:true, document:await read(key), replayed:result.replayed });
       };
+      const mbpDocument = async year => {
+        if(!Number.isInteger(year)||year<2020||year>2100)throw error(400,'Choose a budget year from 2020 through 2100.');
+        const doc=await read(`mbp:${year}`);
+        if(!doc?.body?.mbp)throw error(404,'Import and save your MBP plan before entering weekly values.');
+        calculateMbp(doc.body.mbp);
+        if(doc.body.mbp.year!==year)throw error(400,'The plan year does not match.');
+        return doc;
+      };
+      const liveMbp = doc => fetchMbpLive({db,weekEndings:doc.body.mbp.weekEndings,now:now(),enabled:config.mbpLiveEnabled!==false});
       const action = event.queryStringParameters?.action || 'status';
       if (event.httpMethod === 'GET') {
+        if(action==='mbp-live')return reply(200,await liveMbp(await mbpDocument(Number(event.queryStringParameters?.year))));
         if (action === 'crm-week') {
           const week = event.queryStringParameters?.week || '';
           const endDate = new Date(`${week}T00:00:00Z`);
@@ -135,13 +147,44 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         const next = new Map(settings.map(row => [row.key, row.value]));
         for (const [key, value] of Object.entries(payload.values)) {
           if (typeof value !== 'string' || value.length > 200) throw error(400, 'Invalid setting value.');
-          if (key === 'owner_studio_enabled' && !['true','false'].includes(value)) throw error(400, 'Choose on or off.');
+          if (['owner_studio_enabled','owner_mbp_live_enabled'].includes(key) && !['true','false'].includes(value)) throw error(400, 'Choose on or off.');
           next.set(key, value);
         }
         ownerConfig([...next].map(([key,value]) => ({ key,value })));
         // RLS enforces the protected settings boundary under the actual JWT.
         for (const [key,value] of Object.entries(payload.values)) await db(`/settings?key=eq.${key}`, { method: 'PATCH', body: { value }, user: true });
         return reply(200, { ok: true });
+      }
+      if(action==='mbp-inputs'){
+        if(!Number.isInteger(payload.year)||payload.year<2020||payload.year>2100||!Number.isInteger(payload.revision)||payload.revision<1||!REQUEST_ID.test(payload.requestId||''))throw error(400,'A valid plan year, revision, and request ID are required.');
+        if(!Array.isArray(payload.edits)||payload.edits.length>2000)throw error(400,'Provide up to 2000 changed MBP inputs.');
+        if(payload.plan!==undefined&&(!object(payload.plan)||Object.keys(payload.plan).some(key=>!['status','asOfWeekEnding'].includes(key))))throw error(400,'Unknown plan setting.');
+        if(payload.plan?.status!==undefined&&!['draft','active'].includes(payload.plan.status))throw error(400,'Choose a draft or active MBP plan.');
+        const key=`mbp:${payload.year}`,digest=createHash('sha256').update(JSON.stringify({year:payload.year,revision:payload.revision,edits:payload.edits,plan:payload.plan||{}})).digest('hex');
+        const priorRequest=async()=>{
+          const rows=await db(`/pec_owner_revisions?auth_user_id=eq.${uid}&request_id=eq.${payload.requestId}&select=doc_key,revision,body&limit=1`);
+          if(!rows[0])return null;
+          if(rows[0].doc_key!==key||rows[0].body?.mbpInputRequest?.id!==payload.requestId||rows[0].body?.mbpInputRequest?.digest!==digest)throw error(409,'This request ID was already used for a different change.');
+          return reply(200,{ok:true,document:await read(key),replayed:true});
+        };
+        const replay=await priorRequest();if(replay)return replay;
+        const doc=await mbpDocument(payload.year);
+        if(doc.revision!==payload.revision)return reply(409,{error:'This record changed in another window. Reload it before saving; your draft has not overwritten it.',conflict:true});
+        if(payload.plan?.asOfWeekEnding!==undefined&&!doc.body.mbp.weekEndings.includes(payload.plan.asOfWeekEnding))throw error(400,'Choose a source week for the reporting date.');
+        if(config.mbpLiveEnabled===false&&payload.edits.some(edit=>edit?.mode==='topcoat'))throw error(400,'Turn on automatic PEC updates before using a TopCoat value.');
+        const {applyMbpLive,applyMbpEdits}=await import('../../production/owner-mbp-inputs.js');
+        const current=config.mbpLiveEnabled===false?doc.body:applyMbpLive(doc.body,await liveMbp(doc));
+        const body=applyMbpEdits(current,payload.edits,now().toISOString());
+        if(payload.plan?.status!==undefined)body.status=payload.plan.status;
+        if(payload.plan?.asOfWeekEnding!==undefined)body.mbp.asOfWeekEnding=payload.plan.asOfWeekEnding;
+        calculateMbp(body.mbp);
+        body.mbpInputRequest={id:payload.requestId,digest};
+        try{return await writeDocument(key,payload.revision,payload.requestId,body);}
+        catch(err){
+          // Verify an uncertain write before replaying live-derived data. The
+          // source and timestamps can change, so never blind-retry this RPC.
+          const confirmed=await priorRequest();if(confirmed)return confirmed;throw err;
+        }
       }
       if (action === 'finance-create-year') {
         const validYear = year => Number.isInteger(year) && year >= 2020 && year <= 2100;
@@ -165,9 +208,9 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
       if (!object(payload.body)) throw error(400, 'Document data is missing.');
       let body = payload.body;
       if (key.startsWith('mbp:')) {
-        if (!['draft','active'].includes(body.status) || !object(body.mbp)) throw error(400, 'A draft or active MBP plan is required.');
-        calculateMbp(body.mbp);
-        if (String(body.mbp.year) !== key.slice(4)) throw error(400, 'The plan year does not match.');
+        // Whole-document clients cannot preserve the source/manual boundary.
+        // Current MBP screens submit validated input patches instead.
+        throw error(400,'Reload Growth and Development to save this plan safely. Your edits have not overwritten the saved plan.');
       } else if (key.startsWith('finance:')) {
         if (!Number.isInteger(body.year) || String(body.year) !== key.slice(8)) throw error(400, 'The budget year does not match.');
         const { validateFinance } = await import('../../production/owner-finance.js');
@@ -197,7 +240,7 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
       }
       return await writeDocument(key, payload.revision, payload.requestId, body);
     } catch (err) {
-      const validation = ['MbpInputError','FinanceInputError'].includes(err.name) || /setting is invalid|response|Record a reason|What |When |Choose a valid check-in|Check-in answers|Keep the bypass/i.test(err.message || '');
+      const validation = ['MbpInputError','MbpInputEditError','FinanceInputError'].includes(err.name) || /setting is invalid|response|Record a reason|What |When |Choose a valid check-in|Check-in answers|Keep the bypass/i.test(err.message || '');
       return reply(err.status || (validation ? 400 : 503), { error:err.status || validation ? err.message : 'Owner workspace is unavailable. Your saved records are safe.' });
     }
   };

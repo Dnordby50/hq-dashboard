@@ -1,5 +1,16 @@
 [
   {
+    "id": "owner-mbp-editable-yellow-overrides",
+    "date": "2026-09-08",
+    "title": "Sales and Revenue plans now have editable inputs and yellow overrides.",
+    "summary": "Edit the MBP input fields in place. PEC values refresh from TopCoat, FTP stays manual, and yellow shows saved manual changes.",
+    "howto": [
+      "Open Growth and Development > Sales Plan or Revenue Produced. Choose Painting or Epoxy and edit highlighted input fields, then Save changes. Calculated totals and cumulative values stay locked.",
+      "PEC supported actuals update automatically while the plan is open. Yellow manual changes are preserved; choose Use TopCoat to resume automatic updates for an available field. Estimates and labor hours remain manual where source coverage is incomplete.",
+      "Use Weekly entry for optional conversion overrides, Plan assumptions for annual inputs and seasonal weights, and Routine settings to pause PEC updates or change the refresh interval."
+    ]
+  },
+  {
     "id": "owner-growth-development-yearly-finance",
     "date": "2026-09-07",
     "title": "🚀 Growth and Development adds yearly budgets and income statements.",
