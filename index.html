@@ -1912,6 +1912,9 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
   })();
 </script>
 
+<!-- Account-wide announcement: outside view roots so startup routing cannot hide it. -->
+<div id="pecWhatsNewRoot"></div>
+
 <!-- PASSWORD GATE -->
 <!-- Whole-app auth gate. Opaque, full-screen, above #rdShell. Stays up until a
      Supabase session resolves to an approved staff row. Replaces #loginGate.
@@ -3481,6 +3484,7 @@ function wireAuthListener() {
   const { data } = supabase.auth.onAuthStateChange(async (ev, session) => {
     const prevUid = state.session?.user?.id;
     state.session = session;
+    syncWhatsNewSession();
     // Clear private DOM and in-flight owner requests immediately on identity
     // changes, including the initial auth event. Never await auth in this hook.
     ownerStudio.sessionChanged();
@@ -3762,7 +3766,7 @@ function _pecWedgeReload(reason) {
   // Never blow away in-progress work: if a modal/editor is open, heal the session
   // in place (rebuild the client) instead of reloading the page. The reload is a
   // last resort only when nothing is open to lose.
-  const modalOpen = ($('pecModalRoot')?.children.length || 0) > 0 || ($('prodModalRoot')?.children.length || 0) > 0;
+  const modalOpen = ['pecModalRoot', 'prodModalRoot', 'pecWhatsNewRoot'].some(id => ($(id)?.children.length || 0) > 0);
   if (modalOpen) {
     console.warn(`[pec] session wedge detected (${reason}) but a modal is open -> recovering client without reload`);
     try { recoverWedgedClient(); } catch (_) {}
@@ -5757,6 +5761,7 @@ function setAuthGateState(stateName) {
 // owner/employee shell. Called after initAuth() and on every auth change.
 // Mirrors renderAuthUI's session/pending/approved branches but at the app level.
 function renderGlobalAuthGate() {
+  syncWhatsNewSession();
   ownerStudio.sessionChanged();
   console.log('[crm] global auth gate', { hasSession: !!state.session, hasAdmin: !!state.adminUser });
   if (!state.session) { setAuthGateState('signin'); return; }
@@ -5801,52 +5806,72 @@ function wnEntryHtml(e) {
     </div>`;
 }
 let _whatsNewChecked = false;
+let _whatsNewUser = null;
+let _whatsNewEpoch = 0;
+function syncWhatsNewSession() {
+  const user = state.session?.user?.id || null;
+  if (user === _whatsNewUser) return;
+  _whatsNewUser = user;
+  _whatsNewEpoch++;
+  _whatsNewChecked = false;
+  $('pecWhatsNewRoot')?.replaceChildren();
+}
 async function maybeShowWhatsNew() {
-  if (_whatsNewChecked || !state.adminUser) return;
+  syncWhatsNewSession();
+  if (_whatsNewChecked || !state.adminUser || !_whatsNewUser) return;
   _whatsNewChecked = true;
+  const user = _whatsNewUser, adminId = state.adminUser.id, epoch = _whatsNewEpoch;
+  const isCurrent = () => epoch === _whatsNewEpoch && state.session?.user?.id === user && state.adminUser?.id === adminId;
   try {
     const res = await fetch('help/whats-new.json', { cache: 'no-cache' });
     if (!res.ok) return;
     const entries = await res.json();
-    if (!Array.isArray(entries) || !entries.length) return;
+    if (!isCurrent() || !Array.isArray(entries) || !entries.length) return;
     const { data: acks, error } = await supabase.from('pec_whats_new_acks')
-      .select('entry_id').eq('admin_user_id', state.adminUser.id);
-    if (error) return; // table not live yet, or a read hiccup: no popup
+      .select('entry_id').eq('admin_user_id', adminId);
+    if (error || !isCurrent()) return; // table not live yet, read hiccup, or changed session
     const seen = new Set((acks || []).map(a => a.entry_id));
     const unseen = entries.filter(e => e && e.id && !seen.has(e.id));
     if (!unseen.length) return;
     openModal(`
-      <h3 style="margin:0 0 4px">What's New in TopCoat</h3>
+      <h3 id="wnTitle" style="margin:0 0 4px">What's New in TopCoat</h3>
       <div style="color:var(--muted);font-size:.78rem;margin-bottom:4px">${unseen.length} update${unseen.length === 1 ? '' : 's'} since you last checked</div>
       <div style="max-height:56vh;overflow-y:auto">${unseen.map(wnEntryHtml).join('')}</div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" id="wnHelpLink">See all updates in Help</button>
         <button type="button" class="pec-btn primary" id="wnGotIt">Got it</button>
       </div>
-    `, { onMount: (modal) => {
+    `, { root: $('pecWhatsNewRoot'), backdropClose: false, onMount: (modal) => {
+      // A startup redirect or unrelated error must not remove an unread update.
+      // This root is account-wide; all other dialogs retain their normal cleanup.
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('aria-labelledby', 'wnTitle');
       // Ack = idempotent upsert (unique admin_user_id + entry_id, duplicates
       // ignored), double-click safe via disabled buttons. A failed ack is
       // silent by decision: the popup just reappears next sign-in. The Help
       // link acks too; the entries were shown either way, and re-popping
       // someone who went to read MORE would punish the curious.
       const ack = async () => {
+        if (!isCurrent()) return;
         try {
-          const rows = unseen.map(e => ({ admin_user_id: state.adminUser.id, entry_id: e.id }));
+          const rows = unseen.map(e => ({ admin_user_id: adminId, entry_id: e.id }));
           await supabase.from('pec_whats_new_acks').upsert(rows, { onConflict: 'admin_user_id,entry_id', ignoreDuplicates: true });
         } catch (_) { /* silent */ }
       };
       const both = modal.querySelectorAll('#wnGotIt, #wnHelpLink');
-      modal.querySelector('#wnGotIt').addEventListener('click', async () => {
+      let acknowledging = false;
+      const finish = async (showHelp) => {
+        if (acknowledging || !isCurrent() || !modal.isConnected) return;
+        acknowledging = true;
         both.forEach(b => { b.disabled = true; });
         await ack();
-        closeModal();
-      });
-      modal.querySelector('#wnHelpLink').addEventListener('click', async () => {
-        both.forEach(b => { b.disabled = true; });
-        await ack();
-        closeModal();
-        switchView('docs');
-      });
+        if (!isCurrent() || !modal.isConnected) return;
+        pecCloseModalWrap(modal.parentElement);
+        if (showHelp) switchView('docs');
+      };
+      modal.querySelector('#wnGotIt').addEventListener('click', () => finish(false));
+      modal.querySelector('#wnHelpLink').addEventListener('click', () => finish(true));
     } });
   } catch (_) { /* never block sign-in */ }
 }
@@ -6219,7 +6244,7 @@ function showCrmRenderError(err, view) {
 // ============================================================
 // wide: true widens the box to 760px (compose-style modals whose content
 // does not fit 520px without burying the action buttons below the fold).
-function openModal(html, { onMount, dismissible = false, title = '', closeButton = true, wide = false } = {}) {
+function openModal(html, { onMount, dismissible = false, title = '', closeButton = true, wide = false, root = $('pecModalRoot'), backdropClose = true } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'pec-modal-bg';
   // Prompt 71 Part E1: a sticky ✕ header on every modal BY DEFAULT (pass
@@ -6250,7 +6275,7 @@ function openModal(html, { onMount, dismissible = false, title = '', closeButton
     wrap.dataset.pecDismissible = '1';
     wrap.addEventListener('click', e => { if (e.target === wrap) pecCloseModalWrap(wrap); });
     pecBindModalEscape();
-  } else {
+  } else if (backdropClose) {
     // The guard runs at CLICK time, not open time: a modal that opens as a
     // loading shell and grows its form async (change order) used to pass the
     // open-time check and stay backdrop-closable with a half-typed form
@@ -6259,7 +6284,7 @@ function openModal(html, { onMount, dismissible = false, title = '', closeButton
       if (e.target === wrap && !wrap.querySelector('form, input, textarea, select, iframe')) closeModal();
     });
   }
-  $('pecModalRoot').appendChild(wrap);
+  root.appendChild(wrap);
   if (onMount) onMount(wrap.querySelector('.pec-modal'));
   return wrap;
 }

@@ -1,3 +1,18 @@
+## [2026-09-08 21:25 MST] shell: keep the What's New dialog open through startup cleanup
+
+By: Codex
+
+Changed: What's New now mounts in a dedicated body-level root, outside the CRM/production view containers. Startup redirects, navigation cleanup, unrelated background errors, and generic modal callbacks cannot remove or hide it. Clicking outside leaves it open; X, Got it, and See all updates in Help remain explicit dismissal paths. Acknowledgment closes only its own dialog. Real account changes clear the announcement and invalidate pending lookups; stale acknowledgment results cannot close or navigate a new session. Session-wedge recovery treats this announcement as an open modal and heals in place. Existing CRM/production modal cleanup and form protection are unchanged.
+
+Why: Dylan reported that What's New flashed and immediately disappeared after opening TopCoat. Its previous shared, input-free modal was removed by switchView/production cleanup and by the global error/rejection cleanup. Delayed startup routing and owner-workspace navigation can invoke those paths after the announcement opens.
+
+Verified: Full npm test passed: all 30 existing legacy suites, 101 owner tests, and 10 new dialog regression tests. The new suite executes the actual inline functions with synthetic data and covers cleanup paths, explicit dismissal, acknowledgments, account changes, duplicate clicks, and session recovery. All six index.html inline blocks parse with the same zero-failure set as HEAD; the new CJS test passes node --check. features.json, help/whats-new.json and package.json parse; git diff --check is clean. Private browser QA reproduced the baseline disappearance, then confirmed the patched dialog remains visible through delayed cleanup, an error event, generic close, and hiding the CRM tab, and closes on Got it. Local acknowledgment tests changed no live records.
+
+Files touched: index.html, production/whats-new.test.cjs, package.json, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Publish this correction to the approved live update and verify the dialog remains visible in TopCoat.
+Handoff to Cowork: None.
+Handoff to Dylan: None while publication proceeds; the fix is ready for live verification.
+
 ## [2026-09-08 20:56 MST] owner: authorized publication and live verification of editable MBP plans
 
 By: Codex

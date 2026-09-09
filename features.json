@@ -1491,12 +1491,17 @@
     {
       "name": "What's New changelog",
       "area": "platform",
-      "description": "A plain-language changelog that surfaces new features in a sign-in popup once, keeps the full history in a Help card, and grounds the help assistant. Each user-facing change ships with an entry describing what it does and how to use it.",
+      "description": "A plain-language changelog that surfaces new features in a sign-in popup once, keeps the full history in a Help card, and grounds the help assistant. Each user-facing change ships with an entry describing what it does and how to use it. The announcement stays open through startup routing and background-error cleanup until explicitly dismissed, in an account-wide root outside view containers. Session changes clear stale dialogs and in-flight results; acknowledgement closes only its own dialog.",
       "code": {
         "indexHtml": [
           "maybeShowWhatsNew",
           "wnEntryHtml",
-          "fillWhatsNewHelpCard"
+          "fillWhatsNewHelpCard",
+          "syncWhatsNewSession",
+          "pecWhatsNewRoot"
+        ],
+        "other": [
+          "production/whats-new.test.cjs"
         ]
       },
       "tables": [],
