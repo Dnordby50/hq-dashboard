@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-formatting-appointment-sources",
+    "date": "2026-09-10",
+    "title": "Format estimate descriptions and capture appointment sources.",
+    "summary": "Add bold, italics and lists to estimates, see Cancel clearly when sending, and record missing lead sources while scheduling.",
+    "howto": [
+      "When editing an estimate description, select text and use Bold, Italic, Bullets or Numbered list. Check the Preview below the box.",
+      "When scheduling a customer appointment, select a lead source if one is missing. Existing saved sources are kept.",
+      "Open Send Estimate to see a readable Cancel button beside the orange send button."
+    ]
+  },
+  {
     "id": "google-calendar-reliable-sync",
     "date": "2026-09-09",
     "title": "A more reliable appointment calendar.",

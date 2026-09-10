@@ -1,3 +1,4 @@
+const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 // Public hosted invoice page at /pay/<token> (netlify.toml rewrites /pay/* here
 // with the token in ?token=). Unauthenticated but unguessable (v4 UUID acts as
 // a bearer token in the URL). Server-rendered HTML, no client JS needed to view.
@@ -93,7 +94,7 @@ function lineItemsRows(items) {
   return list.map(li => {
     const price = li.price != null ? li.price : (li.total != null ? li.total : li.unit_price);
     return `<tr>
-      <td><span style="font-weight:600">${esc(li.name || '')}</span>${li.is_change_order ? ' <span style="color:#b45309;font-size:12px;font-weight:600">(change order)</span>' : ''}${li.completed ? ' <span style="color:#16a34a;font-size:12px;font-weight:600">Completed</span>' : ''}${li.description ? `<div class="desc">${esc(li.description)}</div>` : ''}</td>
+      <td><span style="font-weight:600">${esc(li.name || '')}</span>${li.is_change_order ? ' <span style="color:#b45309;font-size:12px;font-weight:600">(change order)</span>' : ''}${li.completed ? ' <span style="color:#16a34a;font-size:12px;font-weight:600">Completed</span>' : ''}${li.description ? `<div class="desc">${mdToSafeHtml(li.description)}</div>` : ''}</td>
       <td>${price != null ? usd(price) : ''}</td>
     </tr>`;
   }).join('');
@@ -362,7 +363,7 @@ function invoicePage(row, brand, payments, opts) {
   table.li th { text-align:left; padding:0 12px 10px; font-size:11px; font-weight:800; letter-spacing:1.8px; text-transform:uppercase; color:#98a1ad; border-bottom:2px solid ${primary}; }
   table.li td { padding:14px 12px; border-bottom:1px solid #eef0f3; vertical-align:top; line-height:1.5; }
   table.li th:last-child, table.li td:last-child { text-align:right; width:130px; white-space:nowrap; }
-  table.li .desc { color:#6b7280; font-size:13px; margin-top:4px; line-height:1.5; white-space:pre-wrap; font-weight:400; }
+  table.li .desc { color:#6b7280; font-size:13px; margin-top:4px; line-height:1.5; white-space:normal; font-weight:400; }
   /* Totals table: same width + last-column width as the line items table, so the
      amounts line up directly under the line-item Amount column. */
   table.tot { width:100%; border-collapse:collapse; font-size:14.5px; font-variant-numeric:tabular-nums; margin-top:10px; }

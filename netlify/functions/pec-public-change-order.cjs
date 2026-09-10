@@ -1,3 +1,4 @@
+const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 // Public change-order approval page at /co/<token> (netlify.toml rewrites
 // /co/* here with the token in ?token=), plus the signing POST at
 // /api/co/sign. Mirrors pec-public-invoice.cjs: unauthenticated but
@@ -85,7 +86,7 @@ function coPage(co, job, customer, brand) {
   // the table, same pattern as the estimate page's flake color note.
   const scopeNotes = [
     co.system_name ? `<div style="color:#4b5563;font-size:14px;margin-top:4px">System: <strong>${esc(co.system_name)}</strong></div>` : '',
-    co.description ? `<div style="color:#4b5563;font-size:14px;margin-top:4px"><strong>Scope:</strong> <span style="white-space:pre-wrap">${esc(co.description)}</span></div>` : '',
+    co.description ? `<div style="color:#4b5563;font-size:14px;margin-top:4px"><strong>Scope:</strong> <div>${mdToSafeHtml(co.description)}</div></div>` : '',
   ].filter(Boolean).join('');
 
   const signedBlock = `

@@ -1305,6 +1305,11 @@ body:not(.pec-portal-mode) .pec-modal {
   border-radius: 14px;
   color: var(--rd-ink);
 }
+/* Keep the compose footer on the same light surface as its dark-text buttons. */
+body:not(.pec-portal-mode) .pec-modal-sticky-actions {
+  background: var(--rd-shell);
+  border-top-color: var(--rd-line);
+}
 /* Prompt 81 (decision 8, final): the sticky ✕ header inherited --s1
    (near-black on the dark root palette) while .pec-modal itself was repainted
    to --rd-shell, so every CRM modal wore a black bar. The BAR goes away
@@ -8744,7 +8749,7 @@ function pecDownloadInvoicePdf(row, payments) {
   const paid = invNum(row.paid_to_date);
   const balance = invNum(row.balance_remaining != null ? row.balance_remaining : row.balance);
   const itemsHtml = items.length
-    ? items.map(it => `<tr><td>${esc(it.name || '—')}${it.is_change_order ? ' <span class="doc-note">(change order)</span>' : ''}${it.description ? `<div class="doc-note" style="white-space:pre-wrap;margin-top:3px">${esc(it.description)}</div>` : ''}</td><td class="r">${invUSD(linePrice(it))}</td></tr>`).join('')
+    ? items.map(it => `<tr><td>${esc(it.name || '—')}${it.is_change_order ? ' <span class="doc-note">(change order)</span>' : ''}${it.description ? `<div class="doc-note" style="margin-top:3px">${pecScopeMdToHtml(it.description)}</div>` : ''}</td><td class="r">${invUSD(linePrice(it))}</td></tr>`).join('')
     : '<tr><td colspan="2" class="doc-note">No line items entered. The total reflects the job price.</td></tr>';
   const payHtml = (payments && payments.length)
     ? `<h3 class="doc-h3">Payments received</h3><table class="doc-tbl"><thead><tr><th>Date</th><th>Method</th><th>Reference</th><th class="r">Amount</th></tr></thead><tbody>${payments.map(p => `<tr><td>${invFmtDate(p.received_date)}</td><td>${esc(titleCaseValue(p.method) || '—')}</td><td>${esc(p.reference || '—')}</td><td class="r">${invUSD(invNum(p.amount))}</td></tr>`).join('')}</tbody></table>`
@@ -8813,7 +8818,7 @@ function pecDownloadEstimatePdf(job, areas, total, sysNameFor) {
   const brand = pecPrintBrand();
   const custName = (job.customers && job.customers.name) || job.customer_name || '';
   const rowsHtml = (areas && areas.length)
-    ? areas.map((a, idx) => `<tr><td><strong>${esc(a.name || (idx === 0 ? 'Main Area' : 'Area ' + (idx + 1)))}</strong><div class="doc-note">${esc(sysNameFor(a.system_type_id))}${a.sqft != null && a.sqft !== '' ? ' &middot; ' + esc(a.sqft) + ' sq ft' : ''}</div>${a.description ? `<div class="doc-note" style="white-space:pre-wrap;margin-top:3px">${esc(a.description)}</div>` : ''}</td><td class="r">${invUSD(Number(a.price) || 0)}</td></tr>`).join('')
+    ? areas.map((a, idx) => `<tr><td><strong>${esc(a.name || (idx === 0 ? 'Main Area' : 'Area ' + (idx + 1)))}</strong><div class="doc-note">${esc(sysNameFor(a.system_type_id))}${a.sqft != null && a.sqft !== '' ? ' &middot; ' + esc(a.sqft) + ' sq ft' : ''}</div>${a.description ? `<div class="doc-note" style="margin-top:3px">${pecScopeMdToHtml(a.description)}</div>` : ''}</td><td class="r">${invUSD(Number(a.price) || 0)}</td></tr>`).join('')
     : '<tr><td colspan="2" class="doc-note">No estimate lines yet.</td></tr>';
   const head = `<div class="doc-title"><h1>Estimate</h1><div class="meta">${job.dripjobs_deal_id ? '#' + esc(job.dripjobs_deal_id) + '<br>' : ''}${esc(new Date().toLocaleDateString())}</div></div>`;
   const body = `
@@ -9538,7 +9543,7 @@ async function mountDeclinedOptionsCard(el, { jobId, onChanged }) {
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 0;border-top:1px solid var(--rd-line,var(--border))">
           <div style="flex:1;min-width:0">
             <div style="font-weight:600">${esc(li.label || 'Line')}</div>
-            ${li.description ? `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View quoted scope</summary><div style="color:var(--muted);font-size:.74rem;white-space:pre-wrap;margin-top:4px;max-height:200px;overflow-y:auto">${esc(li.description)}</div></details>` : ''}
+            ${li.description ? `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View quoted scope</summary><div style="color:var(--muted);font-size:.74rem;margin-top:4px;max-height:200px;overflow-y:auto">${pecScopeMdToHtml(li.description)}</div></details>` : ''}
             <div style="color:var(--muted);font-size:.72rem;margin-top:2px">Quoted${quotedDate ? ' ' + esc(quotedDate) : ''} at ${fmtMoney(li.total)}</div>
           </div>
           <button class="pec-btn sm" data-declined-add="${esc(li.id)}">Add to job</button>
@@ -9641,7 +9646,7 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
             <tr class="nohover">
               <td><strong>${esc(r.title)}</strong>
                 ${sub ? `<div class="pec-li-sub">${esc(sub)}</div>` : ''}
-                ${r.description ? `<div class="pec-li-sub">${esc(r.description)}</div>` : ''}</td>
+                ${r.description ? `<div class="pec-li-sub">${pecScopeMdToHtml(r.description)}</div>` : ''}</td>
               <td class="pec-td-num pec-li-hide-sm">1.00</td>
               <td class="pec-td-num pec-li-hide-sm">${amt} / Ea</td>
               <td class="pec-td-num pec-li-hide-sm">${amt}</td>
@@ -9723,7 +9728,7 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
             <tr class="nohover">
               <td><strong>#${numById[r.id]} · ${esc(r.title)}</strong>
                 ${sub ? `<div class="pec-li-sub">${esc(sub)}</div>` : ''}
-                ${r.description ? `<div class="pec-li-sub">${esc(r.description)}</div>` : ''}
+                ${r.description ? `<div class="pec-li-sub">${pecScopeMdToHtml(r.description)}</div>` : ''}
                 <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><button class="pec-btn sm ghost" data-co-edit="${esc(r.token)}">Edit</button><button class="pec-btn sm ghost" data-co-del="${esc(r.token)}">Delete</button><button class="pec-btn sm ghost" data-co-accept="${esc(r.token)}" title="Record that the customer approved this without signing the link">Mark accepted</button></div></td>
               <td class="pec-td-num pec-li-hide-sm">1.00</td>
               <td class="pec-td-num pec-li-hide-sm">${amt} / Ea</td>
@@ -9778,7 +9783,7 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
         <span class="pec-age" title="This change order is on the estimate total but has no signature link. Re-add it from + Change order if the customer needs to sign.">Recorded, no signature link</span>
       </div>
       <div class="pec-co-body">
-        ${li.description ? `<div class="pec-li-sub" style="white-space:pre-wrap">${esc(li.description)}</div>` : ''}
+        ${li.description ? `<div class="pec-li-sub" style="white-space:pre-wrap">${pecScopeMdToHtml(li.description)}</div>` : ''}
         <div style="font-weight:700;margin-top:4px;text-align:right">${invUSD(liPrice(li))}</div>
       </div>
     </div>`).join('');
@@ -15556,7 +15561,7 @@ async function renderJobDetailInner(id) {
       const nameCell = finalized
         ? `<strong>${esc(a.name || placeholderName)}</strong>
            ${liSub ? `<div class="pec-li-sub">${esc(liSub)}</div>` : ''}
-           ${a.description ? `<div class="pec-li-sub pec-li-desc">${esc(a.description)}</div>` : ''}`
+           ${a.description ? `<div class="pec-li-sub pec-li-desc">${pecScopeMdToHtml(a.description)}</div>` : ''}`
         : `<button type="button" class="pec-li-name" data-li-toggle="${idx}" aria-expanded="${openLineIdx === idx}"><span class="pec-li-caret">&#9656;</span><span data-li-name-label="${idx}">${esc(a.name || placeholderName)}</span></button>
            ${liSub ? `<div class="pec-li-sub">${esc(liSub)}</div>` : ''}`;
       return `<tr class="nohover">
@@ -25511,7 +25516,7 @@ function emailLineItemsTable(items) {
   if (!list.length) return '';
   const rows = list.map(li => {
     const price = li.price != null ? li.price : (li.total != null ? li.total : li.unit_price);
-    return `<tr><td style="padding:6px 8px;border:1px solid #e2e8f0">${esc(li.name || '')}${li.is_change_order ? ' <em>(change order)</em>' : ''}${li.description ? `<div style="color:#64748b;font-size:12px;margin-top:2px;white-space:pre-wrap">${esc(li.description)}</div>` : ''}</td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right;white-space:nowrap">${price != null ? invUSD(price) : ''}</td></tr>`;
+    return `<tr><td style="padding:6px 8px;border:1px solid #e2e8f0">${esc(li.name || '')}${li.is_change_order ? ' <em>(change order)</em>' : ''}${li.description ? `<div style="color:#64748b;font-size:12px;margin-top:2px;white-space:pre-wrap">${pecScopeMdToHtml(li.description)}</div>` : ''}</td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right;white-space:nowrap">${price != null ? invUSD(price) : ''}</td></tr>`;
   }).join('');
   return `<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:14px"><thead><tr><th style="text-align:left;padding:6px 8px;background:#0f172a;color:#fff">Item</th><th style="text-align:right;padding:6px 8px;background:#0f172a;color:#fff">Price</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -27805,6 +27810,53 @@ async function apptCancelLeadEffects(appt) {
   }
 }
 
+// Fill missing attribution before scheduling, keeping every saved nonblank
+// source. Compare-and-set protects a source another staff member just saved;
+// a failed/empty read or write must never look like a successful profile save.
+async function apptSaveLeadSource({ customerId = null, leadId = null, source = '', required = false }) {
+  if (!customerId && !leadId) return '';
+  const read = async (table, id, column) => {
+    const r = await supabase.from(table).select(column).eq('id', id).maybeSingle();
+    if (r.error) throw new Error('Could not check the saved lead source. ' + (r.error.message || 'Please try again.'));
+    if (!r.data) throw new Error('The linked contact could not be found. Reopen the appointment and select the customer again.');
+    return r.data[column];
+  };
+  const fill = async (table, id, column, before, value) => {
+    if (String(before || '').trim()) return String(before).trim();
+    const r = await withDeadline(() => {
+      let q = supabase.from(table).update({ [column]: value }).eq('id', id);
+      q = before == null ? q.is(column, null) : q.eq(column, before);
+      return q.select(column).maybeSingle();
+    }, { label: 'appt-lead-source' });
+    if (r.error) throw new Error('Could not save the lead source. ' + (r.error.message || 'Please try again.'));
+    // No returned row can mean another writer won, a deleted row, or RLS.
+    // Only a verified nonblank source is enough to proceed.
+    const saved = r.data ? r.data[column] : await read(table, id, column);
+    if (!String(saved || '').trim()) throw new Error('The lead source was not saved. Please try again before booking.');
+    if (table === 'leads' && r.data) {
+      try {
+        const evt = await withDeadline(() => supabase.from('lead_events').insert({
+          lead_id: id, event_type: 'source_changed',
+          actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+          payload: { from: before || null, to: String(saved).trim(), via: 'appointment' },
+        }), { label: 'appt-source-event' });
+        if (evt.error) console.warn('[appointments] source event:', evt.error.message);
+      } catch (err) { console.warn('[appointments] source event:', err.message || err); }
+    }
+    return String(saved).trim();
+  };
+  const customerSource = customerId ? await read('customers', customerId, 'lead_source') : null;
+  const leadSource = leadId ? await read('leads', leadId, 'source') : null;
+  let chosen = String(customerSource || '').trim() || String(leadSource || '').trim() || String(source || '').trim();
+  if (!chosen) {
+    if (required) throw new Error('Pick a lead source before scheduling this appointment.');
+    return '';
+  }
+  if (customerId) chosen = await fill('customers', customerId, 'lead_source', customerSource, chosen);
+  if (leadId) await fill('leads', leadId, 'source', leadSource, chosen);
+  return chosen;
+}
+
 // Create/edit modal. `existing` is a pec_appointments row or null.
 // prefill: { members, start, end, appt_type, lead_id, customer_id, title,
 //            email, location_address/_city/_state/_zip, onSaved }.
@@ -27854,22 +27906,28 @@ async function openAppointmentForm(existing, prefill = {}) {
   // customer at save time. Preload the linked customer for the picker chip; a
   // legacy lead-only row resolves its customer through the lead, so old rows
   // pick up the customer link (and the derived title) on their next save.
-  let curCustomer = null;   // { id, name, email }
+  let curCustomer = null;   // { id, name, email, lead_source }
   let custChanged = false;  // any pick/unlink; save re-resolves the lead only then
   let leadEmail = null;     // fallback prefill when the lead has no customer yet
+  let leadSource = '';
+  let sourceReadFailed = false;
+  const sourceNames = await activeLeadSourceNames().catch(() => []);
   if (customerId) {
-    const r = await supabase.from('customers').select('id,name,email').eq('id', customerId).maybeSingle();
-    if (!r.error && r.data) curCustomer = { id: r.data.id, name: r.data.name, email: r.data.email };
+    const r = await supabase.from('customers').select('id,name,email,lead_source').eq('id', customerId).maybeSingle();
+    if (!r.error && r.data) curCustomer = r.data;
+    else sourceReadFailed = true;
   }
-  if (!curCustomer && leadId) {
-    const r = await supabase.from('leads').select('customer_id,email').eq('id', leadId).maybeSingle();
+  if (leadId) {
+    const r = await supabase.from('leads').select('customer_id,email,source').eq('id', leadId).maybeSingle();
     if (!r.error && r.data) {
       leadEmail = r.data.email || null;
-      if (r.data.customer_id) {
-        const cr = await supabase.from('customers').select('id,name,email').eq('id', r.data.customer_id).maybeSingle();
-        if (!cr.error && cr.data) curCustomer = { id: cr.data.id, name: cr.data.name, email: cr.data.email };
+      leadSource = String(r.data.source || '').trim();
+      if (!curCustomer && r.data.customer_id) {
+        const cr = await supabase.from('customers').select('id,name,email,lead_source').eq('id', r.data.customer_id).maybeSingle();
+        if (!cr.error && cr.data) curCustomer = cr.data;
+        else sourceReadFailed = true;
       }
-    }
+    } else sourceReadFailed = true;
   }
 
   openModal(`
@@ -27882,6 +27940,7 @@ async function openAppointmentForm(existing, prefill = {}) {
           `<option value="${esc(m.id)}"${curMember === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`).join('')}</select></div>
     </div>
     <div class="pec-field"><label>Customer</label><div id="afCustWrap"></div></div>
+    <div class="pec-field" id="afSourceField"><label for="afSource">Lead source</label><div id="afSourceHost"></div><div id="afSourceHint" style="font-size:.68rem;color:var(--muted);margin-top:3px"></div></div>
     <div class="pec-field"><label>Customer email</label>
       <input id="afEmail" type="email" value="${esc((curCustomer && curCustomer.email) || prefill.email || leadEmail || '')}" placeholder="name@example.com" autocomplete="off">
       <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Saved to the customer profile. Required, with the address below, to book an on-site estimate.</div></div>
@@ -27980,6 +28039,27 @@ async function openAppointmentForm(existing, prefill = {}) {
     const custWrap = modal.querySelector('#afCustWrap');
     const titleInput = modal.querySelector('#afTitle');
     const titleHint = modal.querySelector('#afTitleHint');
+    let sourceLoading = false;
+    let sourceLoad = Promise.resolve();
+    const syncSource = () => {
+      const hasContact = !!curCustomer || (!custChanged && !!leadId);
+      const sourceField = modal.querySelector('#afSourceField');
+      sourceField.style.display = hasContact && !isImported ? '' : 'none';
+      const stored = String((curCustomer && curCustomer.lead_source) || '').trim() || leadSource;
+      const host = modal.querySelector('#afSourceHost');
+      host.innerHTML = stored
+        ? `<input id="afSource" value="${esc(stored)}" readonly aria-describedby="afSourceHint">`
+        : sourceNames.length
+          ? `<select id="afSource" aria-describedby="afSourceHint"><option value="">Pick a source…</option>${leadSourceOptionsHtml(sourceNames, null)}</select>`
+          : '<input id="afSource" placeholder="How did they hear about us?" aria-describedby="afSourceHint">';
+      modal.querySelector('#afSource').disabled = sourceLoading;
+      modal.querySelector('#afSourceHint').textContent = sourceLoading
+        ? 'Checking the saved lead source…'
+        : sourceReadFailed
+        ? 'The saved source could not be loaded. It will be checked again before booking.'
+        : stored ? 'Saved attribution is kept. You can change it on the customer or lead profile.'
+        : 'Required when scheduling a customer appointment. Saved to the customer and linked lead when missing.';
+    };
     const syncTitle = () => {
       if (curCustomer) {
         titleInput.value = apptAutoTitle(val('afType'), curCustomer.name);
@@ -27994,6 +28074,25 @@ async function openAppointmentForm(existing, prefill = {}) {
     };
     modal.querySelector('#afType').addEventListener('change', syncTitle);
     let custSeq = 0;
+    const loadCustomerSource = (c) => {
+      if (String(c.lead_source || '').trim() || isImported) return Promise.resolve();
+      const mine = ++custSeq;
+      sourceLoading = true; syncSource();
+      return (async () => {
+        try {
+          const r = await supabase.from('leads').select('id,source')
+            .eq('customer_id', c.id).is('deleted_at', null).is('archived_at', null)
+            .order('created_at', { ascending: false }).limit(1);
+          if (mine !== custSeq || !curCustomer || curCustomer.id !== c.id) return;
+          if (r.error) throw r.error;
+          leadSource = String((r.data && r.data[0] && r.data[0].source) || '').trim();
+        } catch (_) {
+          if (mine === custSeq) sourceReadFailed = true;
+        } finally {
+          if (mine === custSeq) { sourceLoading = false; syncSource(); }
+        }
+      })();
+    };
     const renderCustPicker = () => {
       if (curCustomer) {
         custWrap.innerHTML = `
@@ -28002,8 +28101,8 @@ async function openAppointmentForm(existing, prefill = {}) {
             <button type="button" class="pec-btn ghost sm" id="afCustClear" title="Unlink this customer">&times;</button>
           </div>`;
         custWrap.querySelector('#afCustClear').addEventListener('click', () => {
-          curCustomer = null; custChanged = true; titleInput.value = '';
-          renderCustPicker(); syncTitle();
+          ++custSeq; curCustomer = null; custChanged = true; leadSource = ''; sourceReadFailed = false; sourceLoading = false; titleInput.value = '';
+          renderCustPicker(); syncTitle(); syncSource();
         });
         return;
       }
@@ -28020,22 +28119,14 @@ async function openAppointmentForm(existing, prefill = {}) {
             <div class="pec-field"><label>Phone</label><input id="afNewCustPhone" inputmode="tel"></div>
             <div class="pec-field"><label>Email</label><input id="afNewCustEmail" type="email" autocomplete="off"></div>
           </div>
-          <div class="pec-field"><label>Lead source</label><span id="afNewCustSourceHost"><input id="afNewCustSource" placeholder="How did they hear about us?"></span></div>
+          <div class="pec-field"><label for="afNewCustSource">Lead source (required)</label>${sourceNames.length ? `<select id="afNewCustSource"><option value="">Pick a source…</option>${leadSourceOptionsHtml(sourceNames, null)}</select>` : '<input id="afNewCustSource" placeholder="How did they hear about us?">'}</div>
           <button type="button" class="pec-btn sm" id="afNewCustSave">Create customer</button>
           <span id="afNewCustErr" style="color:#dc2626;font-size:.75rem;margin-left:8px"></span>
         </div>`;
       const q = custWrap.querySelector('#afCustQ');
       const results = custWrap.querySelector('#afCustResults');
       const newBox = custWrap.querySelector('#afCustNew');
-      // Lead source is required here too (2026-08-26): swap the free-text
-      // fallback for the shared vocabulary select once it loads; on a load
-      // failure the text input stays so the quick-create never bricks.
-      activeLeadSourceNames().then((names) => {
-        const host = custWrap.querySelector('#afNewCustSourceHost');
-        if (!host || !Array.isArray(names) || !names.length) return;
-        host.innerHTML = `<select id="afNewCustSource"><option value="">Pick a source…</option>${leadSourceOptionsHtml(names, null)}</select>`;
-      }).catch(() => {});
-      const pick = (c) => { curCustomer = c; custChanged = true; renderCustPicker(); syncTitle(); };
+      const pick = (c) => { curCustomer = c; custChanged = true; leadSource = ''; sourceReadFailed = false; sourceLoading = false; renderCustPicker(); syncTitle(); syncSource(); sourceLoad = loadCustomerSource(c); };
       const search = async () => {
         const term = (q.value || '').trim();
         const mine = ++custSeq;
@@ -28045,7 +28136,7 @@ async function openAppointmentForm(existing, prefill = {}) {
         if (digits.length >= 4) ors.push(`phone_norm.ilike.%${digits}%`);
         let rows = [];
         try {
-          const r = await supabase.from('customers').select('id,name,phone,email,billing_address_line1,billing_city,billing_state,billing_zip')
+          const r = await supabase.from('customers').select('id,name,phone,email,lead_source,billing_address_line1,billing_city,billing_state,billing_zip')
             .is('archived_at', null).or(ors.join(',')).order('name').limit(12);
           rows = (!r.error && r.data) || [];
         } catch (_) { /* results stay empty; the New customer path remains */ }
@@ -28066,7 +28157,7 @@ async function openAppointmentForm(existing, prefill = {}) {
         }
         results.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
           const c = rows.find(r => r.id === b.dataset.pick) || { id: b.dataset.pick, name: b.dataset.name };
-          pick({ id: c.id, name: c.name, email: c.email || null });
+          pick({ id: c.id, name: c.name, email: c.email || null, lead_source: c.lead_source || null });
           // Completing the profile cuts both ways: a picked customer's known
           // email / billing address fill the form's empty fields, but never
           // overwrite something already typed (that is the JOB site).
@@ -28104,15 +28195,16 @@ async function openAppointmentForm(existing, prefill = {}) {
             phone: ph.slice(-10),
             email: em,
             lead_source: source, company: 'prescott-epoxy',
-          }).select('id,name,email').single(), { label: 'appt-new-customer' });
+          }).select('id,name,email,lead_source').single(), { label: 'appt-new-customer' });
           if (ins.error) throw ins.error;
-          pick({ id: ins.data.id, name: ins.data.name, email: ins.data.email || null });
+          pick({ id: ins.data.id, name: ins.data.name, email: ins.data.email || null, lead_source: ins.data.lead_source || source });
           const emailEl = modal.querySelector('#afEmail');
           if (emailEl && !emailEl.value.trim() && em) emailEl.value = em;
         } catch (err) { errN.textContent = (err && err.message) || 'Could not create.'; }
       });
     };
-    renderCustPicker(); syncTitle();
+    renderCustPicker(); syncTitle(); syncSource();
+    if (curCustomer && !leadId) sourceLoad = loadCustomerSource(curCustomer);
     // Customer phone (prompt 38): the appointment row stores no phone; fetch
     // it from the linked lead/customer and show tap-to-call + tap-to-text
     // read-only under the title. Best-effort and async so the form never
@@ -28178,8 +28270,10 @@ async function openAppointmentForm(existing, prefill = {}) {
       });
     }
 
-    modal.querySelector('#afSave').addEventListener('click', async () => {
+    const saveAppointment = async () => {
       errEl.textContent = '';
+      await sourceLoad;
+      if (sourceLoading) { errEl.textContent = 'Wait for the saved lead source to finish loading.'; return; }
       const dateStr = val('afDate');
       if (!dateStr) { errEl.textContent = 'Pick a date.'; return; }
       const allDay = modal.querySelector('#afAllDay').checked;
@@ -28220,33 +28314,31 @@ async function openAppointmentForm(existing, prefill = {}) {
         // A lead link satisfies the gate too: pre-accept people usually have
         // no customer row yet (prompt 89 creates it at accept), and forcing
         // one here would orphan the lead link and skip the stage advance.
-        if (!curCustomer && !leadId) { errEl.textContent = 'Link or create the customer to schedule the quote.'; return; }
+        if (!curCustomer && (!leadId || custChanged)) { errEl.textContent = 'Link or create the customer to schedule the quote.'; return; }
         if (!emailVal) { errEl.textContent = 'Customer email is required to schedule the quote.'; return; }
         if (!val('afAddress') || !val('afCity') || !val('afZip')) {
           errEl.textContent = 'Street address, city, and zip are required to schedule the quote.'; return;
         }
       }
+      const sourceRequired = !isImported && (isNew || custChanged) && !!(curCustomer || (!custChanged && leadId));
+      if (sourceRequired && !val('afSource') && !sourceReadFailed) {
+        errEl.textContent = 'Pick a lead source before scheduling this appointment.';
+        modal.querySelector('#afSource').focus(); return;
+      }
       // Lead resolution (prompt 89): the picker deals in customers, but the
       // pipeline effects and the cancel walk-back anchor on lead_id, so keep
       // stamping it. Untouched picker keeps the original link; a picked or
       // cleared customer re-resolves to its newest live lead (or none).
+      const saveCustomer = curCustomer ? { ...curCustomer } : null;
+      const saveSource = val('afSource');
+      const saveSourceBefore = String((saveCustomer && saveCustomer.lead_source) || '').trim() || leadSource;
+      const saveCustomerChanged = custChanged;
       let saveLeadId = leadId;
-      if (custChanged) {
-        saveLeadId = null;
-        if (curCustomer) {
-          try {
-            const lr = await supabase.from('leads').select('id')
-              .eq('customer_id', curCustomer.id).is('deleted_at', null).is('archived_at', null)
-              .order('created_at', { ascending: false }).limit(1);
-            if (!lr.error && lr.data && lr.data[0]) saveLeadId = lr.data[0].id;
-          } catch (_) { /* unlinked is safe; the effects just skip */ }
-        }
-      }
       const row = {
         appt_type: val('afType'),
         // Linked customer -> the ONE derived format; no customer -> free text
         // (the ad-hoc BNI/golf blocks).
-        title: curCustomer ? apptAutoTitle(val('afType'), curCustomer.name) : (val('afTitle') || null),
+        title: saveCustomer ? apptAutoTitle(val('afType'), saveCustomer.name) : (val('afTitle') || null),
         sales_member_id: val('afMember') || null,
         start_at: startAt.toISOString(),
         end_at: endAt.toISOString(),
@@ -28259,13 +28351,32 @@ async function openAppointmentForm(existing, prefill = {}) {
         notes: val('afNotes') || null,
         customer_notes: val('afCustomerNotes') || null,
         lead_id: saveLeadId,
-        customer_id: curCustomer ? curCustomer.id : null,
+        customer_id: saveCustomer ? saveCustomer.id : null,
       };
+      if (saveCustomerChanged || (isNew && saveCustomer && !saveLeadId)) {
+        saveLeadId = null;
+        if (saveCustomer) {
+          try {
+            const lr = await supabase.from('leads').select('id')
+              .eq('customer_id', saveCustomer.id).is('deleted_at', null).is('archived_at', null)
+              .order('created_at', { ascending: false }).limit(1);
+            if (lr.error) throw lr.error;
+            if (lr.data && lr.data[0]) saveLeadId = lr.data[0].id;
+          } catch (_) { errEl.textContent = 'Could not check the linked lead. Please try again before booking.'; return; }
+        }
+      }
+      row.lead_id = saveLeadId;
       const btn = modal.querySelector('#afSave');
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
         if (!await apptConfirmOverlap({ ...row, id: a.id, status: a.status || 'scheduled' })) {
           btn.disabled = false; btn.textContent = isNew ? 'Book it' : 'Save'; return;
+        }
+        // Source is required for new customer bookings and relinks. Existing
+        // appointment edits remain possible without completing legacy data.
+        // This write must succeed before the appointment or its side effects.
+        if (!isImported && (sourceRequired || (!saveSourceBefore && saveSource))) {
+          await apptSaveLeadSource({ customerId: row.customer_id, leadId: saveLeadId, source: saveSource, required: sourceRequired });
         }
         // Complete the customer profile from this form (2026-08-19), BEFORE
         // the appointment write so a booked quote never precedes its profile.
@@ -28273,21 +28384,21 @@ async function openAppointmentForm(existing, prefill = {}) {
         // act); the billing address fills only when blank, because the form's
         // address is the JOB site and must not clobber a deliberately
         // different billing address.
-        if (curCustomer && curCustomer.id) {
+        if (saveCustomer && saveCustomer.id) {
           const cr = await supabase.from('customers')
             .select('email,billing_address_line1,billing_city,billing_state,billing_zip')
-            .eq('id', curCustomer.id).maybeSingle();
+            .eq('id', saveCustomer.id).maybeSingle();
           if (!cr.error && cr.data) {
             const patch = {};
             if (emailVal && emailVal !== (cr.data.email || '')) patch.email = emailVal;
-            if (!cr.data.billing_address_line1 && val('afAddress')) {
-              patch.billing_address_line1 = val('afAddress');
-              if (val('afCity')) patch.billing_city = val('afCity');
-              if (val('afState')) patch.billing_state = val('afState');
-              if (val('afZip')) patch.billing_zip = val('afZip');
+            if (!cr.data.billing_address_line1 && row.location_address) {
+              patch.billing_address_line1 = row.location_address;
+              if (row.location_city) patch.billing_city = row.location_city;
+              if (row.location_state) patch.billing_state = row.location_state;
+              if (row.location_zip) patch.billing_zip = row.location_zip;
             }
             if (Object.keys(patch).length) {
-              const ur = await withFreshWriteRetry(() => supabase.from('customers').update(patch).eq('id', curCustomer.id), { label: 'appt-customer-profile' });
+              const ur = await withFreshWriteRetry(() => supabase.from('customers').update(patch).eq('id', saveCustomer.id), { label: 'appt-customer-profile' });
               if (ur.error) throw ur.error;
             }
           }
@@ -28300,12 +28411,12 @@ async function openAppointmentForm(existing, prefill = {}) {
           const lr = await supabase.from('leads').select('email,address,city,state,zip').eq('id', saveLeadId).maybeSingle();
           if (!lr.error && lr.data) {
             const lp = {};
-            if (emailVal && (curCustomer ? !lr.data.email : emailVal !== (lr.data.email || ''))) lp.email = emailVal;
-            if (!lr.data.address && val('afAddress')) {
-              lp.address = val('afAddress');
-              if (!lr.data.city && val('afCity')) lp.city = val('afCity');
-              if (!lr.data.state && val('afState')) lp.state = val('afState');
-              if (!lr.data.zip && val('afZip')) lp.zip = val('afZip');
+            if (emailVal && (saveCustomer ? !lr.data.email : emailVal !== (lr.data.email || ''))) lp.email = emailVal;
+            if (!lr.data.address && row.location_address) {
+              lp.address = row.location_address;
+              if (!lr.data.city && row.location_city) lp.city = row.location_city;
+              if (!lr.data.state && row.location_state) lp.state = row.location_state;
+              if (!lr.data.zip && row.location_zip) lp.zip = row.location_zip;
             }
             if (Object.keys(lp).length) await withFreshWriteRetry(() => supabase.from('leads').update(lp).eq('id', saveLeadId), { label: 'appt-lead-profile' });
           }
@@ -28334,6 +28445,16 @@ async function openAppointmentForm(existing, prefill = {}) {
         console.error('[appointments] save:', err);
         errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
       }
+    };
+    // Guard before the first await: rapid clicks during source/lead loading
+    // must share one save attempt, including early validation failures.
+    let saveInFlight = false;
+    modal.querySelector('#afSave').addEventListener('click', async () => {
+      if (saveInFlight) return;
+      saveInFlight = true;
+      try { await saveAppointment(); }
+      catch (err) { errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err); }
+      finally { saveInFlight = false; }
     });
 
     const delBtn = modal.querySelector('#afDelete');
@@ -32594,9 +32715,9 @@ async function renderEstimateDetail(estimateId) {
     if (!li.description) return '';
     const text = String(li.description);
     if (text.length <= 180 && !text.includes('\n')) {
-      return `<div style="color:var(--muted);font-size:.75rem">${esc(text)}</div>`;
+      return `<div style="color:var(--muted);font-size:.75rem">${pecScopeMdToHtml(text)}</div>`;
     }
-    return `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View scope</summary><div style="color:var(--muted);font-size:.75rem;white-space:pre-wrap;margin-top:4px;max-height:260px;overflow-y:auto">${esc(text)}</div></details>`;
+    return `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View scope</summary><div style="color:var(--muted);font-size:.75rem;margin-top:4px;max-height:260px;overflow-y:auto">${pecScopeMdToHtml(text)}</div></details>`;
   };
   // Prompt 76: a scope-bearing line with no description gets a loud inline
   // note (the send gate will block on it; better to see it here first).
@@ -33523,12 +33644,13 @@ async function estimateSendGateOk(est) {
     if (!li) continue;
     const label = li.label || 'Line';
     const desc = String(li.description == null ? '' : li.description).trim();
+    const visibleDesc = pecScopePlainText(desc);
     const sortOrder = Number.isFinite(Number(li.sort_order)) ? Number(li.sort_order) : null;
     // Prompt 78 D3: blanks block on EVERY line, add-on and custom lines
     // included (a pasted template with a BLANK left in a custom line is
     // exactly the failure this catches). Hard block, no override (decision
     // 15); the old estimateBlankScopeOk confirm is gone.
-    const blanks = estScopeBlanks(desc);
+    const blanks = estScopeBlanks(desc).concat(estScopeBlanks(visibleDesc));
     if (blanks.length) {
       // Prompt 94 B2: unfilled {{tokens}} get their own wording (the fix is
       // the fill-in form on the line editor). Mirrors scopeSendBlockers.
@@ -33537,17 +33659,17 @@ async function estimateSendGateOk(est) {
         : `"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`, sortOrder });
     }
     if (!li.estimate_area_id) {
-      if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
+      if (EST_CLOBBER_DESC_RE.test(visibleDesc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
       continue;
     }
     if (customAreaIds.has(li.estimate_area_id)) continue;
-    if (!desc) blockers.push({ msg: `"${label}" has no scope of work yet.`, sortOrder });
-    else if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
+    if (!visibleDesc) blockers.push({ msg: `"${label}" has no scope of work yet.`, sortOrder });
+    else if (EST_CLOBBER_DESC_RE.test(visibleDesc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
   }
   // Prompt 78 D3: estimates.scope_of_work is the internal record feeding the
   // job and the crew scope; a blank there ships to the crew. Estimate-level
   // blocker (no sortOrder), renders as a plain row like the stale-scope one.
-  const sowBlanks = estScopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
+  const sowBlanks = estScopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork)).concat(estScopeBlanks(pecScopePlainText(scopeOfWork)));
   if (sowBlanks.length) {
     blockers.push({ msg: sowBlanks[0].kind === 'token'
       ? `The scope of work still has an unfilled field: "${sowBlanks[0].snippet}". Fill it in on the line editor, then send.`
@@ -33678,6 +33800,125 @@ function estimateOpeningTotal(est) {
 // byte-identical accept path the emailed link runs; present=1 only skips the
 // customer-view log (the rep is driving, not the customer). Online only.
 // ============================================================
+
+// BEGIN shared estimate formatting mirror (parity-tested against production/estimate-formatting.cjs).
+const pecScopeFormatting = (() => {
+
+// Scope stays plain text with lightweight formatting in the existing offline
+// payloads. Only this renderer creates HTML; pasted or typed HTML is escaped.
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]));
+
+function parseInline(value) {
+  const text = String(value);
+  const root = { children: [] };
+  const stack = [root];
+  const append = (part) => stack[stack.length - 1].children.push(part);
+  for (let i = 0; i < text.length;) {
+    if (text[i] === '\\' && /[\\*]/.test(text[i + 1] || '')) {
+      append(text[i + 1]); i += 2; continue;
+    }
+    if (text[i] !== '*') { append(text[i++]); continue; }
+    let end = i;
+    while (text[end] === '*') end++;
+    let remaining = end - i;
+    const canClose = i > 0 && !/\s/.test(text[i - 1]);
+    const canOpen = end < text.length && !/\s/.test(text[end]);
+    if (remaining <= 3 && canClose) {
+      while (stack.length > 1 && remaining >= stack[stack.length - 1].size) {
+        const node = stack.pop();
+        node.closed = true;
+        remaining -= node.size;
+      }
+    }
+    if (remaining <= 3 && canOpen) {
+      while (remaining > 0) {
+        const size = remaining >= 2 ? 2 : 1;
+        const node = { size, children: [], closed: false };
+        append(node); stack.push(node); remaining -= size;
+      }
+    }
+    if (remaining) append('*'.repeat(remaining));
+    i = end;
+  }
+  return root.children;
+}
+
+function renderInline(parts, dropStyle) {
+  const out = [];
+  const pending = parts.slice().reverse();
+  while (pending.length) {
+    const part = pending.pop();
+    if (typeof part === 'string') { out.push(dropStyle ? part : escapeHtml(part)); continue; }
+    if (part.end) { out.push(part.end); continue; }
+    const marker = '*'.repeat(part.size);
+    if (dropStyle) {
+      if (!part.closed || part.size !== dropStyle) {
+        out.push(marker);
+        if (part.closed) pending.push({ end: marker });
+      }
+    } else if (part.closed) {
+      const tag = part.size === 2 ? 'strong' : 'em';
+      out.push(`<${tag}>`); pending.push({ end: `</${tag}>` });
+    } else out.push(marker);
+    for (let i = part.children.length - 1; i >= 0; i--) pending.push(part.children[i]);
+  }
+  return out.join('');
+}
+
+function inlineHtml(value) {
+  return renderInline(parseInline(value));
+}
+
+function mdToSafeHtml(value) {
+  const out = [];
+  let list = null;
+  const flushList = () => {
+    if (!list) return;
+    const start = list.kind === 'ol' && list.start !== 1 ? ` start="${list.start}"` : '';
+    out.push(`<${list.kind}${start} style="margin:6px 0 10px;padding-left:20px">${list.items.join('')}</${list.kind}>`);
+    list = null;
+  };
+  for (const raw of String(value == null ? '' : value).split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    const numbered = line.match(/^\s*(\d{1,9})[.)]\s+(.*)$/);
+    if (bullet || numbered) {
+      const kind = bullet ? 'ul' : 'ol';
+      if (list && list.kind !== kind) flushList();
+      if (!list) list = { kind, start: numbered ? Number(numbered[1]) : 1, items: [] };
+      list.items.push(`<li style="margin:2px 0">${inlineHtml(bullet ? bullet[1] : numbered[2])}</li>`);
+      continue;
+    }
+    flushList();
+    if (!line.trim()) continue;
+    if (/^---+$/.test(line.trim())) { out.push('<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">'); continue; }
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      out.push(`<div style="font-weight:800;font-size:${heading[1].length <= 2 ? '15px' : '13.5px'};margin:14px 0 6px">${inlineHtml(heading[2])}</div>`);
+    } else out.push(`<p style="margin:6px 0">${inlineHtml(line)}</p>`);
+  }
+  flushList();
+  return out.join('');
+}
+
+// Pure selection transforms keep the browser selection and the saved value in
+// agreement. Buttons never save a second representation or mutate HTML.
+function scopePlainText(value) {
+  const text = String(value == null ? '' : value).split(/\r?\n/)
+    .map((line) => /^\s*(?:[-*#\s]+|\d+[.)])\s*$/.test(line) ? '' : line).join('\n');
+  return mdToSafeHtml(text).replace(/<\/(?:p|div|li|ul|ol)>|<hr[^>]*>/g, '\n').replace(/<[^>]*>/g, '')
+    .replace(/&(?:amp|lt|gt|quot|#39);/g, (entity) => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" }[entity]))
+    .replace(/\s+/g, ' ').trim();
+}
+
+
+return { mdToSafeHtml, scopePlainText };
+})();
+const pecScopeMdToHtml = pecScopeFormatting.mdToSafeHtml;
+const pecScopePlainText = pecScopeFormatting.scopePlainText;
+// END shared estimate formatting mirror.
 
 // Mirrors mdToSafeHtml in pec-public-estimate.cjs (same escape-then-format
 // subset: **bold**, #-#### headings, - bullets, --- rules; raw HTML can never
@@ -45553,7 +45794,7 @@ function _mergeAcrossAreas(areaPlans) {
         <thead><tr><th>Name</th><th>Unit</th><th style="text-align:right">Price</th><th style="text-align:right">Cost</th><th>Optional</th><th>System</th><th>Scope</th><th>Active</th><th></th></tr></thead>
         <tbody>${addons.length ? addons.map(a => `
           <tr>
-            <td><strong>${esc(a.name)}</strong>${a.description ? `<div style="color:var(--muted);font-size:.72rem">${esc(a.description)}</div>` : ''}</td>
+            <td><strong>${esc(a.name)}</strong>${a.description ? `<div style="color:var(--muted);font-size:.72rem">${pecScopeMdToHtml(a.description)}</div>` : ''}</td>
             <td>${esc(a.unit)}</td>
             <td style="text-align:right">${money(a.default_price)}</td>
             <td style="text-align:right${!(Number(a.default_cost) > 0) ? ';color:#b45309;font-weight:600' : ''}">${money(a.default_cost)}${!(Number(a.default_cost) > 0) ? ' ⚠' : ''}</td>

@@ -36,6 +36,7 @@
 // status), so exactly one request wins the transition.
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
+const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 const { prepareDepositInstallment, resolveCurrentAsk, round2 } = require('./_pec-installments.cjs');
 // Estimate-side payment schedule (prompt 74): the same math module the
 // estimator's schedule card runs, so the customer render, the accept-time
@@ -162,33 +163,6 @@ async function applySelection(estimateId, items, selectedIds) {
       `/estimate_line_items?id=eq.${encodeURIComponent(li.id)}&estimate_id=eq.${encodeURIComponent(estimateId)}`,
       { selected_by_customer: want });
   }
-}
-
-// Escape-then-format: the scope document is model-assembled markdown, and it
-// NEVER reaches the page as raw HTML. esc() runs FIRST, then a minimal, safe
-// subset of markdown (headings, bold, bullets, rules) is rebuilt from the
-// escaped text, so no model or user input can smuggle markup in.
-function mdToSafeHtml(text) {
-  const lines = String(text == null ? '' : text).split(/\r?\n/);
-  const out = [];
-  let list = null;
-  const flushList = () => { if (list) { out.push(`<ul style="margin:6px 0 10px;padding-left:20px">${list.join('')}</ul>`); list = null; } };
-  const inline = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    if (/^\s*[-*]\s+/.test(line)) {
-      (list ??= []).push(`<li style="margin:2px 0">${inline(line.replace(/^\s*[-*]\s+/, ''))}</li>`);
-      continue;
-    }
-    flushList();
-    if (!line.trim()) continue;
-    if (/^---+$/.test(line.trim())) { out.push('<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">'); continue; }
-    const h = line.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { out.push(`<div style="font-weight:800;font-size:${h[1].length <= 2 ? '15px' : '13.5px'};margin:14px 0 6px">${inline(h[2])}</div>`); continue; }
-    out.push(`<p style="margin:6px 0">${inline(line)}</p>`);
-  }
-  flushList();
-  return out.join('');
 }
 
 const estimateNo = (est) => est && est.estimate_number != null ? `EST-${est.estimate_number}` : 'Estimate';

@@ -946,7 +946,7 @@ await section('offline save: areas + add-on line items land complete when the ou
         if (a.path === 'stub-supa') return { contents: `
           globalThis.__uploads = globalThis.__uploads || [];
           export const supabase = {
-            from(table){ return { upsert: async (row) => { globalThis.__uploads.push({ table, id: row.id }); return { error: null }; } }; },
+            from(table){ return { upsert: async (row) => { globalThis.__uploads.push({ table, id: row.id, row: JSON.parse(JSON.stringify(row)) }); return { error: null }; } }; },
           };
         `, loader: 'js' };
         if (a.path === 'stub-uuid') return { contents: `let n=0; export function uuid(){ return 'uuid-'+(++n); }`, loader: 'js' };
@@ -1031,6 +1031,7 @@ await section('offline save: areas + add-on line items land complete when the ou
 // writer via scope_edited_at. Reuses the __run harness built above.
 // ===========================================================================
 await section('offline save: custom mode persists typed scope/price and composes the standard columns', async () => {
+  const formattedScope = '**Grind and reseal** the loading dock apron.\n- Keep the floor *dry*.\n- Excludes crack repair over 1/4 inch.\n\n1. Prepare\n2. Coat';
   const args = {
     estimateId: null, status: 'draft',
     systemTypeId: null, // a custom estimate has no system
@@ -1040,10 +1041,10 @@ await section('offline save: custom mode persists typed scope/price and composes
     mvb: 'none', flakeColor: null,
     scopeAnswers: {},
     isCustom: true,
-    customScope: 'Grind and reseal the loading dock apron. Excludes crack repair over 1/4 inch.',
+    customScope: formattedScope,
     customPrice: 2500,
     lineItems: [
-      { addonId: null, areaIndex: null, label: 'Custom scope of work', description: 'Grind and reseal the loading dock apron. Excludes crack repair over 1/4 inch.', qty: 1, unitPrice: 2500, unitCost: 0, total: 2500, isOptional: false, selectedByCustomer: true, sortOrder: 0 },
+      { addonId: null, areaIndex: null, label: 'Custom scope of work', description: formattedScope, qty: 1, unitPrice: 2500, unitCost: 0, total: 2500, isOptional: false, selectedByCustomer: true, sortOrder: 0 },
       { addonId: 'ad-drive', areaIndex: null, label: 'Drive Time', description: null, qty: 1, unitPrice: 150, unitCost: 60, total: 150, isOptional: false, selectedByCustomer: false, sortOrder: 1 },
     ],
     pricingSnapshot: null,
@@ -1074,6 +1075,7 @@ await section('offline save: custom mode persists typed scope/price and composes
   ok(lineRows.length === 2, 'the composed custom line plus the add-on line are enqueued');
   const customLine = lineRows.find((r) => r.label === 'Custom scope of work');
   ok(customLine && customLine.total === 2500 && customLine.description === args.customScope, 'the custom line carries the typed price + scope so the proposal/PDF render a row');
+  ok(out.uploaded.find((row) => row.table === 'estimate_line_items' && row.row.label === 'Custom scope of work').row.description === formattedScope, 'bold, italic and list formatting survives the real offline save and sync upload');
   ok(out.drain.failed === 0, 'the custom save drains clean');
 });
 
@@ -1084,15 +1086,16 @@ await section('offline save: custom mode persists typed scope/price and composes
 // ===========================================================================
 await section('edit load: the composed custom line does not round-trip into the add-on forms', async () => {
   const esbuild = require(path.join(__dirname, '..', 'apps', 'estimator', 'node_modules', 'esbuild'));
+  const formattedScope = '**Reseal** the dock.\n- Keep it *dry*.\n1. Prepare\n2. Coat';
   const estRow = {
     id: 'est-custom-1', status: 'draft', system_type_id: null,
-    is_custom: true, custom_scope: 'Reseal the dock.', custom_price: 2500,
-    scope_of_work: 'Reseal the dock.', scope_stale: true,
+    is_custom: true, custom_scope: formattedScope, custom_price: 2500,
+    scope_of_work: formattedScope, scope_stale: true,
     customer_last_name: 'Coyote', customer_company: 'Acme LLC', customer_is_commercial: true,
   };
   const lineRows = [
-    { addon_id: null, estimate_area_id: null, label: 'Custom scope of work', description: 'Reseal the dock.', qty: 1, unit_price: 2500, unit_cost: 0, total: 2500, is_optional: false, selected_by_customer: true, sort_order: 0 },
-    { addon_id: 'ad-drive', estimate_area_id: null, label: 'Drive Time', description: null, qty: 1, unit_price: 150, unit_cost: 60, total: 150, is_optional: false, selected_by_customer: false, sort_order: 1 },
+    { addon_id: null, estimate_area_id: null, label: 'Custom scope of work', description: formattedScope, qty: 1, unit_price: 2500, unit_cost: 0, total: 2500, is_optional: false, selected_by_customer: true, sort_order: 0 },
+    { addon_id: 'ad-drive', estimate_area_id: null, label: 'Drive Time', description: '*Travel* to your site.', qty: 1, unit_price: 150, unit_cost: 60, total: 150, is_optional: false, selected_by_customer: false, sort_order: 1 },
   ];
   const entry = `
     import { loadEstimateForEdit } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'lib', 'estimateLoad.ts'))};
@@ -1131,10 +1134,11 @@ await section('edit load: the composed custom line does not round-trip into the 
   const loaded = await globalThis.__load('est-custom-1');
 
   ok(loaded.isCustom === true, 'is_custom maps to isCustom');
-  ok(loaded.customScope === 'Reseal the dock.' && loaded.customPrice === '2500', 'custom scope + price restore as form values');
+  ok(loaded.customScope === formattedScope && loaded.customPrice === '2500', 'formatted custom scope + price restore as form values');
   ok(loaded.addonLines.length === 1 && loaded.addonLines[0].label === 'Drive Time', 'the composed custom line is filtered out; the real add-on survives');
+  ok(loaded.addonLines[0].description === '*Travel* to your site.', 'formatted add-on description reloads verbatim');
   // Build 25: the live proposal panel needs the saved document + stale flag.
-  ok(loaded.scopeOfWork === 'Reseal the dock.' && loaded.scopeStale === true, 'the saved scope document + stale flag load for the live panel');
+  ok(loaded.scopeOfWork === formattedScope && loaded.scopeStale === true, 'the formatted scope document + stale flag load for the live panel');
 });
 
 // ===========================================================================

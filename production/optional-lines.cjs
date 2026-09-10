@@ -137,6 +137,7 @@ function selectedScopeDoc(includedLines) {
 // NAME the offending lines: the rep is standing in a driveway.
 // ---------------------------------------------------------------------------
 const CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
+const { scopePlainText } = require('./estimate-formatting.cjs');
 
 // Prompt 78 D2: the blank scan (literal BLANK, unresolved is/is not choices,
 // underscore fill-in runs) shares ONE detector with the estimator and the
@@ -170,12 +171,13 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
     if (!li) continue;
     const label = li.label || 'Line';
     const desc = String(li.description == null ? '' : li.description).trim();
+    const visibleDesc = scopePlainText(desc);
     // Prompt 78 D2: blanks block on EVERY line, add-on and custom lines
     // included. Custom lines stay exempt from the empty-description rule
     // below (a typed scope is the rep's call), but a pasted template with an
     // unfilled BLANK in a custom line is exactly the failure this catches.
     // One blocker per line, quoting the first offending snippet.
-    const blanks = scopeBlanks(desc);
+    const blanks = scopeBlanks(desc).concat(scopeBlanks(visibleDesc));
     if (blanks.length) {
       // Prompt 94 B2: a 'token' finding gets its own wording, because the fix
       // is the fill-in form on the line editor, not hand-editing the text.
@@ -186,22 +188,22 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
     if (!li.estimate_area_id) {
       // Add-on / one-off lines: many legitimately ship without scope language
       // (Drive Time has no snippet), so only the clobber fingerprint blocks.
-      if (CLOBBER_DESC_RE.test(desc)) {
+      if (CLOBBER_DESC_RE.test(visibleDesc)) {
         blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
       }
       continue;
     }
     if (customSet.has(li.estimate_area_id)) continue; // typed scope is the rep's call
-    if (!desc) {
+    if (!visibleDesc) {
       blockers.push(`"${label}" has no scope of work yet. Generate the scope, then send.`);
-    } else if (CLOBBER_DESC_RE.test(desc)) {
+    } else if (CLOBBER_DESC_RE.test(visibleDesc)) {
       blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
     }
   }
   // Prompt 78 D2: estimates.scope_of_work is the internal record feeding the
   // job and the crew scope; a blank there ships to the crew even though the
   // customer page no longer renders it. Estimate-level blocker.
-  const sowBlanks = scopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
+  const sowBlanks = scopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork)).concat(scopeBlanks(scopePlainText(scopeOfWork)));
   if (sowBlanks.length) {
     // Prompt 94: the answers card is gone; the document assembles from the
     // line scopes, so the fix lives in the estimator's line editor. An

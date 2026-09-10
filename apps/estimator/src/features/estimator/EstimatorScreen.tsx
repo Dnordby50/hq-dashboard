@@ -29,6 +29,7 @@ import type { LeadLink } from '../../lib/lead';
 import { composeCustomerAddress, composeCustomerName, emptyCustomer, emailValid, phoneValid, splitLegacyName, type CustomerForm } from '../../lib/customer';
 import AddressAutocomplete from './AddressAutocomplete';
 import BottomSheet from './BottomSheet';
+import ScopeEditor from './ScopeEditor';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps, type OutboxOp } from '../../offline/outbox';
@@ -3356,11 +3357,11 @@ export default function EstimatorScreen({
                 </span>
               </div>
               <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Polish (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
-              <textarea
-                className="custom-scope"
+              <ScopeEditor
+                label="Scope of work"
                 rows={10}
                 value={customScope}
-                onChange={(e) => setCustomScope(e.target.value)}
+                onChange={setCustomScope}
                 placeholder="Describe the work: prep, what gets coated, what is excluded…"
               />
               {polishError && <p className="warn">Polish failed: {polishError}</p>}
@@ -4122,14 +4123,13 @@ export default function EstimatorScreen({
                     system's template lands here at pick time, but a rep edit
                     WINS (the save round-trips it verbatim); changing systems
                     over rep text asks first, defaulting to keep. */}
-                <textarea
-                  data-sheet-desc="1"
-                  className="custom-scope"
+                <ScopeEditor
+                  sheetDescription
                   rows={7}
                   value={descValue}
-                  onChange={(e) => {
-                    if (a.isCustom) setArea(i, { customScope: e.target.value });
-                    else { lineDescEditedRef.current.add(i); setArea(i, { lineDescription: e.target.value }); }
+                  onChange={(value) => {
+                    if (a.isCustom) setArea(i, { customScope: value });
+                    else { lineDescEditedRef.current.add(i); setArea(i, { lineDescription: value }); }
                   }}
                   placeholder={a.isCustom
                     ? "Describe this line's work: prep, what gets done, what is excluded…"
@@ -4249,12 +4249,11 @@ export default function EstimatorScreen({
                   )}
                 </span>
               </div>
-              <textarea
-                data-sheet-desc="1"
-                className="custom-scope"
+              <ScopeEditor
+                sheetDescription
                 rows={5}
                 value={f.description}
-                onChange={(e) => { addonDescEditedRef.current.add(f.key); setAddonForm(f.key, { description: e.target.value }); }}
+                onChange={(value) => { addonDescEditedRef.current.add(f.key); setAddonForm(f.key, { description: value }); }}
                 placeholder="Description (customer sees this)"
               />
               {hasSnippet && f.description.trim() === '' && generateOn && (

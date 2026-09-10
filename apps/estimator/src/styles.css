@@ -369,6 +369,16 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
    .cust-type. The typed scope box fills its card; the head's Polish/Undo
    actions sit together on the right. */
 .custom-scope { width: 100%; box-sizing: border-box; min-height: 12rem; line-height: 1.45; }
+.scope-editor-toolbar { display: flex; flex-wrap: wrap; gap: .35rem; padding: .5rem; border: 1px solid var(--line); border-bottom: 0; border-radius: .65rem .65rem 0 0; background: var(--rd-soft); }
+.scope-editor-toolbar button { min-width: 2.5rem; min-height: 2.5rem; padding: .4rem .65rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); color: var(--ink); font: inherit; font-size: .85rem; cursor: pointer; }
+.scope-editor-toolbar button:hover { border-color: var(--accent); }
+.scope-editor-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.scope-editor .custom-scope { display: block; border-top-left-radius: 0; border-top-right-radius: 0; }
+.scope-editor-preview { border: 1px solid var(--line); border-radius: .65rem; padding: .75rem 1rem; background: var(--panel); overflow-wrap: anywhere; }
+.scope-editor-preview-label { display: block; color: var(--muted); font-size: .7rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin-bottom: .5rem; }
+.scope-editor-preview-content { font-size: .88rem; line-height: 1.6; }
+.scope-editor-preview-content > :first-child { margin-top: 0 !important; }
+.scope-editor-preview-content > :last-child { margin-bottom: 0 !important; }
 .scope-actions { display: flex; gap: 0.9rem; align-items: center; }
 .scope-actions .link:disabled { opacity: 0.45; cursor: default; }
 

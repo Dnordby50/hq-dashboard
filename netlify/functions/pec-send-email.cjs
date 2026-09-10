@@ -1,3 +1,4 @@
+const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 // Send a transactional email through Resend.
 // The RESEND_API_KEY lives ONLY in Netlify env; the browser never sees it.
 // Flow: validate the caller's Supabase JWT -> look up the sender + template for
@@ -42,7 +43,7 @@ function lineItemsTableHtml(items) {
   const rows = list.map(li => {
     const price = li.price != null ? li.price : (li.total != null ? li.total : li.unit_price);
     return `<tr>
-      <td style="padding:6px 8px;border:1px solid #e2e8f0">${esc(li.name || '')}${li.is_change_order ? ' <em>(change order)</em>' : ''}${li.description ? `<div style="color:#64748b;font-size:12px;margin-top:2px;white-space:pre-wrap">${esc(li.description)}</div>` : ''}</td>
+      <td style="padding:6px 8px;border:1px solid #e2e8f0">${esc(li.name || '')}${li.is_change_order ? ' <em>(change order)</em>' : ''}${li.description ? `<div style="color:#64748b;font-size:12px;margin-top:2px">${mdToSafeHtml(li.description)}</div>` : ''}</td>
       <td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right;white-space:nowrap">${price != null ? usd(price) : ''}</td>
     </tr>`;
   }).join('');

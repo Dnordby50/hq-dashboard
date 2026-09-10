@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const html = fs.readFileSync(require('node:path').join(__dirname, '../index.html'), 'utf8');
-const names = ['apptDateInputVal', 'apptFmtWhen', 'apptRowsByDay', 'loadAppointmentsRange', 'apptConfirmOverlap', 'apptGoogleHealth', 'renderApptSyncHealth', 'apptStartLiveRefresh', 'apptCommitMove', 'apptSyncNow'];
+const names = ['apptDateInputVal', 'apptFmtWhen', 'apptRowsByDay', 'loadAppointmentsRange', 'apptConfirmOverlap', 'apptGoogleHealth', 'renderApptSyncHealth', 'apptStartLiveRefresh', 'apptCommitMove', 'apptSyncNow', 'apptSaveLeadSource'];
 const source = names.map(name => {
   const m = html.match(new RegExp('(?:async )?function ' + name + '\\([^]*?\\n\\}'));
   assert(m, 'real function exists: ' + name); return m[0];
@@ -33,9 +33,37 @@ function fakeDb(rows, error = null) {
 }
 function env(extra = {}) {
   const context = vm.createContext({ Date, console, setInterval, clearInterval, setTimeout, clearTimeout, AbortController,
-    state: { apptFilters: {} }, withFreshSession: fn => fn(), withFreshWriteRetry: fn => fn(),
+    state: { apptFilters: {} }, withFreshSession: fn => fn(), withFreshWriteRetry: fn => fn(), withDeadline: fn => fn(),
     confirm: () => true, showToast() {}, apptPostWrite() {}, apptDayBlockedInfo: async () => [], ...extra });
   vm.runInContext(source, context); return context;
+}
+// Source fixtures apply real filtered updates and permit a concurrent writer
+// or denied write between the read and compare-and-set. No network is used.
+function sourceDb(customer, lead, options = {}) {
+  const rows = { customers: customer == null ? [] : [{ id: 'c', lead_source: customer }], leads: lead == null ? [] : [{ id: 'l', source: lead }], lead_events: [] };
+  if (customer === null) rows.customers = [{ id: 'c', lead_source: null }];
+  if (lead === null) rows.leads = [{ id: 'l', source: null }];
+  const calls = [];
+  return { rows, calls, from(table) {
+    const call = { table, filters: [], patch: null }; calls.push(call);
+    const q = {
+      select() { return q; }, maybeSingle() { return q; },
+      eq(k, v) { call.filters.push([k, v]); return q; },
+      is(k, v) { call.filters.push([k, v]); return q; },
+      update(patch) { call.patch = patch; return q; },
+      insert(payload) { call.insert = payload; return q; },
+      then(resolve, reject) {
+        if (call.insert) { rows[table].push(call.insert); return Promise.resolve({ data: null, error: null }).then(resolve, reject); }
+        if (options.beforeRead && !call.patch) options.beforeRead(table, rows);
+        if (options.beforeWrite && call.patch) options.beforeWrite(table, rows);
+        const error = call.patch ? options.writeError : options.readError;
+        let match = rows[table].find(row => call.filters.every(([k, v]) => row[k] === v));
+        if (call.patch && options.denyWrite) match = null;
+        if (call.patch && match && !error) Object.assign(match, call.patch);
+        return Promise.resolve({ data: match ? { ...match } : null, error }).then(resolve, reject);
+      },
+    }; return q;
+  } };
 }
 let checks = 0;
 function check(name, fn) { return Promise.resolve().then(fn).then(() => { checks++; console.log('  ✓ ' + name); }); }
@@ -161,6 +189,86 @@ const base = { sales_member_id: 'dylan', status: 'scheduled', appt_type: 'other'
     ctx.fetch = async () => { throw new Error('Offline'); };
     await ctx.apptSyncNow(button, () => true, async () => {});
     assert.equal(ctx.state._apptSyncRunning, false); assert.equal(button.disabled, false); assert.match(progress.textContent, /Offline/);
+  });
+  await check('scheduling fills a blank customer source from a valid lead without rewriting the lead', async () => {
+    const db = sourceDb(null, 'Referral');
+    const ctx = env({ supabase: db });
+    assert.equal(await ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', required: true }), 'Referral');
+    assert.equal(db.rows.customers[0].lead_source, 'Referral');
+    assert.equal(db.calls.filter(c => c.patch).length, 1);
+    assert.equal(db.calls.find(c => c.patch).table, 'customers');
+  });
+  await check('the customer source fills a blank lead while retaining different existing attribution', async () => {
+    for (const lead of [null, 'Original lead source']) {
+      const db = sourceDb('Customer referral', lead), ctx = env({ supabase: db });
+      await ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: 'A newly selected source', required: true });
+      assert.equal(db.rows.customers[0].lead_source, 'Customer referral');
+      assert.equal(db.rows.leads[0].source, lead || 'Customer referral');
+      assert.equal(db.calls.filter(c => c.patch && c.table === 'customers').length, 0);
+    }
+  });
+  await check('selected attribution is saved to both blank profiles, including whitespace-only values', async () => {
+    const db = sourceDb('  ', ''), ctx = env({ supabase: db });
+    await ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: '  Google  ', required: true });
+    assert.equal(db.rows.customers[0].lead_source, 'Google'); assert.equal(db.rows.leads[0].source, 'Google');
+    assert.equal(db.rows.lead_events.length, 1);
+    assert.equal(db.rows.lead_events[0].event_type, 'source_changed');
+    assert.equal(db.rows.lead_events[0].payload.via, 'appointment');
+    assert.deepEqual(db.calls.find(c => c.patch && c.table === 'customers').filters, [['id', 'c'], ['lead_source', '  ']]);
+  });
+  await check('lead-only and customer-only appointments can complete their source without creating another contact', async () => {
+    for (const ids of [{ customerId: 'c' }, { leadId: 'l' }]) {
+      const db = sourceDb(null, null), ctx = env({ supabase: db });
+      assert.equal(await ctx.apptSaveLeadSource({ ...ids, source: 'Phone Call', required: true }), 'Phone Call');
+      assert.equal(db.calls.filter(c => c.patch).length, 1);
+    }
+  });
+  await check('blank required attribution rejects before any profile mutation; optional legacy edits and blocks stay valid', async () => {
+    const db = sourceDb(null, '  '), ctx = env({ supabase: db });
+    await assert.rejects(ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: '  ', required: true }), /Pick a lead source/);
+    assert.equal(await ctx.apptSaveLeadSource({ customerId: 'c', required: false }), '');
+    assert.equal(await ctx.apptSaveLeadSource({ required: true }), '');
+    assert.equal(db.calls.filter(c => c.patch).length, 0);
+  });
+  await check('source read errors or missing contacts cannot be mistaken for blank attribution', async () => {
+    for (const opts of [{ readError: { message: 'Offline' } }, { beforeRead(table, rows) { rows[table] = []; } }]) {
+      const db = sourceDb(null, null, opts), ctx = env({ supabase: db });
+      await assert.rejects(ctx.apptSaveLeadSource({ customerId: 'c', source: 'Google', required: true }), /Could not check|could not be found/);
+      assert.equal(db.calls.filter(c => c.patch).length, 0);
+    }
+  });
+  await check('failed and zero-row source writes fail honestly without a blind retry', async () => {
+    for (const opts of [{ writeError: { message: 'Permission denied' } }, { denyWrite: true }]) {
+      const db = sourceDb(null, null, opts), ctx = env({ supabase: db });
+      await assert.rejects(ctx.apptSaveLeadSource({ customerId: 'c', source: 'Google', required: true }), /Could not save|was not saved/);
+      assert.equal(db.calls.filter(c => c.patch).length, 1);
+      assert.equal(db.rows.customers[0].lead_source, null);
+    }
+  });
+  await check('a source saved concurrently is preserved and used for the missing lead mirror', async () => {
+    const db = sourceDb(null, null, { beforeWrite(table, rows) { if (table === 'customers') rows.customers[0].lead_source = 'Staff referral'; } });
+    const ctx = env({ supabase: db });
+    assert.equal(await ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: 'Google', required: true }), 'Staff referral');
+    assert.equal(db.rows.customers[0].lead_source, 'Staff referral'); assert.equal(db.rows.leads[0].source, 'Staff referral');
+    assert.equal(db.calls.filter(c => c.patch && c.table === 'customers').length, 1);
+  });
+  await check('a verified lead source wins over a selection made before another staff member saved attribution', async () => {
+    const db = sourceDb(null, null, { beforeRead(table, rows) { if (table === 'leads') rows.leads[0].source = 'Staff referral'; } });
+    const ctx = env({ supabase: db });
+    assert.equal(await ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: 'Old form choice', required: true }), 'Staff referral');
+    assert.equal(db.rows.customers[0].lead_source, 'Staff referral');
+    assert.equal(db.calls.filter(c => c.patch && c.table === 'leads').length, 0);
+  });
+  await check('partial source persistence can be retried without overwriting the saved customer attribution', async () => {
+    let failLead = true;
+    const opts = { beforeWrite(table) { opts.writeError = table === 'leads' && failLead ? { message: 'Offline' } : null; } };
+    const db = sourceDb(null, null, opts), ctx = env({ supabase: db });
+    await assert.rejects(ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: 'Google', required: true }), /Could not save/);
+    assert.equal(db.rows.customers[0].lead_source, 'Google'); assert.equal(db.rows.leads[0].source, null);
+    failLead = false;
+    await ctx.apptSaveLeadSource({ customerId: 'c', leadId: 'l', source: 'Different selection', required: true });
+    assert.equal(db.rows.leads[0].source, 'Google');
+    assert.equal(db.calls.filter(c => c.patch && c.table === 'customers').length, 1);
   });
   console.log(`appointment-calendar: ${checks} checks passed`);
 })().catch(err => { console.error(err); process.exitCode = 1; });
