@@ -1,3 +1,16 @@
+## [2026-09-10 11:43 MST] sales: functional fixes verified live; booking design remains a preview
+
+By: Codex
+
+Verified: Published ba464a4 to origin/main. Live index.html, features.json, help/whats-new.json and production/estimate-formatting.cjs match local SHA-256. The deployed estimator loads index-6klZv6Qy.js and the new scope-editor toolbar, numbered-list controls, formatting instructions and live preview are present; its stylesheet matches local SHA-256. The production and local JS bundle hashes differ, so verification uses deployed feature content rather than claiming byte equivalence. The live /book page retains its current big-card/logo template and has no proposed step styling. The revised interactive TopCoat-style booking preview remains outside the checkout, awaiting Dylan's review.
+
+Validation: Final full npm test including posttest passed after the final changes. Ten formatting regressions and all 22 appointment calendar checks pass. All 13 actual-form browser fixture cases passed, including delayed lookups/double clicks/retry recovery; final 360px description editing preserved bold bullet lists and showed the formatted result. Estimator build, dashboard inline script/CJS parsing, manifest JSON, five function bundles and whitespace checks passed. No customer communications or production test records were created.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Refresh TopCoat to load the functional fixes. Await approval of the revised booking preview before implementing its appearance.
+Handoff to Cowork: None.
+Handoff to Dylan: Review the revised TopCoat-style booking concept, as requested.
+
 ## [2026-09-10 11:39 MST] estimates and appointments: readable send footer, description formatting and required lead sources
 
 By: Codex
