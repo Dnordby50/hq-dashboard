@@ -24,6 +24,7 @@ import {
   type AreaMaterialInput,
   type EstimateTotals,
   type LineItemInput,
+  type SaveEstimateArgs,
 } from '../../offline/estimates';
 import type { LeadLink } from '../../lib/lead';
 import { composeCustomerAddress, composeCustomerName, emptyCustomer, emailValid, phoneValid, splitLegacyName, type CustomerForm } from '../../lib/customer';
@@ -34,6 +35,7 @@ import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps, type OutboxOp } from '../../offline/outbox';
 import { drainOutbox } from '../../offline/sync';
+import { withEstimateWriteLock } from '../../offline/writeLock';
 import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
 import { compsForAi, fetchAiRecommendation, type AiLineInput, type AiRecommendation } from '../../lib/ai';
 // Per-line AI inputs key (prompt 70): the same CJS module pec-estimate-ai.cjs
@@ -598,11 +600,11 @@ export default function EstimatorScreen({
   const [savedOffline, setSavedOffline] = useState(false);
   // Autosave (prompt 87 Task D). lastSavedAt feeds the "All changes saved
   // HH:MM" status line; autosaveHold names why the timer is deliberately NOT
-  // saving ('confirm' = a below-floor save needs the human's OK, 'offline' =
+  // saving ('offline' =
   // an already-synced estimate cannot rewrite its child rows without a
-  // connection). Both clear on the next successful save.
+  // connection). Clears on the next successful save.
   const [lastSavedAt, setLastSavedAt] = useState('');
-  const [autosaveHold, setAutosaveHold] = useState<'' | 'confirm' | 'offline'>('');
+  const [autosaveHold, setAutosaveHold] = useState<'' | 'offline'>('');
   // Full queued ops, not just a count (prompt 48): the header needs attempt
   // counts and errors to tell "syncing" from "stuck". `pending` stays derived
   // so the quiet counter path is unchanged.
@@ -1383,10 +1385,10 @@ export default function EstimatorScreen({
   // price plain-rounded against the summed charm-rounded line prices.
   const charmFired = pricing && !err && pricing.priceRaw != null && pricing.price != null &&
     roundEstimatePrice(pricing.priceRaw, { increment: config.priceIncrement, charmThreshold: 0, charmBand: 0 }) !== pricing.price;
-  // Floor GP: below it a save asks a hard confirm (warns, does not block).
+  // Floor GP blocks sending; draft progress still saves automatically.
   const belowFloor = combinedGpPct != null && combinedGpPct * 100 < config.floorGpPct - 0.05;
   // Per-LINE floor (prompt 69): a line under it goes red; whether it also
-  // forces the save confirmation is the line_pricing_block_below_floor knob.
+  // blocks sending is the line_pricing_block_below_floor knob.
   // Tolerates a pre-69 cached catalog (keys absent) by falling back to the
   // estimate-wide floor.
   const lineFloorPct = Number(config.linePricingGpFloorPct ?? config.floorGpPct) || config.floorGpPct;
@@ -1663,6 +1665,7 @@ export default function EstimatorScreen({
   // locked basics (name, phone, email, address, salesperson), all prefilled in
   // the lead flow. Silent by design: a failure re-arms the trigger and the
   // explicit Save button stays the loud path.
+  const draftSaveInFlightRef = useRef<Promise<void> | null>(null);
   const saveDraft = useCallback(async () => {
     if (draftWriteRef.current || savedEstimateId || editing) return;
     if (!salesperson) return;
@@ -1694,7 +1697,7 @@ export default function EstimatorScreen({
     }
     draftWriteRef.current = true;
     try {
-      await saveEstimateOffline({
+      await withEstimateWriteLock(() => saveEstimateOffline({
         estimateId: draftId,
         status: 'draft',
         systemTypeId: null,
@@ -1730,14 +1733,14 @@ export default function EstimatorScreen({
         crewNotes,
         clientNotes,
         companyNotes,
-      });
+      }));
       if (navigator.onLine) drainOutbox().then(refreshPending).catch(() => {});
       else void refreshPending();
     } catch {
       draftTrigger.reset();
       draftWriteRef.current = false;
     }
-  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customPrice, customSqft, areas, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending]);
+  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customPrice, customSqft, areas, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending, leadSource]);
   const saveDraftRef = useRef(saveDraft);
   useEffect(() => { saveDraftRef.current = saveDraft; }, [saveDraft]);
 
@@ -1768,7 +1771,7 @@ export default function EstimatorScreen({
     if (!draftTrigger.signal(fields, { initial })) return;
     // NOT cleared on re-run: a second edit inside the window must not cancel
     // the (already consumed) trigger; saveDraft re-checks the live state.
-    window.setTimeout(() => { void saveDraftRef.current(); }, 800);
+    window.setTimeout(() => { draftSaveInFlightRef.current = saveDraftRef.current(); }, 800);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, discInput, overrideReason]);
 
@@ -1963,7 +1966,6 @@ export default function EstimatorScreen({
       for (const r of lineRows) {
         if (r.kind === 'custom' && r.current == null) list.push(`Type a price on the custom line "${r.label}".`);
       }
-      if (overrideNeedsReason) list.push('Type a reason for the price change.');
       // Safety net: if the chain is not ready for a reason none of the checks
       // above named, still refuse with SOMETHING rather than diverge from
       // linesReady and ship an enabled button whose save no-ops.
@@ -1971,7 +1973,7 @@ export default function EstimatorScreen({
     }
     if (addonsIncomplete) list.push('Finish the add-on lines (each needs a label and a price).');
     return list;
-  }, [salesperson, customerIncomplete, customer.isCommercial, customer.firstName, customer.phone, customer.email, leadSource, isCustom, customPrice, mvbMissing, err, areas, lineRows, overrideNeedsReason, linesReady, addonsIncomplete]);
+  }, [salesperson, customerIncomplete, customer.isCommercial, customer.firstName, customer.phone, customer.email, leadSource, isCustom, customPrice, mvbMissing, err, areas, lineRows, linesReady, addonsIncomplete]);
   const canSave = saveBlockers.length === 0 && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
@@ -2335,10 +2337,11 @@ export default function EstimatorScreen({
   const autosaveKey = useMemo(() => JSON.stringify([
     customer, salesperson?.id ?? null, intake, areas, addonForms, overrideReason,
     isCustom, customScope, customPrice, customSqft, crewNotes, clientNotes,
-    companyNotes, scheduleShared, scopeAnswers,
+    companyNotes, scheduleShared, scopeAnswers, leadSource, linkedLead?.id,
+    sellInput, discInput, priceOverride,
   ]), [customer, salesperson, intake, areas, addonForms, overrideReason, isCustom,
     customScope, customPrice, customSqft, crewNotes, clientNotes, companyNotes,
-    scheduleShared, scopeAnswers]);
+    scheduleShared, scopeAnswers, leadSource, linkedLead?.id, sellInput, discInput, priceOverride]);
   const autosaveKeyRef = useRef(autosaveKey);
   useEffect(() => { autosaveKeyRef.current = autosaveKey; }, [autosaveKey]);
   // null until the mount snapshot seeds it (first render effect below).
@@ -2346,11 +2349,14 @@ export default function EstimatorScreen({
   useEffect(() => { if (lastSavedKeyRef.current === null) lastSavedKeyRef.current = autosaveKey; }, [autosaveKey]);
   const [dirtyTick, setDirtyTick] = useState(0); // re-render signal when a save lands (refs alone don't repaint the bar)
 
-  const performSave = useCallback(async (opts?: { skipAutoScope?: boolean; auto?: boolean }): Promise<string | null> => {
+  const lastSavedAreaIdsRef = useRef<string[]>([]);
+  const persistEstimate = useCallback(async (opts?: { skipAutoScope?: boolean; auto?: boolean }): Promise<string | null> => {
     const auto = opts?.auto === true;
     // Captured at entry: state typed DURING the await stays dirty and re-arms
     // the autosave timer instead of being silently marked saved.
     const keyAtSave = autosaveKeyRef.current;
+    // The earlier parent-only draft must finish before its full replacement.
+    if (draftSaveInFlightRef.current) await draftSaveInFlightRef.current;
     // sellPrice non-null covers both modes: the typed custom price, or the
     // engine/override price. The engine snapshot is only required when a
     // calculator line exists (prompt 82): a custom-line-only estimate saves
@@ -2394,26 +2400,8 @@ export default function EstimatorScreen({
         return null;
       }
     }
-    // Floor-GP guard (build 17, per-line since prompt 69): warn, do not
-    // block. The confirmation NAMES the below-floor lines, not just the
-    // combined percentage; line_pricing_block_below_floor makes a below-floor
-    // LINE force the confirm even when the combined GP clears the floor.
-    const lineFloorConfirm = !isCustom && config.linePricingBlockBelowFloor === true && belowFloorLines.length > 0;
-    if (belowFloor || lineFloorConfirm) {
-      // A timer must never pop a confirm (prompt 87 D): a below-floor save
-      // stays a deliberate human act. The status bar names the hold and the
-      // manual Save button is the confirm path.
-      if (auto) { setAutosaveHold('confirm'); return null; }
-      const lineList = belowFloorLines.length
-        ? ` Below the ${lineFloorPct}% line floor: ${belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.`
-        : '';
-      const combinedPart = belowFloor
-        ? `Gross profit is ${combinedGpPct != null ? (combinedGpPct * 100).toFixed(1) : '--'}%, below the ${config.floorGpPct}% floor.`
-        : `Combined GP is above the floor, but a line is not.`;
-      if (!window.confirm(`${combinedPart}${lineList} Save this estimate anyway?`)) {
-        return null;
-      }
-    }
+    // Pricing validation belongs to send. Persist the draft even while a
+    // reason is missing or the current margin is below its floor.
     setSaveState('saving');
     setSaveError('');
     try {
@@ -2648,6 +2636,14 @@ export default function EstimatorScreen({
       const priceAllOptions = isCustom ? totalPrice : totalAllOptions;
 
       const pricingSnapshot: Record<string, unknown> | null = isCustom ? null : {
+        send_readiness: {
+          version: 1,
+          combinedGpPct,
+          calcTotal,
+          finalSell,
+          lines: lineRows.map((row, k) => ({ label: row.label, gpPct: lineMoney?.[k]?.gpPct ?? null })),
+          isCustom,
+        },
         inputs_key: inputsKey,
         comps: comps
           ? {
@@ -2674,20 +2670,7 @@ export default function EstimatorScreen({
         ai: ai?.status === 'ready' && ai.key === inputsKey && ai.rec ? { ...ai.rec, inputs_key: inputsKey } : null,
       };
 
-      // Edit-in-place: rewrite the child rows (line items first, then areas;
-      // the materials rows cascade). Online-only, checked above. A re-save of
-      // a NEW estimate (same draft id, prompt 47) needs the same rewrite; the
-      // draft-only row wrote no children, so its first full save skips this.
-      // Online-only by the guards above except the coalescing path: offline
-      // with the parent op still queued means no child row ever reached the
-      // server, so there is nothing live to delete and the replacement set in
-      // the outbox is the whole story.
-      if (online) {
-        if (editing) await deleteEstimateChildren(editing.id);
-        else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
-      }
-
-      const { id } = await saveEstimateOffline({
+      const saveArgs: SaveEstimateArgs = {
         // The screen's pre-minted id (or the edit's), NEVER a fresh one: the
         // early draft card and every Save upsert the same row (prompt 47).
         estimateId: estimateIdForSave(editing?.id ?? null, draftId),
@@ -2766,7 +2749,23 @@ export default function EstimatorScreen({
         crewNotes,
         clientNotes,
         companyNotes,
+      };
+      // Edit-in-place: rewrite the child rows (line items first, then areas;
+      // the materials rows cascade). Online-only, checked above. A re-save of
+      // a NEW estimate (same draft id, prompt 47) needs the same rewrite; the
+      // draft-only row wrote no children, so its first full save skips this.
+      // Online-only by the guards above except the coalescing path: offline
+      // with the parent op still queued means no child row ever reached the
+      // server, so there is nothing live to delete and the replacement set in
+      // the outbox is the whole story.
+      const { id, areaIds: savedAreaIds } = await withEstimateWriteLock(async () => {
+        if (online) {
+          if (editing) await deleteEstimateChildren(editing.id);
+          else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
+        }
+        return saveEstimateOffline(saveArgs);
       });
+      lastSavedAreaIdsRef.current = savedAreaIds ?? [];
       // Auto-first, then manual (build 25): the ONE automatic generation
       // happens on the save that has a scope-templated estimate with every
       // scope question answered and no document yet. Prompt 94 B4: only
@@ -2822,7 +2821,22 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared, localScopePreview, generateOn]);
+  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared, localScopePreview, generateOn, leadSource, finalSell]);
+  // A field edit can reset saveState while a write is awaiting the network.
+  // Keep the writer serialized independently of that display state so a
+  // timer, page-hide flush and Send cannot delete/rewrite children together.
+  const saveInFlightRef = useRef<Promise<string | null> | null>(null);
+  const performSave = useCallback((opts?: { skipAutoScope?: boolean; auto?: boolean }): Promise<string | null> => {
+    if (saveInFlightRef.current) return saveInFlightRef.current;
+    const pendingSave = persistEstimate(opts);
+    saveInFlightRef.current = pendingSave;
+    const release = () => {
+      if (saveInFlightRef.current === pendingSave) saveInFlightRef.current = null;
+      setDirtyTick((n) => n + 1);
+    };
+    void pendingSave.then(release, release);
+    return pendingSave;
+  }, [persistEstimate]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // ---- Autosave engine (prompt 87 Task D) ----------------------------------
@@ -2841,15 +2855,15 @@ export default function EstimatorScreen({
   const autosaveOn = config.estimateAutosaveEnabled !== false;
   const dirty = lastSavedKeyRef.current !== null && autosaveKey !== lastSavedKeyRef.current;
   void dirtyTick; // reading it ties the bar's repaint to save completions
-  // Each fingerprint gets ONE automatic attempt after a failure or a
-  // needs-confirm hold: without this, the error/hold render loop would retry
+  // Each fingerprint gets ONE automatic attempt after a failure:
+  // without this, the error render loop would retry
   // the identical save every 2.5s forever. A new edit (new key) retries; the
   // offline hold is exempt because `online` flipping true IS its retry signal.
   const lastAutoAttemptKeyRef = useRef('');
   useEffect(() => {
     if (!autosaveOn) return;
     if (!dirty || !canSave) return;
-    if ((saveState === 'error' || autosaveHold === 'confirm') && lastAutoAttemptKeyRef.current === autosaveKey) return;
+    if (saveState === 'error' && lastAutoAttemptKeyRef.current === autosaveKey) return;
     const t = window.setTimeout(() => {
       lastAutoAttemptKeyRef.current = autosaveKeyRef.current;
       void performSave({ auto: true });
@@ -2875,6 +2889,50 @@ export default function EstimatorScreen({
       window.removeEventListener('pagehide', onPageHide);
     };
   }, []);
+
+  // The dashboard asks for this flush before any send/present action. Check
+  // the latest render after each await; an older save must not authorize a
+  // newer, still-unsaved edit. Queued locally is not ready to send.
+  const sendFlushStateRef = useRef({ performSave, saveBlockers, estimateId: editing?.id ?? savedEstimateId ?? draftId });
+  sendFlushStateRef.current = { performSave, saveBlockers, estimateId: editing?.id ?? savedEstimateId ?? draftId };
+  useEffect(() => {
+    if (!embed) return;
+    const onFlush = async (event: MessageEvent) => {
+      const request = event.data;
+      if (event.origin !== window.location.origin || event.source !== window.parent ||
+          request?.type !== 'pec-estimator-flush' || typeof request.request_id !== 'string' ||
+          request.estimate_id !== sendFlushStateRef.current.estimateId) return;
+      try {
+        if (!navigator.onLine) throw new Error('Reconnect so the latest changes can save before sending.');
+        if (saveInFlightRef.current) await saveInFlightRef.current;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const current = sendFlushStateRef.current;
+          if (current.saveBlockers.length) throw new Error(current.saveBlockers[0]);
+          if (lastSavedKeyRef.current !== autosaveKeyRef.current) {
+            const id = await current.performSave({ auto: true });
+            if (!id) throw new Error('The latest changes could not save. Press Save to retry before sending.');
+          }
+          await drainOutbox();
+          const queued = await listOps();
+          const ownPending = queued.some((op) =>
+            (op.table === 'estimates' && op.id === current.estimateId) ||
+            op.row.estimate_id === current.estimateId ||
+            (op.table === 'estimate_area_materials' && lastSavedAreaIdsRef.current.includes(String(op.row.estimate_area_id))));
+          if (ownPending) throw new Error('Your changes are saved on this device but still need to sync. Retry sync before sending.');
+          if (lastSavedKeyRef.current === autosaveKeyRef.current) {
+            postToParent({ type: 'pec-estimator-flushed', request_id: request.request_id, estimate_id: current.estimateId, ok: true });
+            return;
+          }
+        }
+        throw new Error('The estimate is still changing. Let the latest edits save, then send again.');
+      } catch (error) {
+        postToParent({ type: 'pec-estimator-flushed', request_id: request.request_id, estimate_id: request.estimate_id,
+          ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    window.addEventListener('message', onFlush);
+    return () => window.removeEventListener('message', onFlush);
+  }, [embed, postToParent]);
 
   // Manual Regenerate (build 25): the only whole-estimate scope writer after
   // the first generation, now surfaced as "Regenerate scope" on the Line
@@ -3008,7 +3066,7 @@ export default function EstimatorScreen({
   // The row is a live STATUS INDICATOR now (prompt 87 Task D, the Google Docs
   // pattern): Saving… / All changes saved HH:MM / Offline — saved on this
   // device / Save failed — Retry, with the manual Save button kept as the
-  // immediate-flush (and confirm-path) escape hatch. Ordering matters:
+  // immediate-flush escape hatch. Ordering matters:
   // in-flight beats everything, a real failure beats a hold, a hold beats
   // plain dirty, and the blocker line keeps explaining WHY a not-yet-real
   // estimate has not written anything (the prompt-82 invariant, unchanged).
@@ -3016,7 +3074,6 @@ export default function EstimatorScreen({
     if (saveState === 'saving') return <span className="save-note">Saving…</span>;
     if (saveState === 'error') return <span className="save-note bad">{(saveError || 'Save failed')} — press Save to retry.</span>;
     if (saveBlockers.length > 0) return <span className="save-note bad">{saveBlockers[0]}</span>;
-    if (autosaveHold === 'confirm') return <span className="save-note bad">Below-floor GP needs your OK — press Save.</span>;
     if (autosaveHold === 'offline') return <span className="save-note bad">Offline — this estimate needs a connection to save again. Your edits stay on this screen; press Save once you have signal.</span>;
     if (dirty) return <span className="save-note">{autosaveOn ? 'Unsaved changes — autosaving…' : 'Unsaved changes.'}</span>;
     if (saveState === 'saved') {
@@ -3899,11 +3956,11 @@ export default function EstimatorScreen({
                     not nag but three small line trims that add up still ask. */}
                 {(priceMoved || shortfall >= 0.5 || overrideReason.trim() !== '') && (
                   <label className="field override-reason">
-                    <span>Why the price was changed{overrideNeedsReason ? ' (required)' : ''}</span>
+                    <span>Why the price was changed{overrideNeedsReason ? ' (required to send)' : ''}</span>
                     <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="problem customer, large sqft, competitor match…" />
                   </label>
                 )}
-                {overrideNeedsReason && <p className="warn">The final price is {money(shortfall)} under the calculated total, past the allowed {money(reasonThreshold)} leeway. A written reason is required to save.</p>}
+                {overrideNeedsReason && <p className="warn">The final price is {money(shortfall)} under the calculated total, past the allowed {money(reasonThreshold)} leeway. Your changes save automatically. Add a written reason before sending.</p>}
                   </div>
                 </details>
                 <details className="estimate-disclosure">
@@ -3942,12 +3999,12 @@ export default function EstimatorScreen({
                   <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (price-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
                 )}
                 {belowFloor && (
-                  <p className="warn gp-warn">GP is below the {config.floorGpPct}% floor. Saving asks you to confirm.</p>
+                  <p className="warn gp-warn">GP is below the {config.floorGpPct}% floor. Your changes save automatically, but sending is blocked until the price clears the floor.</p>
                 )}
                 {!belowFloor && belowFloorLines.length > 0 && (
                   <p className="warn gp-warn">
                     Below the {lineFloorPct}% line floor: {belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.
-                    {config.linePricingBlockBelowFloor === true ? ' Saving asks you to confirm.' : ' Saving still works; the line is red on purpose.'}
+                    {config.linePricingBlockBelowFloor === true ? ' Your changes save automatically, but sending is blocked until every line clears its floor.' : ' Saving still works; the line is red on purpose.'}
                   </p>
                 )}
                 {pricing?.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (

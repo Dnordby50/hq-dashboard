@@ -219,7 +219,7 @@ export type SaveEstimateArgs = {
 // default assigns it on insert (concurrency-safe), and the upsert's
 // on-conflict update only touches supplied columns, so a replay or an edit can
 // never renumber a row.
-export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id: string }> {
+export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id: string; areaIds: string[] }> {
   const estimateId = args.estimateId || uuid();
   const now = new Date().toISOString();
   const p = args.pricing; // null on a custom estimate: engine columns land null
@@ -460,5 +460,5 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     await enqueue({ table: 'estimate_line_items', id: liId, row: liRow, client_updated_at: now });
   }
 
-  return { id: estimateId };
+  return { id: estimateId, areaIds };
 }

@@ -17,6 +17,7 @@ const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 
 const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { emptySendError } = require('../../production/optional-lines.cjs');
+const { estimatePricingSendError, PRICING_SEND_COLUMNS, PRICING_LINE_COLUMNS } = require('./_pec-estimate-send.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -191,11 +192,13 @@ exports.handler = async (event) => {
     // not restructured. Same rule + message as the client gate and the SMS
     // mirror; shared in production/optional-lines.cjs.
     if (estimate_id) {
-      const estRows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(estimate_id)}&deleted_at=is.null&select=id,estimate_line_items(total,is_optional,selected_by_customer)&limit=1`);
+      const estRows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(estimate_id)}&deleted_at=is.null&select=${PRICING_SEND_COLUMNS},estimate_line_items(${PRICING_LINE_COLUMNS})&limit=1`);
       const est = Array.isArray(estRows) ? estRows[0] : null;
       if (!est) return jc(400, { ok: false, error: 'Estimate not found for that id.' });
       const emptyErr = emptySendError(est.estimate_line_items);
       if (emptyErr) return jc(400, { ok: false, error: emptyErr });
+      const pricingErr = await estimatePricingSendError(sb, est);
+      if (pricingErr) return jc(400, { ok: false, error: pricingErr });
     }
 
     // Rate limit: hard cap 50 sends per user per hour (Supabase counter, reliable

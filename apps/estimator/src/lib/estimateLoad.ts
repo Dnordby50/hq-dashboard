@@ -49,8 +49,8 @@ export type LoadedEstimate = {
   mvb: 'none' | 'addon' | 'standalone';
   flakeColor: string | null;
   leadId: string | null;
-  // The rep's picked lead source stored on the estimate (2026-08-26); null
-  // on rows saved before the column existed.
+  // The estimate's picked source, with linked-record fallback for drafts
+  // created before the dashboard carried attribution onto the estimate.
   leadSource: string | null;
   createdBy: string | null;
   // Ready-to-edit split shape (build 23): mapped from the split columns when
@@ -177,6 +177,26 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   if (estRes.error) throw estRes.error;
   if (!estRes.data) return null;
   const e = estRes.data as Record<string, unknown>;
+  // Older dashboard drafts omitted attribution. Fill only a blank estimate
+  // source from its lead, then its customer; a rep's saved choice always wins.
+  // Profile lookup failure must not stop the rest of the estimate from opening.
+  let leadSource = String(e.lead_source ?? '').trim() || null;
+  let sourceCustomerId = String(e.customer_id ?? '').trim();
+  if (!leadSource && e.lead_id) {
+    try {
+      const leadRes = await supabase.from('leads').select('source,customer_id').eq('id', String(e.lead_id)).maybeSingle();
+      if (!leadRes.error && leadRes.data) {
+        leadSource = String(leadRes.data.source ?? '').trim() || null;
+        sourceCustomerId ||= String(leadRes.data.customer_id ?? '').trim();
+      }
+    } catch { /* attribution fallback is best effort */ }
+  }
+  if (!leadSource && sourceCustomerId) {
+    try {
+      const customerRes = await supabase.from('customers').select('lead_source').eq('id', sourceCustomerId).maybeSingle();
+      if (!customerRes.error && customerRes.data) leadSource = String(customerRes.data.lead_source ?? '').trim() || null;
+    } catch { /* attribution fallback is best effort */ }
+  }
   // Prompt 74: each area line's saved DESCRIPTION (the assembled scope),
   // keyed by the area id its line item carries, so the save can write it back
   // verbatim instead of authoring a new one. First line per area wins (an
@@ -273,7 +293,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     mvb: (['none', 'addon', 'standalone'].includes(String(e.mvb)) ? String(e.mvb) : 'none') as 'none' | 'addon' | 'standalone',
     flakeColor: (e.flake_color as string | null) ?? null,
     leadId: (e.lead_id as string | null) ?? null,
-    leadSource: (e.lead_source as string | null) ?? null,
+    leadSource,
     createdBy: (e.created_by as string | null) ?? null,
     customer: loadCustomer(e),
     intake: (e.intake as Record<string, unknown>) ?? {},

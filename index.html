@@ -5294,7 +5294,7 @@ async function createDraftEstimateNow({ leadId = null, customerId = null, extras
     // over re-splitting full_name; Part E: a lead that already belongs to a
     // customer carries that customer_id onto the estimate.
     const lr = await supabase.from('leads')
-      .select('full_name,first_name,last_name,business_name,email,phone,address,city,state,zip,customer_id').eq('id', leadId).maybeSingle();
+      .select('full_name,first_name,last_name,business_name,email,phone,address,city,state,zip,customer_id,source').eq('id', leadId).maybeSingle();
     if (!lr.error && lr.data) {
       const d = lr.data;
       const name = String(d.full_name || '').trim();
@@ -5306,6 +5306,13 @@ async function createDraftEstimateNow({ leadId = null, customerId = null, extras
         last = sp < 0 ? '' : name.slice(sp + 1).trim();
       }
       if (d.customer_id) row.customer_id = d.customer_id;
+      row.lead_source = String(d.source || '').trim() || null;
+      if (!row.lead_source && row.customer_id) {
+        try {
+          const sourceRes = await supabase.from('customers').select('lead_source').eq('id', row.customer_id).maybeSingle();
+          if (!sourceRes.error && sourceRes.data) row.lead_source = String(sourceRes.data.lead_source || '').trim() || null;
+        } catch (err) { console.warn('[estimates] draft source prefill skipped:', err && err.message); }
+      }
       row.customer_first_name = first || null;
       row.customer_last_name = last || null;
       row.customer_company = d.business_name || null;
@@ -5327,10 +5334,11 @@ async function createDraftEstimateNow({ leadId = null, customerId = null, extras
     // row, both column shapes, exactly like the lead path. lead_id stays
     // null; nothing downstream may assume it is set.
     const cr = await supabase.from('customers')
-      .select('name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+      .select('name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip,lead_source')
       .eq('id', customerId).maybeSingle();
     if (!cr.error && cr.data) {
       const c = cr.data;
+      row.lead_source = String(c.lead_source || '').trim() || null;
       row.customer_first_name = c.first_name || null;
       row.customer_last_name = c.last_name || null;
       row.customer_company = c.company_name || null;
@@ -5359,6 +5367,8 @@ async function createDraftEstimateNow({ leadId = null, customerId = null, extras
   // (prompt 61 landmine 8). Appointment job-site notes go to crew_notes, the
   // estimator's one notes box (prompt 62 Part H retired special_notes).
   if (extras && typeof extras === 'object') {
+    // Keep the New Contact source even if its follow-up profile read fails.
+    if (String(extras.leadSource || '').trim()) row.lead_source = String(extras.leadSource).trim();
     const adr = extras.address;
     if (adr && [adr.address1, adr.city, adr.state, adr.zip].some(v => String(v || '').trim())) {
       row.customer_address1 = String(adr.address1 || '').trim() || null;
@@ -5660,6 +5670,7 @@ async function openEstimateStartPicker(opts = {}) {
       if (!pecPhoneValid(val('espPhone'))) { errEl.textContent = 'Enter a 10 digit phone number.'; return; }
       if (!pecEmailValid(val('espEmail'))) { errEl.textContent = 'Enter a valid email address.'; return; }
       if (!val('espSource')) { errEl.textContent = 'Pick a lead source.'; return; }
+      extras.leadSource = val('espSource');
       const btn = q('#espGo');
       btn.disabled = true; btn.textContent = 'Creating…';
       try {
@@ -19031,7 +19042,7 @@ async function renderSettingsEstimates() {
     </div>
     <div class="pec-card">
       <div style="font-weight:700">Line pricing</div>
-      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">Each estimate line prices on its own now (prompt 69): the per-line GP floor, whether a below-floor line forces a confirmation, the prefilled label on a new custom line, and how far under the calculated total the final price may land before a written reason is required (the greater of the percent and dollar values applies). Reps cannot change these from the estimator.</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">Set the per-line GP floor, whether a below-floor line blocks sending, the default custom line label, and how far under the calculated total the price may land before a written reason is required to send (the greater of the percent and dollar values applies). Estimates keep saving while pricing needs attention. Reps cannot change these settings from the estimator.</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
         <label style="display:block;font-size:.76rem;color:var(--muted)">Per-line GP floor (%)
           <input type="number" id="lpSetFloor" min="0" max="90" step="0.5" value="${lpFloor}" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
@@ -19047,7 +19058,7 @@ async function renderSettingsEstimates() {
         </label>
       </div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.8rem">
-        <input type="checkbox" id="lpSetBlock" ${lpBlock ? 'checked' : ''}> A line below the floor forces the save confirmation (off: the line only warns and goes red)
+        <input type="checkbox" id="lpSetBlock" ${lpBlock ? 'checked' : ''}> A line below the floor blocks sending (off: the line only warns and goes red). Saving continues either way.
       </label>
       <div style="margin-top:10px"><button type="button" class="pec-btn ghost sm" id="lpSave">Save line pricing</button></div>
     </div>
@@ -33595,27 +33606,108 @@ async function pecSoldOnSiteContext(est, acceptedAtIso) {
   });
   return { enabled: true, sold: d.sold, appointment: d.appointment, reason: d.reason };
 }
+// Browser mirror of production/estimate-send-readiness.cjs, covered by parity tests.
+function estimatePricingSendBlockers(est, settings = {}) {
+  const finite = value => value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
+  const configured = (key, fallback) => finite(settings[key]) ?? fallback;
+  const round = value => Math.round(value * 100) / 100;
+  const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : (Array.isArray(est.line_items) ? est.line_items : []);
+  const snapshot = est.pricing_snapshot && est.pricing_snapshot.send_readiness;
+  const saved = snapshot && snapshot.version === 1 ? snapshot : null;
+  if (est.is_custom === true || (saved && saved.isCustom === true)) return [];
+  const areaItems = items.filter(li => li && li.estimate_area_id);
+  const calculated = saved ? finite(saved.calcTotal) : finite(est.calc_price);
+  const sell = saved ? finite(saved.finalSell) : (areaItems.length ? round(areaItems.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0)) : finite(est.price));
+  const blockers = [];
+  const threshold = Math.max((calculated ?? 0) * configured('line_pricing_reason_threshold_pct', 2) / 100, configured('line_pricing_reason_threshold_dollars', 100));
+  if (calculated != null && sell != null && round(calculated - sell) > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
+    blockers.push({ msg: 'Add a reason for the price change before sending. Your estimate changes are saved.' });
+  }
+  let gpPct = saved ? finite(saved.combinedGpPct) : null;
+  let lines = saved && Array.isArray(saved.lines) ? saved.lines : [];
+  if (!saved) {
+    // Legacy rows predate the snapshot. Area costs include commission;
+    // add-on costs store materials only, matching the estimator's math.
+    const opening = items.filter(li => li && (!li.is_optional || li.selected_by_customer === true));
+    const total = round(opening.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0));
+    const commission = finite(est.commission_pct);
+    if (areaItems.length && total > 0 && opening.every(li => finite(li.unit_cost) != null && (li.estimate_area_id || commission != null))) {
+      const gp = round(opening.reduce((sum, li) => sum + (finite(li.total) ?? 0) - (finite(li.qty) ?? 1) * Number(li.unit_cost) - (li.estimate_area_id ? 0 : Number(li.total) * commission / 100), 0));
+      gpPct = gp / total;
+    } else if (!items.some(li => li && li.is_optional === true)) {
+      gpPct = finite(est.gp_pct);
+    }
+    lines = areaItems.filter(li => finite(li.total) > 0 && finite(li.unit_cost) != null).map(li => ({
+      label: li.label || 'Line', gpPct: (Number(li.total) - (finite(li.qty) ?? 1) * Number(li.unit_cost)) / Number(li.total),
+    }));
+  }
+  const floor = configured('estimator_floor_gp_pct', 40);
+  if (gpPct != null && gpPct * 100 < floor - 0.05) {
+    blockers.push({ msg: `Gross profit is ${(gpPct * 100).toFixed(1)}%, below the ${floor}% floor. Adjust the price before sending. Your changes are saved.` });
+  }
+  if (String(settings.line_pricing_block_below_floor ?? 'false').toLowerCase() === 'true') {
+    const lineFloor = configured('line_pricing_gp_floor_pct', floor) || floor;
+    for (const line of lines) {
+      const lineGp = finite(line.gpPct);
+      if (lineGp != null && lineGp * 100 < lineFloor - 0.05) blockers.push({ msg: `"${line.label || 'Line'}" has ${(lineGp * 100).toFixed(1)}% gross profit, below the ${lineFloor}% line floor. Adjust this line before sending. Your changes are saved.` });
+    }
+  }
+  return blockers;
+}
+
+async function flushEstimateBeforeSend(est) {
+  if (!pecInlineEstimatorAlive() || String(pecEstInline.estimateId) !== String(est.id)) return true;
+  const frameWindow = pecEstInline.iframe.contentWindow;
+  const requestId = crypto.randomUUID();
+  const result = await new Promise(resolve => {
+    let timer;
+    const finish = value => { clearTimeout(timer); window.removeEventListener('message', onMessage); resolve(value); };
+    const onMessage = event => {
+      if (event.origin !== window.location.origin || event.source !== frameWindow) return;
+      const data = event.data;
+      if (!data || data.type !== 'pec-estimator-flushed' || data.request_id !== requestId || String(data.estimate_id) !== String(est.id)) return;
+      finish({ ok: data.ok === true, error: data.error });
+    };
+    window.addEventListener('message', onMessage);
+    timer = setTimeout(() => finish({ ok: false, error: 'The latest changes have not finished saving. Wait for the estimate to sync, then send again.' }), 20000);
+    try { frameWindow.postMessage({ type: 'pec-estimator-flush', request_id: requestId, estimate_id: est.id }, window.location.origin); }
+    catch (_) { finish({ ok: false, error: 'Could not save the latest estimate changes. Save the estimate, then send again.' }); }
+  });
+  if (!result.ok) showEstimateSendBlockers(est, [{ msg: result.error || 'The latest estimate changes need to finish saving before sending.' }]);
+  return result.ok;
+}
+
 async function estimateSendGateOk(est) {
+  if (!(await flushEstimateBeforeSend(est))) return false;
   // FRESH READ (prompt 76): the fix flow happens INSIDE the inline estimator
   // now (tap the blocker, type or Generate in the sheet), which writes
   // descriptions and scope_stale server-side without re-rendering this page.
   // Gating on the caller's in-memory snapshot would keep blocking a rep who
   // just cleared the block, so the gate re-reads the rows it judges.
-  // Best-effort: a failed read falls back to the snapshot.
+  // A failed read blocks sending so an older, valid price cannot win over
+  // the unfinished price that was just autosaved.
   let items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
   let scopeStale = est.scope_stale === true;
   let scopeOfWork = est.scope_of_work;
+  let pricingSettings = {};
   let customAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
   try {
-    const [liRes, aRes, eRes] = await Promise.all([
-      supabase.from('estimate_line_items').select('label,description,sort_order,estimate_area_id,total,is_optional,selected_by_customer').eq('estimate_id', est.id).order('sort_order', { ascending: true }),
+    const [liRes, aRes, eRes, setRes] = await Promise.all([
+      supabase.from('estimate_line_items').select('label,description,sort_order,estimate_area_id,total,qty,unit_cost,is_optional,selected_by_customer').eq('estimate_id', est.id).order('sort_order', { ascending: true }),
       supabase.from('estimate_areas').select('id,is_custom').eq('estimate_id', est.id),
-      supabase.from('estimates').select('scope_stale,scope_of_work').eq('id', est.id).maybeSingle(),
+      supabase.from('estimates').select('*').eq('id', est.id).maybeSingle(),
+      supabase.from('settings').select('key,value').in('key', ['estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars']),
     ]);
+    if (liRes.error || aRes.error || eRes.error || setRes.error || !Array.isArray(liRes.data) || !eRes.data) throw new Error('Estimate could not be checked.');
     if (!liRes.error && Array.isArray(liRes.data)) items = liRes.data;
     if (!aRes.error && Array.isArray(aRes.data)) customAreaIds = new Set(aRes.data.filter(a => a && a.is_custom === true && a.id).map(a => a.id));
-    if (!eRes.error && eRes.data) { scopeStale = eRes.data.scope_stale === true; scopeOfWork = eRes.data.scope_of_work; }
-  } catch (_) { /* snapshot fallback */ }
+    if (!eRes.error && eRes.data) { Object.assign(est, eRes.data); scopeStale = eRes.data.scope_stale === true; scopeOfWork = eRes.data.scope_of_work; }
+    est.estimate_line_items = items;
+    pricingSettings = Object.fromEntries((setRes.data || []).map(row => [row.key, row.value]));
+  } catch (_) {
+    showEstimateSendBlockers(est, [{ msg: 'Could not check the latest saved estimate. Reconnect and try sending again.' }]);
+    return false;
+  }
   // Prompt 76 Part F: blockers are structured now. A line-bound blocker
   // carries its sort_order so the modal can LINK it: one tap opens that
   // line's editor sheet with the description focused (under 20 seconds to
@@ -33634,6 +33726,8 @@ async function estimateSendGateOk(est) {
   if (!items.length || !(Number(estimateOpeningTotal({ ...est, estimate_line_items: items })) > 0)) {
     blockers.push({ msg: 'This estimate has no priced lines yet. Open it in the estimator, add at least one line, and save before sending.' });
   }
+  if (!estimateOptionalGateOk({ ...est, estimate_line_items: items })) return false;
+  blockers.push(...estimatePricingSendBlockers(est, pricingSettings));
   if (scopeStale) {
     // Prompt 94: nothing sets scope_stale anymore and prod rows were
     // cleared; this survives for any straggler. A re-save from the
@@ -34076,6 +34170,7 @@ async function openPresentMode(est) {
   };
 
   async function openForSigning() {
+    if (!(await estimateSendGateOk(est))) return;
     if (!(await ensureEstimateToken(est))) return;
     if (!est.sent_at) {
       // Same send gates as email/text (prompts 72 + 74 + 78): opening for
@@ -34084,8 +34179,6 @@ async function openPresentMode(est) {
       // the one send path with no blank check at all before prompt 78).
       // Prompt 84: the EMPTY-estimate hard block rides the same gate, so a
       // blank estimate cannot become live by this channel either.
-      if (!estimateOptionalGateOk(est)) return;
-      if (!(await estimateSendGateOk(est))) return;
       if (!confirm(`Open ${estNum} for signing? This makes the estimate live, the same as sending it. The customer's link will work from now on.`)) return;
       try { await markEstimateSent(est); sentFlipped = true; }
       catch (err) { showToast('Could not mark the estimate as sent: ' + esc(err.message || String(err)), { ttl: 8000 }); return; }
@@ -34256,7 +34349,6 @@ async function pecCcSnapshotAtSend(est) {
 async function sendEstimateText(est, opts = {}) {
   if (!est.customer_phone) { showToast('No phone on file for this customer.', { ttl: 4000 }); return false; }
   if (!(await ensureEstimateToken(est))) return false;
-  if (!opts.skipGate && !estimateOptionalGateOk(est)) return false;
   if (!opts.skipGate && !(await estimateSendGateOk(est))) return false;
   if (!opts.skipConfirm && !confirm(`Text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)}? They will get the review-and-sign link with a "Reply STOP to opt out" line.`)) return false;
   try {
@@ -34279,6 +34371,7 @@ async function sendEstimateText(est, opts = {}) {
 }
 
 async function openEstimateSendModal(est, opts = {}) {
+  if (!(await estimateSendGateOk(est))) return;
   if (!(await ensureEstimateToken(est))) return;
   await fetchBrandIdentity();
   const brand = 'prescott-epoxy'; // PEC-only, matches est.brand today
@@ -34351,7 +34444,6 @@ async function openEstimateSendModal(est, opts = {}) {
       // Optional-lines send gate (prompt 72 decision 1), then the per-line
       // scope + schedule + blank gate (prompts 74/78, hard block, all
       // channels).
-      if (!estimateOptionalGateOk(est)) return;
       if (!(await estimateSendGateOk(est))) return;
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {

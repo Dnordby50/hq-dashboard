@@ -36,6 +36,7 @@
 // status), so exactly one request wins the transition.
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
+const { estimatePricingSendError } = require('./_pec-estimate-send.cjs');
 const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 const { prepareDepositInstallment, resolveCurrentAsk, round2 } = require('./_pec-installments.cjs');
 // Estimate-side payment schedule (prompt 74): the same math module the
@@ -950,6 +951,15 @@ async function loadEstimate(token) {
   // sees the rows, then overwrite the legacy jsonb reference. The rows carry
   // the id the customer's tick and the signature freeze key on.
   est.line_items = await loadLineItems(est.id);
+  // Autosaving an unfinished revision of a sent estimate must not make its
+  // new below-floor price signable through the existing link. Staff preview
+  // uses loadEstimateById and stays available. Historical finalized records
+  // and older clients without this snapshot retain their existing access.
+  if (!['accepted', 'signed', 'rejected', 'lost'].includes(est.status)
+      && est.pricing_snapshot && est.pricing_snapshot.send_readiness
+      && await estimatePricingSendError(sb, est)) {
+    est.pricing_review_pending = true;
+  }
   return est;
 }
 
@@ -2298,6 +2308,7 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimate(token);
       if (!est) return json(404, { ok: false, error: 'Not found' });
+      if (est.pricing_review_pending) return json(409, { ok: false, error: 'This estimate is being updated. Please contact us for the latest version.' });
       const action = String(body.action || '');
       if (action === 'accept') return await handleAccept(est, body, event);
       if (action === 'change') return await handleChange(est, body);
@@ -2353,6 +2364,7 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
+    if (est.pricing_review_pending) return htmlResponse(200, '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>Estimate being updated</title><body style="font-family:system-ui;max-width:560px;margin:60px auto;padding:24px"><h1>This estimate is being updated</h1><p>Please contact us for the latest version.</p></body>');
     const isPrint = String(qs.print || '') === '1';
     // areas first: the color charts derive from the lines' systems + picks.
     const areas = await loadAreas(est.id);

@@ -1,3 +1,20 @@
+## [2026-09-14 14:53 MST] estimates: carry lead sources and save unfinished price edits
+
+By: Codex
+
+Changed: New Estimate now carries the entered New Contact source into the estimate, using the same shared draft builder for existing customers and leads. Missing lead attribution falls back to the linked customer. Reopening an older estimate fills a blank source from its lead/customer while preserving a source already chosen on the estimate; this is a read-time fallback, not a bulk backfill.
+
+Saving: Missing price-change reasons and below-floor overall or enabled per-line GP no longer block manual save or autosave or request confirmation. Overall sell-price, discount, override mode, lead source and linked-lead changes now participate in the dirty fingerprint, and the save callbacks capture source changes. The initial parent draft, full saves and overlapping timer/manual/Send requests are serialized. A shared write lock excludes outbox drains while children are replaced, preventing a previously captured queue from replaying old child rows during a newer save.
+
+Sending: The dashboard first asks the embedded estimator to finish saving and syncing its latest state, then reads fresh estimate, line and threshold data. Email, SMS and Present enforce the price-change reason, overall floor and enabled per-line floor at send time; server send functions share the same policy, parity-tested against the dashboard mirror. Exact pricing context is retained in pricing_snapshot.send_readiness. Public links temporarily withhold unfinished new-snapshot revisions of open estimates so an already-sent link cannot sign a newly autosaved invalid price; finalized records retain access. Settings copy and What's New explain that progress saves while sending is blocked. Existing autosave setting is confirmed true; thresholds remain unchanged.
+
+Validation: Full npm test including posttest passed. All 47 focused tests passed: 16 source/form/loader cases, 17 actual React estimator save/flush cases, 9 pricing/send/public/dashboard cases and 5 outbox write-lock concurrency/recovery cases. Pre-change source fixtures fail 14/16; pre-change estimator screen fails 15/17, confirming the tests reproduce the bugs. Estimator TypeScript/Vite build passed (index-BHV-5jst.js). HEAD and working dashboard each have six nonempty inline scripts with zero parse failures. Changed CJS files and JSON manifests parse; the three changed endpoint bundles build with esbuild; git diff --check passes. Read-only live Supabase checks confirmed source-column staff read access, autosave=true, overall/line floors=40, per-line blocking=false and reason leeway=max(2%, $100). Twenty-four nondeleted estimates have blank but recoverable attribution; no bulk data writes or customer communications were made. No migration is needed; SCHEMA.md only corrects its writer description.
+
+Files touched: index.html, apps/estimator/src/features/estimator/EstimatorScreen.tsx, apps/estimator/src/lib/estimateLoad.ts, apps/estimator/src/offline/estimates.ts, apps/estimator/src/offline/sync.ts, apps/estimator/src/offline/writeLock.ts, apps/estimator/package.json, apps/estimator/package-lock.json, production/estimate-source.test.cjs, production/estimator-autosave.test.cjs, production/estimate-send-readiness.cjs, production/estimate-send-readiness.test.cjs, production/estimate-write-lock.test.cjs, netlify/functions/_pec-estimate-send.cjs, netlify/functions/pec-send-email.cjs, netlify/functions/pec-send-sms.cjs, netlify/functions/pec-public-estimate.cjs, package.json, features.json, help/whats-new.json, SCHEMA.md, PROJECT-LOG.md.
+Next steps: Publish and verify the live dashboard and estimator bundle. Refresh TopCoat after deployment to load the changes.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-10 11:43 MST] sales: functional fixes verified live; booking design remains a preview
 
 By: Codex

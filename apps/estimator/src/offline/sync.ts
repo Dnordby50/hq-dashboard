@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { listOps, markError, removeOp } from './outbox';
 import { drainPass } from '../../../../production/outbox-drain.cjs';
+import { withEstimateWriteLock } from './writeLock';
 
 // blocked = skipped this pass because a parent op failed or was skipped
 // (one root cause reads as one problem); deferred = skipped waiting out its
@@ -23,7 +24,7 @@ let _draining: Promise<SyncResult> | null = null;
 // wait out an hour.
 export async function drainOutbox(opts?: { force?: boolean }): Promise<SyncResult> {
   if (_draining) return _draining;
-  _draining = (async () => {
+  _draining = withEstimateWriteLock(async () => {
     const ops = await listOps();
     const counts = await drainPass(ops, {
       upsert: async (op) => {
@@ -36,7 +37,7 @@ export async function drainOutbox(opts?: { force?: boolean }): Promise<SyncResul
     }, { force: opts?.force });
     const remaining = (await listOps()).length;
     return { ...counts, remaining };
-  })();
+  });
   try {
     return await _draining;
   } finally {

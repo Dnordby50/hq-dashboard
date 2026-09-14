@@ -20,6 +20,7 @@
 const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { resolveCurrentAsk } = require('./_pec-installments.cjs');
 const { emptySendError } = require('../../production/optional-lines.cjs');
+const { estimatePricingSendError, PRICING_SEND_COLUMNS, PRICING_LINE_COLUMNS } = require('./_pec-estimate-send.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -213,7 +214,7 @@ exports.handler = async (event) => {
       // kind stays 'estimate' in pec_sms_log so these never pollute the
       // Invoicing "Last invoiced" counter (which keys on kind 'invoice').
       if (!estimate_token) return jc(400, { ok: false, error: 'estimate_token is required for an estimate text.' });
-      const estRows = await sb('GET', `/estimates?public_token=eq.${encodeURIComponent(estimate_token)}&deleted_at=is.null&select=id,estimate_number,price,customer_name,customer_first_name,customer_phone,lead_id,estimate_line_items(total,is_optional,selected_by_customer)&limit=1`);
+      const estRows = await sb('GET', `/estimates?public_token=eq.${encodeURIComponent(estimate_token)}&deleted_at=is.null&select=${PRICING_SEND_COLUMNS},estimate_number,customer_name,customer_first_name,customer_phone,lead_id,estimate_line_items(${PRICING_LINE_COLUMNS})&limit=1`);
       const est = Array.isArray(estRows) ? estRows[0] : null;
       if (!est) return jc(400, { ok: false, error: 'Estimate not found for that token.' });
       // Prompt 84 (Bug 2): server mirror of the empty-estimate hard block, so
@@ -222,6 +223,8 @@ exports.handler = async (event) => {
       // client gate; shared in production/optional-lines.cjs.
       const emptyErr = emptySendError(est.estimate_line_items);
       if (emptyErr) return jc(400, { ok: false, error: emptyErr });
+      const pricingErr = await estimatePricingSendError(sb, est);
+      if (pricingErr) return jc(400, { ok: false, error: pricingErr });
       // Consent: transactional send, opt-out-only (the invoice-text reading).
       // A lead-linked estimate respects the lead's hard opt-out, and the
       // lead's customer link both fills the log attribution and re-runs the

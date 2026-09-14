@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-source-and-price-autosave",
+    "date": "2026-09-14",
+    "title": "Estimate sources carry over and price edits keep saving.",
+    "summary": "Lead sources follow customers into estimates. Price-floor warnings and missing price-change reasons block sending while your draft keeps saving.",
+    "howto": [
+      "Start an estimate with a new contact, customer or lead. Its saved lead source follows into the estimate.",
+      "Change a price or discount and let autosave finish. You can also press Save immediately, even if a price warning is showing.",
+      "Before sending, add any required price-change reason and resolve floor warnings. Send waits for the latest changes to save and sync."
+    ]
+  },
+  {
     "id": "estimate-formatting-appointment-sources",
     "date": "2026-09-10",
     "title": "Format estimate descriptions and capture appointment sources.",

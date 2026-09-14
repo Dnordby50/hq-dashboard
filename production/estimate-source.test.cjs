@@ -1,0 +1,174 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('../apps/estimator/node_modules/typescript');
+
+const root = path.join(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+function dashboardFunction(name, next) {
+  const start = html.indexOf(`async function ${name}(`);
+  const end = html.indexOf(next, start);
+  assert.ok(start >= 0 && end > start, `${name} boundaries exist`);
+  return html.slice(start, end);
+}
+const draftSource = dashboardFunction('createDraftEstimate', '\n// The "this lead already');
+const pickerSource = dashboardFunction('openEstimateStartPicker', '\n// The iframe talks back');
+
+// Project the requested columns so omitting attribution from a real select
+// fails these tests, even though the in-memory profile holds that value.
+function database(seed = {}, failures = {}) {
+  const tables = Object.fromEntries(Object.entries(seed).map(([table, rows]) => [table, rows.map(row => ({ ...row }))]));
+  const writes = [], reads = [];
+  return {
+    writes, reads,
+    from(table) {
+      let columns = '*', id, insert;
+      const finish = (single = false) => {
+        if (!insert) {
+          reads.push({ table, columns, id });
+          if (failures[table] === 'throw') throw new Error('lookup offline');
+          if (failures[table]) return { data: null, error: { message: 'lookup unavailable' } };
+        }
+        let rows = tables[table] || [];
+        if (insert) {
+          const saved = { id: `${table}-new`, ...insert };
+          writes.push({ table, row: saved });
+          (tables[table] ||= []).push(saved);
+          rows = [saved];
+        } else if (id != null) rows = rows.filter(row => row.id === id);
+        const selected = rows.map(row => columns === '*' ? { ...row } : Object.fromEntries(columns.split(',').map(key => [key, row[key]])));
+        return { data: single ? selected[0] || null : selected, error: null };
+      };
+      const q = {
+        select(value) { columns = value; return q; },
+        eq(key, value) { if (key === 'id') id = value; return q; },
+        is() { return q; }, in() { return q; }, order() { return q; }, limit() { return q; },
+        insert(value) { insert = { ...value }; return q; },
+        maybeSingle: async () => finish(true), single: async () => finish(true),
+        then(resolve, reject) { return Promise.resolve().then(() => finish()).then(resolve, reject); },
+      };
+      return q;
+    },
+  };
+}
+
+function dashboard(db) {
+  const fields = new Map();
+  const field = selector => {
+    if (!fields.has(selector)) fields.set(selector, {
+      value: '', checked: false, style: {}, handlers: {}, focus() {},
+      addEventListener(name, handler) { this.handlers[name] = handler; },
+      querySelectorAll() { return []; },
+    });
+    return fields.get(selector);
+  };
+  const context = vm.createContext({
+    console: { warn() {} }, supabase: db, navigator: { onLine: true },
+    state: { session: { user: { id: 'staff' } } }, pecEstInline: {},
+    withDeadline: callback => callback(), showToast() {}, switchView() {},
+    openEstimatorFrame() { throw new Error('unexpected offline launch'); },
+    closeModal() {},
+    openModal(_html, options) { options.onMount({ querySelector: field, querySelectorAll: () => [] }); },
+    leadOpenEstimates: async () => [],
+    esc: value => String(value ?? ''), titleCaseValue: value => value,
+    randomToken: () => 'fixture-token',
+    pecPhoneValid: value => value.replace(/\D/g, '').length === 10,
+    pecEmailValid: value => value.includes('@'),
+  });
+  vm.runInContext(draftSource + '\n' + pickerSource, context);
+  return { context, field };
+}
+
+for (const [name, records, args, expected] of [
+  ['existing customer', { customers: [{ id: 'c1', lead_source: 'Google' }] }, { customerId: 'c1' }, 'Google'],
+  ['existing lead', { leads: [{ id: 'l1', source: 'Facebook' }] }, { leadId: 'l1' }, 'Facebook'],
+  ['lead linked to a customer', { leads: [{ id: 'l1', source: '', customer_id: 'c1' }], customers: [{ id: 'c1', lead_source: 'Word of Mouth' }] }, { leadId: 'l1' }, 'Word of Mouth'],
+  ['lead attribution wins over linked customer', { leads: [{ id: 'l1', source: 'Angi', customer_id: 'c1' }], customers: [{ id: 'c1', lead_source: 'Google' }] }, { leadId: 'l1' }, 'Angi'],
+  ['blank attribution stays blank', { customers: [{ id: 'c1', lead_source: '  ' }] }, { customerId: 'c1' }, null],
+]) {
+  test(`draft source carries from ${name}`, async () => {
+    const db = database(records);
+    await dashboard(db).context.createDraftEstimateNow(args);
+    assert.equal(db.writes.find(write => write.table === 'estimates').row.lead_source, expected);
+  });
+}
+
+test('new contact form carries the entered source through customer creation into the estimate', async () => {
+  const db = database({ pec_lead_sources: [{ name: 'Google' }] });
+  const h = dashboard(db);
+  await h.context.openEstimateStartPicker();
+  for (const [name, value] of Object.entries({ espFirst: 'Sam', espLast: 'Example', espPhone: '9285550100', espEmail: 'sam@example.test', espSource: 'Google' })) {
+    h.field('#' + name).value = value;
+  }
+  await h.field('#espGo').handlers.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.field('#espErr').textContent, '');
+  assert.deepEqual(db.writes.map(write => [write.table, write.row.lead_source]), [['customers', 'Google'], ['estimates', 'Google']]);
+  assert.equal(db.writes[1].row.customer_id, db.writes[0].row.id);
+});
+
+test('new contact attribution survives a failed follow-up customer lookup', async () => {
+  const db = database({}, { customers: 'error' });
+  await dashboard(db).context.createDraftEstimateNow({ customerId: 'c1', extras: { leadSource: 'Google' } });
+  assert.equal(db.writes[0].row.lead_source, 'Google');
+});
+
+test('an unavailable linked-customer source does not prevent a lead draft from opening', async () => {
+  const db = database({ leads: [{ id: 'l1', customer_id: 'c1' }] }, { customers: 'throw' });
+  await dashboard(db).context.createDraftEstimateNow({ leadId: 'l1' });
+  assert.equal(db.writes[0].row.lead_id, 'l1');
+  assert.equal(db.writes[0].row.lead_source, null);
+});
+
+function compile(file, imports = {}) {
+  const source = fs.readFileSync(path.join(root, file), 'utf8');
+  const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 } }).outputText;
+  const exports = {};
+  vm.runInNewContext(output, {
+    exports,
+    require(name) { assert.ok(name in imports, `known import ${name}`); return imports[name]; },
+  });
+  return exports;
+}
+const customerModule = compile('apps/estimator/src/lib/customer.ts');
+function loadWith(db) {
+  return compile('apps/estimator/src/lib/estimateLoad.ts', {
+    './supabase': { supabase: db }, './customer': customerModule,
+    '../offline/estimates': { CUSTOM_LINE_LABEL: 'Custom scope of work' },
+  }).loadEstimateForEdit('e1');
+}
+
+for (const [name, estimate, profiles, expected] of [
+  ['customer source', { customer_id: 'c1' }, { customers: [{ id: 'c1', lead_source: 'Google' }] }, 'Google'],
+  ['lead source first', { lead_id: 'l1', customer_id: 'c1' }, { leads: [{ id: 'l1', source: 'Angi' }], customers: [{ id: 'c1', lead_source: 'Google' }] }, 'Angi'],
+  ['customer linked through a blank-source lead', { lead_id: 'l1' }, { leads: [{ id: 'l1', source: ' ', customer_id: 'c1' }], customers: [{ id: 'c1', lead_source: 'Google' }] }, 'Google'],
+  ['blank estimate source', { lead_source: '  ', customer_id: 'c1' }, { customers: [{ id: 'c1', lead_source: 'Google' }] }, 'Google'],
+  ['no known source', {}, {}, null],
+]) {
+  test(`reopened estimate recovers ${name}`, async () => {
+    const db = database({ estimates: [{ id: 'e1', ...estimate }], ...profiles });
+    const loaded = await loadWith(db);
+    assert.equal(loaded.leadSource, expected);
+    assert.equal(db.writes.length, 0, 'opening an estimate makes no database writes');
+  });
+}
+
+test('a saved estimate source wins without fetching different profile attribution', async () => {
+  const db = database({ estimates: [{ id: 'e1', lead_source: 'Word of Mouth', lead_id: 'l1', customer_id: 'c1' }] });
+  assert.equal((await loadWith(db)).leadSource, 'Word of Mouth');
+  assert.equal(db.reads.some(read => ['leads', 'customers'].includes(read.table)), false);
+});
+
+for (const failure of ['error', 'throw']) {
+  test(`profile lookup ${failure} does not prevent opening the estimate`, async () => {
+    const db = database({
+      estimates: [{ id: 'e1', lead_id: 'l1', customer_id: 'c1', crew_notes: 'Keep this note' }],
+      customers: [{ id: 'c1', lead_source: 'Google' }],
+    }, { leads: failure });
+    const loaded = await loadWith(db);
+    assert.equal(loaded.leadSource, 'Google');
+    assert.equal(loaded.crewNotes, 'Keep this note');
+  });
+}
