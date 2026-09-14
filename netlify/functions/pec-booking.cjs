@@ -69,6 +69,7 @@ const { computeSlots, addrKey, HOME_KEY } = require('../../production/booking-av
 const { repsWithVerifiedGoogleCalendars } = require('./_pec-booking-google-health.cjs');
 
 const ENDPOINT = 'booking';
+const { bookingDiscovery } = require('../../production/booking-discovery.cjs');
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
 const PHX_TZ = 'America/Phoenix';
 const TYPE_LABELS = {
@@ -1094,81 +1095,72 @@ async function loadBookingBrand(db) {
   return { ...dflt, logo_url: '/assets/pec-logo.png' };
 }
 
-function htmlResponse(statusCode, html) {
+function htmlResponse(statusCode, html, robots = 'noindex, nofollow') {
   return {
     statusCode,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'X-Robots-Tag': statusCode === 200 ? 'index, follow' : 'noindex, nofollow',
+      'X-Robots-Tag': statusCode === 200 ? robots : 'noindex, nofollow',
       'Cache-Control': 'no-store',
     },
     body: html,
   };
 }
 
-// bare: true suppresses the default left-aligned header even on the hosted
-// page; the booking page renders its own centered logo inside its card
-// (the 2026-08-21 Routemize-style redesign Dylan asked for).
-function pageShell(brand, title, inner, { embed = false, bare = false } = {}) {
+// Hosted and embedded pages share the same TopCoat controls and layout.
+function pageShell(brand, title, inner, { embed = false, bare = false, head = '' } = {}) {
   const accent = brand.accent_color || '#D8531C';
-  const primary = brand.primary_color || '#14181C';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)}</title>
+<title>${esc(title)}</title>${head}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--accent:${esc(accent)};--ink:${esc(primary)};--muted:#8a919c;--line:#ececef;--bg:#f5f5f7}
-*{box-sizing:border-box}body{margin:0;font-family:'Poppins',-apple-system,'Segoe UI',Arial,sans-serif;background:${embed ? 'transparent' : 'var(--bg)'};color:var(--ink)}
-.wrap{max-width:540px;margin:0 auto;padding:${embed ? '4px' : '26px 14px 50px'}}
-.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;margin-top:14px;box-shadow:0 6px 24px rgba(20,24,31,.06)}
-.bigcard{background:#fff;border:1px solid var(--line);border-radius:26px;box-shadow:0 12px 44px rgba(20,24,31,.09);overflow:hidden}
-.bigcard .inner{padding:30px 24px 26px}
-.bklogo{display:block;max-height:80px;max-width:230px;margin:0 auto 16px}
-h1{text-align:center;font-size:1.85rem;font-weight:700;margin:.1em 0 .35em;letter-spacing:-.5px}
-h1 .accentword{color:var(--accent);opacity:.85}
-h2{font-size:1.02rem;margin:0 0 10px}
-.q{text-align:center;font-size:1.22rem;font-weight:600;margin:6px 0 4px}
-.qsub{text-align:center;color:var(--muted);font-size:.92rem;margin:0 0 18px}.qsub strong{color:var(--ink)}
-p{line-height:1.5}.muted{color:var(--muted);font-size:.86rem}
-label{display:block;font-size:.74rem;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}
-input,textarea,select{width:100%;padding:12px 13px;border:1.5px solid var(--line);border-radius:12px;font:inherit;font-size:1rem;background:#fff}
-input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
-.btn{display:inline-block;width:100%;padding:14px 16px;border:0;border-radius:14px;background:var(--accent);color:#fff;font-weight:600;font-size:1rem;cursor:pointer;text-align:center;text-decoration:none;font-family:inherit}
-.btn[disabled]{opacity:.55;cursor:default}
-.btn.ghost{background:#fff;color:var(--ink);border:1.5px solid var(--line)}
-.daygrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding-top:12px}
-.daycard{position:relative;background:#fff;border:1.5px solid var(--line);border-radius:18px;padding:24px 6px 16px;text-align:center;cursor:pointer;box-shadow:0 2px 10px rgba(20,24,31,.04);font-family:inherit;transition:border-color .12s}
-.daycard:hover{border-color:var(--accent)}
-.daypill{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:.6rem;font-weight:700;letter-spacing:.8px;border-radius:999px;padding:3px 11px;white-space:nowrap}
-.dw{display:block;color:var(--muted);font-weight:600;letter-spacing:2.5px;font-size:.76rem;text-transform:uppercase}
-.dn{display:block;font-size:2.25rem;font-weight:700;line-height:1.2;color:var(--ink)}
-.dm{display:block;color:var(--muted);font-size:.92rem}
-.dashedbtn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-top:18px;padding:17px 14px;border:2px dashed #d8dade;border-radius:16px;background:#fbfbfc;font-weight:600;font-size:1rem;color:var(--ink);cursor:pointer;font-family:inherit}
-.dashedbtn:hover{border-color:var(--accent)}
-.slot{display:inline-block;padding:11px 15px;margin:5px 6px 5px 0;border:1.5px solid var(--line);border-radius:12px;background:#fff;font-weight:600;cursor:pointer;font-size:.94rem;font-family:inherit}
-.slot:hover{border-color:var(--accent)}
-.slot.sel{background:var(--accent);border-color:var(--accent);color:#fff}
-.trust{display:flex;justify-content:center;align-items:center;gap:14px;background:#f7f7f8;border-top:1px solid var(--line);padding:16px 10px;color:var(--muted);font-size:.92rem;flex-wrap:wrap}
-.trust .tchip{display:flex;align-items:center;gap:8px}
-.trust .tico{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;border:1.5px solid var(--line);background:#fff;font-size:.85rem}
-.trust .tsep{color:#d8dade}
-.underline-note{text-align:center;color:var(--muted);font-size:.82rem;margin-top:14px}
-.err{color:#b42318;font-size:.88rem;min-height:18px;margin-top:8px}
-.ok-badge{font-size:2.2rem;text-align:center}
-.sug{position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:240px;overflow-y:auto;display:none;margin-top:2px}
-.sug div{padding:9px 11px;cursor:pointer;font-size:.9rem;border-top:1px solid var(--line)}
-.sug div:first-child{border-top:0}.sug div:hover{background:rgba(15,20,32,.05)}
-.consent{display:flex;gap:9px;align-items:flex-start;margin-top:14px;font-size:.8rem;color:var(--muted)}
-.consent input{width:auto;margin-top:2px}
-.hpwrap{position:absolute;left:-9999px;top:-9999px;height:1px;overflow:hidden}
-header.bk{display:flex;align-items:center;gap:12px;padding-top:18px}
-header.bk img{height:44px}header.bk .bn{font-weight:700;font-size:1.05rem}
-a{color:var(--accent)}
-</style></head><body><div class="wrap">${(embed || bare) ? '' : `
-<header class="bk">${brand.logo_url ? `<img src="${esc(brand.logo_url)}" alt="${esc(brand.business_name)}">` : ''}<div><div class="bn">${esc(brand.business_name)}</div>${brand.phone ? `<div class="muted">Questions? Call <a href="tel:${esc(brand.phone)}">${esc(brand.phone)}</a></div>` : ''}</div></header>`}
+:root{color-scheme:light;--accent:${esc(accent)};--button:color-mix(in srgb,var(--accent) 86%,#000);--ink:#0f1420;--muted:#626b79;--line:#e6e8ec;--bg:#eef0f3;--soft:#f5f6f8;--selected:color-mix(in srgb,var(--accent) 12%,#fff)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,-apple-system,'Segoe UI',Arial,sans-serif;background:${embed ? 'transparent' : 'var(--bg)'};color:var(--ink);font-size:14px}
+.wrap{max-width:700px;margin:0 auto;padding:${embed ? '4px' : '26px 14px 50px'}}
+.card,.bk-window{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 1px 2px rgba(15,20,32,.04)}
+.card{padding:24px;margin-top:14px}.bk-window{overflow:hidden}
+.bk-brand{padding:20px 26px;display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--line)}
+.bk-logo{display:block;width:146px;max-height:70px;object-fit:contain;object-position:left center}.bk-brand-name{font-weight:600}
+.bk-tag{font-size:11px;color:var(--button);padding:7px 10px;background:var(--selected);border-radius:8px;text-align:center}
+.bk-main{padding:28px}.bk-eyebrow{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1.4px;color:var(--button);margin-bottom:10px}
+h1{font-size:26px;line-height:1.2;letter-spacing:-.5px;font-weight:600;margin:0 0 10px}h2{font-size:17px;line-height:1.4;font-weight:500;margin:0 0 6px}
+p{line-height:1.55;margin:0 0 14px}.muted,.qsub{color:var(--muted);line-height:1.55}.muted{font-size:12px}.qsub{margin:0 0 18px}
+.bk-steps{display:flex;gap:4px;padding:4px;margin:24px 0;background:var(--soft);border:1px solid var(--line);border-radius:10px}
+button{font:inherit;cursor:pointer}button:disabled{cursor:default;opacity:.55}button:focus-visible,a:focus-visible{outline:2px solid var(--button);outline-offset:3px}
+.bk-step{flex:1;border:0;border-radius:7px;background:transparent;color:var(--muted);padding:9px 6px;font-size:12px;line-height:1.4;min-height:44px}
+.bk-step[aria-current=step]{color:var(--button);background:#fff;box-shadow:0 1px 3px rgba(15,20,32,.1)}
+.bk-step span{display:inline-flex;align-items:center;justify-content:center;width:21px;height:21px;background:var(--soft);border-radius:50%;margin-right:6px;font-size:11px}
+.bk-step[aria-current=step] span{background:var(--button);color:#fff}
+.bk-location{display:flex;gap:12px;align-items:center;padding:12px 14px;background:var(--soft);border:1px solid var(--line);border-radius:10px;font-size:13px;line-height:1.5;margin-bottom:22px}
+.bk-location>span{flex:1;min-width:0;overflow-wrap:anywhere}.bk-link{border:0;background:transparent;color:var(--button);font-size:12px;padding:10px 2px;min-height:44px;text-decoration:underline;text-underline-offset:3px}
+.bk-date-label{display:flex;justify-content:space-between;gap:10px;align-items:center;margin:22px 0 10px;font-size:13px}.bk-month-nav{display:flex;gap:6px;flex-shrink:0}
+.bk-arrow{width:44px;height:44px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-size:22px}
+.daygrid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.daycard{padding:10px 3px;border:1px solid var(--line);background:#fff;color:var(--muted);border-radius:10px;font-size:11px;line-height:1.4}
+.dw,.dn,.dm{display:block}.dn{font-size:23px;line-height:1.4;font-weight:500;color:var(--ink)}
+.daycard[aria-pressed=true],.slot[aria-pressed=true],.slot.sel{border-color:var(--button);background:var(--selected);color:var(--button)}.daycard[aria-pressed=true] .dn{color:var(--button)}
+.daycard:hover,.slot:hover{border-color:var(--button)}.bk-times{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 24px}
+.slot{border:1px solid var(--line);border-radius:10px;padding:12px 8px;font-size:13px;min-height:44px;background:#fff;color:var(--ink)}
+#mgDays .slot{margin:4px}.bk-fieldrow{display:grid;grid-template-columns:1fr 1fr;gap:12px}.bk-fieldrow>div{min-width:0}
+label{display:block;font-size:12px;color:var(--ink);margin:16px 0 6px}input,select,textarea{font:inherit;font-size:16px;width:100%;border:1px solid #c7ccd4;background:#fff;color:var(--ink);border-radius:8px;padding:12px;min-width:0}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--button);outline-offset:1px}
+.bk-action{display:flex;justify-content:space-between;align-items:center;gap:14px;border-top:1px solid var(--line);padding-top:20px;margin-top:22px}
+.btn{display:inline-flex;justify-content:center;align-items:center;background:var(--button);color:#fff;border:0;border-radius:10px;padding:13px 18px;font-size:14px;font-weight:600;min-height:46px;text-align:center;text-decoration:none}
+.card>.btn{width:100%}.btn.ghost{background:#fff;color:var(--ink);border:1px solid #c7ccd4}
+.bk-selection{font-size:12px;line-height:1.5;color:var(--muted)}.bk-selection b{font-weight:500;display:block;color:var(--ink);font-size:14px}
+.bk-footer{background:var(--soft);border-top:1px solid var(--line);padding:15px 26px;font-size:12px;line-height:1.5;color:var(--muted);display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px}.bk-footer a{color:var(--ink)}
+.err{color:#b42318;font-size:13px;min-height:18px;margin-top:8px}.ok-badge{display:inline-flex;width:44px;height:44px;align-items:center;justify-content:center;border-radius:50%;background:var(--selected);color:var(--button);margin-bottom:16px;font-size:20px}
+.sug{position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:240px;overflow-y:auto;display:none;margin-top:2px}
+.sug div{padding:12px;cursor:pointer;font-size:14px;border-top:1px solid var(--line)}.sug div:first-child{border-top:0}.sug div:hover{background:var(--soft)}
+.consent{margin-top:16px;font-size:11px;line-height:1.6;color:var(--muted)}.hpwrap{position:absolute;left:-9999px;top:-9999px;height:1px;overflow:hidden}
+header.bk{display:flex;align-items:center;gap:12px;padding-top:18px}header.bk img{height:44px}header.bk .bn{font-weight:600}
+a{color:var(--button)}.bk-preview section{padding:22px 0;border-top:1px solid var(--line)}
+@media(max-width:460px){.wrap{padding:${embed ? '4px' : '10px 7px 24px'}}.bk-main{padding:20px 14px}.bk-brand{padding:14px}.bk-logo{width:128px}.bk-tag{max-width:100px}h1{font-size:24px}.bk-steps{gap:2px}.bk-step{font-size:11px;padding:8px 2px}.bk-step span{display:block;margin:0 auto 5px}.daygrid{gap:5px}.bk-times{grid-template-columns:repeat(2,1fr)}.bk-fieldrow{grid-template-columns:1fr}.bk-action{align-items:stretch;flex-direction:column}.bk-footer{padding:14px}}
+</style></head><body><main class="wrap">${(embed || bare) ? '' : `
+<header class="bk">${brand.logo_url ? `<img src="${esc(brand.logo_url)}" alt="${esc(brand.business_name)}">` : ''}<div><div class="bn">${esc(brand.business_name)}</div>${brand.phone ? `<div class="muted">Call <a href="tel:${esc(brand.phone)}">${esc(brand.phone)}</a></div>` : ''}</div></header>`}
 ${inner}
-</div>${embed ? `<script>
+</main>${embed ? `<script>
 (function(){var last=0;function post(){var h=document.documentElement.scrollHeight;if(h!==last){last=h;parent.postMessage({pecBookingHeight:h},'*');}}
 new MutationObserver(post).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
 window.addEventListener('load',post);setInterval(post,800);})();
@@ -1176,11 +1168,10 @@ window.addEventListener('load',post);setInterval(post,800);})();
 }
 
 function closedInner(brand) {
-  return `<div class="bigcard"><div class="inner">
-  ${brand.logo_url ? `<img class="bklogo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}">` : ''}
-  <h1>Online booking is <span class="accentword">almost ready</span></h1>
-<p class="qsub">We are putting the finishing touches on online scheduling.${brand.phone ? ` In the meantime, call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a> and we will get you on the calendar right away.` : ' Please call us and we will get you on the calendar right away.'}</p></div></div>
-${brand.license_number ? `<div class="underline-note">Licensed, Bonded &amp; Insured &middot; ${esc(brand.license_number)}</div>` : ''}`;
+  return `<div class="card">
+  ${brand.logo_url ? `<img class="bk-logo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}" style="margin-bottom:20px">` : ''}
+  <h1>Online booking is unavailable</h1>
+<p class="qsub">${brand.phone ? `Call <a href="tel:${esc(brand.phone)}">${esc(brand.phone)}</a> to schedule an appointment.` : 'Please call us to schedule an appointment.'}</p></div>`;
 }
 
 // The booking page: a 3-step client flow (address -> time -> details) that
@@ -1203,112 +1194,126 @@ function bookingPageInner(form, mapsKey, opts = {}) {
     preview,
     successMessage: form.success_message || 'You are booked!',
   }).replace(/</g, '\\u003c');
-  // Headline treatment (2026-08-21 redesign): the LAST word renders in the
-  // accent color, the same trick the old Routemize page used. The client's
-  // setHeadline() applies the identical split on preview updates.
-  const headline = form.headline || 'Book your free on-site estimate';
-  const hWords = headline.trim().split(/\s+/);
-  const hLast = hWords.length > 1 ? hWords.pop() : '';
+  const headline = form.headline || 'Book your free estimate';
   const brand = opts.brand || {};
   return `
-${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px;margin-bottom:12px"><span class="muted" style="font-size:.78rem">Preview. Nothing here submits; edits in the builder appear live.</span></div>' : ''}
-<div class="bigcard">
-  <div class="inner">
-  ${brand.logo_url ? `<img class="bklogo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}">` : ''}
-  <h1 id="bkHeadline">${esc(hWords.join(' '))}${hLast ? ` <span class="accentword">${esc(hLast)}</span>` : ''}</h1>
+${preview ? '<div class="card" style="padding:10px 14px;margin-bottom:12px"><span class="muted">Form preview. Nothing will be booked.</span></div>' : ''}
+<div class="bk-window${preview ? ' bk-preview' : ''}">
+  <header class="bk-brand">
+    ${brand.logo_url ? `<img class="bk-logo" src="${esc(brand.logo_url)}" alt="${esc(brand.business_name || '')}">` : `<span class="bk-brand-name">${esc(brand.business_name || '')}</span>`}
+    <span class="bk-tag" id="bkTypeLabel">${esc(t.label)}</span>
+  </header>
+  <div class="bk-main">
+  <div class="bk-eyebrow">Schedule a visit</div>
+  <h1 id="bkHeadline">${esc(headline)}</h1>
   <p class="qsub" id="bkIntro"${form.intro_text ? '' : ' style="display:none"'}>${esc(form.intro_text || '')}</p>
+  <nav class="bk-steps" id="bkSteps" aria-label="Booking steps">
+    <button class="bk-step" id="st1" type="button" aria-current="step"><span>1</span>Location</button>
+    <button class="bk-step" id="st2" type="button" disabled><span>2</span>Date &amp; time</button>
+    <button class="bk-step" id="st3" type="button" disabled><span>3</span>Your details</button>
+  </nav>
 
-<div id="stepAddr">
-  <div class="q">Where is the project?</div>
-  <div class="qsub">We'll find the best available times <strong>based on your area</strong></div>
+<section id="stepAddr" aria-labelledby="bkAddressHeading">
+  <h2 id="bkAddressHeading">Project address</h2>
+  <p class="qsub">Enter the address to see available appointments.</p>
   <div style="position:relative">
     <label for="bkAddr">Street address</label>
-    <input id="bkAddr" autocomplete="street-address" placeholder="123 N Example St" inputmode="text">
+    <input id="bkAddr" autocomplete="street-address" placeholder="123 N Example St" inputmode="text" aria-required="true">
     <div class="sug" id="bkSug"></div>
   </div>
-  <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
+  <div class="bk-fieldrow">
     <div><label for="bkCity">City</label><input id="bkCity" autocomplete="address-level2"></div>
-    <div><label for="bkZip">Zip</label><input id="bkZip" autocomplete="postal-code" inputmode="numeric" maxlength="10"></div>
+    <div><label for="bkZip">ZIP code</label><input id="bkZip" autocomplete="postal-code" inputmode="numeric" maxlength="10"></div>
   </div>
-  <div class="err" id="bkAddrErr"></div>
-  <button class="btn" id="bkAddrNext" style="margin-top:10px">See open times</button>
-</div>
+  <div class="err" id="bkAddrErr" role="alert"></div>
+  <div class="bk-action"><span class="bk-selection" id="bkDuration">About ${t.duration} minutes</span><button class="btn" id="bkAddrNext" type="button">See open times</button></div>
+</section>
 
-<div id="stepOut" style="display:none">
-  <div class="q">We may still be able to help</div>
-  <p class="qsub">That address is outside the area we book online. Leave your details and we will call you about scheduling, because we take projects like this case by case.</p>
-  <label for="ooName">Name</label><input id="ooName" autocomplete="name">
-  <label for="ooPhone">Phone</label><input id="ooPhone" autocomplete="tel" inputmode="tel">
-  <label for="ooEmail">Email</label><input id="ooEmail" autocomplete="email" inputmode="email">
+<section id="stepOut" aria-labelledby="bkOutHeading" style="display:none">
+  <h2 id="bkOutHeading">Outside our online booking area</h2>
+  <p class="qsub">Leave your details and we'll call to discuss your project.</p>
+  <button class="bk-link" id="ooChangeAddress" type="button">Change address</button>
+  <label for="ooName">Name</label><input id="ooName" autocomplete="name" aria-required="true">
+  <label for="ooPhone">Phone</label><input id="ooPhone" autocomplete="tel" type="tel" aria-required="true">
+  <label for="ooEmail">Email (optional)</label><input id="ooEmail" autocomplete="email" type="email">
   <label for="ooProject">Tell us about the project</label><textarea id="ooProject" rows="3"></textarea>
   <div class="consent"><span id="ooConsentText"></span></div>
-  <div class="err" id="ooErr"></div>
-  <button class="btn" id="ooSend" style="margin-top:10px">Request a call</button>
-</div>
+  <div class="err" id="ooErr" role="alert"></div>
+  <div class="bk-action"><span></span><button class="btn" id="ooSend" type="button">Request a call</button></div>
+</section>
 
-<div id="stepTime" style="display:none">
-  <div class="q">What's your preferred day?</div>
-  <div class="qsub">Visits take about ${t.duration} minutes. Times shown are <strong>Arizona time</strong></div>
-  <div id="bkDays"></div>
+<section id="stepTime" aria-labelledby="bkTimeHeading" style="display:none">
+  <div class="bk-location"><span id="bkAddressSummary"></span><button class="bk-link" id="bkChangeAddress" type="button">Change address</button></div>
+  <h2 id="bkTimeHeading">Choose a date and time</h2>
+  <p class="qsub" id="bkTimeDuration">${t.duration}-minute visit · Arizona time</p>
+  <div class="bk-date-label"><span id="bkDateRange" aria-live="polite">Available dates</span><div class="bk-month-nav"><button class="bk-arrow" id="bkDatePrev" type="button" aria-label="Previous dates">‹</button><button class="bk-arrow" id="bkDateNext" type="button" aria-label="More dates">›</button></div></div>
+  <div id="bkDays" aria-label="Available dates"></div>
   <div id="bkTimes" style="display:none">
-    <div class="q">What time works best?</div>
-    <div class="qsub" id="bkTimeDay"></div>
-    <div id="bkTimeBtns" style="text-align:center"></div>
-    <button class="dashedbtn" id="bkBackDays" style="margin-top:14px">&larr; Choose a different date</button>
+    <div class="bk-date-label"><span id="bkTimeDay"></span></div>
+    <div id="bkTimeBtns" class="bk-times" aria-label="Available times"></div>
   </div>
-  <div class="err" id="bkTimeErr" style="text-align:center"></div>
-</div>
+  <div class="err" id="bkTimeErr" role="alert"></div>
+  <div class="bk-action"><div class="bk-selection" aria-live="polite"><b id="bkSelectedDay">Select a time</b><span id="bkSelectedTime"></span></div><button class="btn" id="bkContinue" type="button" disabled>Continue</button></div>
+</section>
 
-<div id="stepDetails" style="display:none">
-  <div class="q">Your details</div>
-  <div class="qsub" id="bkChosen"></div>
-  <label for="bkName">Name</label><input id="bkName" autocomplete="name">
-  <label for="bkPhone">Mobile phone</label><input id="bkPhone" autocomplete="tel" inputmode="tel">
-  <label for="bkEmail">Email</label><input id="bkEmail" autocomplete="email" inputmode="email">
+<section id="stepDetails" aria-labelledby="bkDetailsHeading" style="display:none">
+  <div class="bk-location"><span id="bkChosen"></span><button class="bk-link" id="bkChangeTime" type="button">Change time</button></div>
+  <h2 id="bkDetailsHeading">Contact details</h2>
+  <label for="bkName">Name</label><input id="bkName" autocomplete="name" aria-required="true">
+  <div class="bk-fieldrow">
+    <div><label for="bkPhone">Mobile phone</label><input id="bkPhone" autocomplete="tel" type="tel" aria-required="true"></div>
+    <div><label for="bkEmail">Email</label><input id="bkEmail" autocomplete="email" type="email" aria-required="true"></div>
+  </div>
   <div id="bkQuestions"></div>
-  <div class="hpwrap" aria-hidden="true"><label>Website</label><input id="bkWebsite" tabindex="-1" autocomplete="off"></div>
+  <div class="hpwrap" aria-hidden="true"><label for="bkWebsite">Website</label><input id="bkWebsite" tabindex="-1" autocomplete="off"></div>
   <div class="consent"><span id="bkConsentText"></span></div>
-  <div class="err" id="bkErr"></div>
-  <button class="btn" id="bkBook" style="margin-top:10px">Book it</button>
-</div>
+  <div class="err" id="bkErr" role="alert"></div>
+  <div class="bk-action"><span class="bk-selection">${esc(t.label)}</span><button class="btn" id="bkBook" type="button">Book appointment</button></div>
+</section>
 
-<div id="stepDone" style="display:none">
-  <div class="ok-badge">&#10004;</div>
-  <div class="q" id="doneTitle">You are booked!</div>
-  <p id="doneMsg" style="text-align:center"></p>
-  <p class="muted" id="doneManage" style="text-align:center"></p>
-</div>
+<section id="stepDone" aria-labelledby="doneTitle" style="display:none">
+  <div class="ok-badge" aria-hidden="true">&#10003;</div>
+  <h2 id="doneTitle">Appointment booked</h2>
+  <p id="doneMsg"></p>
+  <p class="muted" id="doneManage"></p>
+</section>
 
   </div>
-  <div class="trust">
-    <span class="tchip"><span class="tico">&#9201;</span>2 min</span>
-    <span class="tsep">|</span>
-    <span class="tchip"><span class="tico">&#128737;&#65039;</span>Secure</span>
-    <span class="tsep">|</span>
-    <span class="tchip"><span class="tico">&#10003;</span>Instant</span>
-  </div>
+  ${brand.phone || brand.license_number ? `<footer class="bk-footer">${brand.phone ? `<span>Questions? <a href="tel:${esc(brand.phone)}">${esc(brand.phone)}</a></span>` : ''}${brand.license_number ? `<span>Licensed, bonded &amp; insured · ${esc(brand.license_number)}</span>` : ''}</footer>` : ''}
 </div>
-${!preview && (brand.phone || brand.license_number) ? `<div class="underline-note">${brand.phone ? `Questions? Call <a href="tel:${esc(brand.phone)}"><strong>${esc(brand.phone)}</strong></a>` : ''}${brand.phone && brand.license_number ? ' &middot; ' : ''}${brand.license_number ? `Licensed, Bonded &amp; Insured &middot; ${esc(brand.license_number)}` : ''}</div>` : ''}
 
 <script>window.__BK=${cfgJson};</script>
 <script>
 (function(){
 'use strict';
-var CFG=window.__BK, S={addr:null, start:null, days:[], showAllDays:false, t0:Date.now()};
+var CFG=window.__BK, S={addr:null, start:null, days:[], dayIndex:0, dayOffset:0, busy:false, complete:false, t0:Date.now()};
 var $=function(id){return document.getElementById(id)};
 function show(id,on){$(id).style.display=on?'':'none'}
-// The step bar left with the 2026-08-21 redesign; kept as a guarded no-op so
-// every existing call site stays harmless.
-function step(n){['st1','st2','st3'].forEach(function(s,i){var el=$(s);if(el)el.className=i<n?'on':''})}
-// Headline with the LAST word in the accent color (the server renders the
-// same split; this keeps preview updates identical).
-function setHeadline(t){
-  var h=$('bkHeadline');if(!h)return;
-  var words=String(t||'Book your free on-site estimate').trim().split(/\s+/);
-  var last=words.length>1?words.pop():'';
-  h.textContent=words.join(' ')+(last?' ':'');
-  if(last){var sp=document.createElement('span');sp.className='accentword';sp.textContent=last;h.appendChild(sp)}
+function step(n){
+  ['st1','st2','st3'].forEach(function(id,i){
+    var el=$(id);if(i+1===n)el.setAttribute('aria-current','step');else el.removeAttribute('aria-current');
+    el.disabled=CFG.preview||S.busy||S.complete||(i===1&&(!S.addr||!S.days.length))||(i===2&&!S.start);
+  });
 }
+function go(n){
+  if(CFG.preview||S.busy||S.complete)return;
+  if(n===2&&(!S.addr||!S.days.length))return;
+  if(n===3&&!S.start)return;
+  if(n===3)renderQuestions();
+  ['stepAddr','stepTime','stepDetails','stepOut','stepDone'].forEach(function(id,i){show(id,i===n-1)});
+  step(n);
+  var heading=$(['bkAddressHeading','bkTimeHeading','bkDetailsHeading'][n-1]);
+  heading.setAttribute('tabindex','-1');heading.focus();
+}
+function resetSelection(){S.start=null;$('bkContinue').disabled=true;$('bkSelectedDay').textContent='Select a time';$('bkSelectedTime').textContent='';$('bkChosen').textContent='';}
+function changeAddress(){if(CFG.preview||S.busy||S.complete)return;S.addr=null;S.days=[];S.dayOffset=0;resetSelection();go(1)}
+$('st1').addEventListener('click',changeAddress);
+$('st2').addEventListener('click',function(){go(2)});
+$('st3').addEventListener('click',function(){go(3)});
+$('bkChangeAddress').addEventListener('click',changeAddress);
+$('ooChangeAddress').addEventListener('click',changeAddress);
+$('bkChangeTime').addEventListener('click',function(){go(2)});
+function setHeadline(t){$('bkHeadline').textContent=t||'Book your free estimate'}
 function api(path,body){return fetch('/api/booking/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
 
 // Disclosure text arrives with the slots payload settings; fallback fetched lazily.
@@ -1332,6 +1337,7 @@ function loadMaps(){
 }
 $('bkAddr').addEventListener('input',function(){
   var q=this.value.trim(),mine=++sugSeq,box=$('bkSug');
+  delete this.dataset.placeId;
   if(q.length<4){box.style.display='none';return}
   loadMaps().then(function(ok){
     if(!ok)return;
@@ -1368,74 +1374,77 @@ $('bkAddr').addEventListener('input',function(){
 });
 document.addEventListener('click',function(e){if(!$('bkSug').contains(e.target))$('bkSug').style.display='none'});
 
-// ---- Step 1 -> slots ----
+// ---- Location and live availability ----
 $('bkAddrNext').addEventListener('click',function(){
+  if(CFG.preview||S.busy||S.complete)return;
   var a={address1:$('bkAddr').value.trim(),city:$('bkCity').value.trim(),zip:$('bkZip').value.trim(),place_id:$('bkAddr').dataset.placeId||''};
   $('bkAddrErr').textContent='';
-  if(!a.address1||(!a.zip&&!a.city)){$('bkAddrErr').textContent='Enter the street address, city, and zip.';return}
-  var btn=$('bkAddrNext');btn.disabled=true;btn.textContent='Checking...';
+  if(!a.address1||(!a.zip&&!a.city)){$('bkAddrErr').textContent='Enter the street address and a city or ZIP code.';return}
+  var btn=$('bkAddrNext');S.busy=true;step(1);btn.disabled=true;btn.textContent='Checking...';
   api('slots',{form:CFG.slug,address1:a.address1,city:a.city,zip:a.zip}).then(function(j){
-    btn.disabled=false;btn.textContent='See open times';
-    if(j.open===false){$('bkAddrErr').textContent='Online booking is not open right now. Please call us.';return}
-    if(j.in_area===false){S.addr=a;show('stepAddr',false);show('stepOut',true);step(2);return}
-    if(!j.ok){$('bkAddrErr').textContent=j.error||'Something went wrong.';return}
-    S.addr=a;S.days=j.days||[];
-    if(!S.days.length){$('bkAddrErr').textContent='No open times in the next few weeks. Please call us and we will find you a spot.';return}
-    renderDays();show('stepAddr',false);show('stepTime',true);step(2);
-  }).catch(function(){btn.disabled=false;btn.textContent='See open times';$('bkAddrErr').textContent='Could not reach us. Check your connection and try again.'});
+    S.busy=false;btn.disabled=false;btn.textContent='See open times';step(1);
+    if(j.open===false){$('bkAddrErr').textContent='Online booking is unavailable. Please call us to schedule.';return}
+    if(j.in_area===false){S.addr=a;show('stepAddr',false);show('stepOut',true);step(1);return}
+    if(!j.ok){$('bkAddrErr').textContent=j.error||'Could not load appointments. Please try again.';return}
+    S.addr=a;S.days=j.days||[];S.dayOffset=0;S.dayIndex=0;resetSelection();
+    if(!S.days.length){$('bkAddrErr').textContent='No appointments are available online. Please call us to schedule.';return}
+    $('bkAddressSummary').textContent=[a.address1,a.city,a.zip].filter(Boolean).join(', ');
+    $('bkTimeErr').textContent='';renderDays();go(2);
+  }).catch(function(){S.busy=false;step(1);btn.disabled=false;btn.textContent='See open times';$('bkAddrErr').textContent='Could not load appointments. Check your connection and try again.'});
 });
 
-// Day cards (2026-08-21 redesign): weekday / big date / month with an
-// INSTANT pill, three up front, the rest behind the dashed
-// choose-a-different-date button. d.date is the Phoenix YYYY-MM-DD the
-// server grouped by; noon anchors the parse so no viewer timezone can shift
-// the calendar day.
+// Calendar dates come from the server in Arizona time. Paging keeps every
+// returned date reachable, including gaps and dates spanning month boundaries.
 function dayParts(iso){
   var dt=new Date(iso+'T12:00:00');
-  return { w: dt.toLocaleDateString('en-US',{weekday:'short'}).toUpperCase(),
-           n: String(dt.getDate()),
-           m: dt.toLocaleDateString('en-US',{month:'short'}) };
+  return {w:dt.toLocaleDateString('en-US',{weekday:'short'}),n:String(dt.getDate()),m:dt.toLocaleDateString('en-US',{month:'short'}),y:dt.getFullYear()};
 }
 function dayCard(d,i){
   var b=document.createElement('button');b.className='daycard';b.type='button';
   var p=dayParts(d.date);
-  b.innerHTML='<span class="daypill">&#10022; INSTANT</span><span class="dw"></span><span class="dn"></span><span class="dm"></span>';
-  b.querySelector('.dw').textContent=p.w;
-  b.querySelector('.dn').textContent=p.n;
-  b.querySelector('.dm').textContent=p.m;
-  b.title=d.slots.length+' open time'+(d.slots.length===1?'':'s');
-  b.addEventListener('click',function(){renderTimes(i)});
+  b.innerHTML='<span class="dw"></span><span class="dn"></span><span class="dm"></span>';
+  b.querySelector('.dw').textContent=p.w;b.querySelector('.dn').textContent=p.n;b.querySelector('.dm').textContent=p.m;
+  b.setAttribute('aria-label',d.label);b.setAttribute('aria-pressed',String(i===S.dayIndex));
+  b.addEventListener('click',function(){if(i!==S.dayIndex){S.dayIndex=i;resetSelection();renderDays();$('bkDays').querySelector('[aria-pressed="true"]').focus()}});
   return b;
 }
 function renderDays(){
-  var el=$('bkDays');el.innerHTML='';el.style.display='';$('bkTimes').style.display='none';
-  var list=S.showAllDays?S.days:S.days.slice(0,3);
+  var el=$('bkDays');el.innerHTML='';
+  var list=S.days.slice(S.dayOffset,S.dayOffset+5);
   var grid=document.createElement('div');grid.className='daygrid';
-  list.forEach(function(d){grid.appendChild(dayCard(d,S.days.indexOf(d)))});
-  el.appendChild(grid);
-  if(!S.showAllDays&&S.days.length>3){
-    var more=document.createElement('button');more.className='dashedbtn';more.type='button';
-    more.innerHTML='&#128197;&nbsp;&nbsp;Choose a different date&nbsp;&nbsp;&#8594;';
-    more.addEventListener('click',function(){S.showAllDays=true;renderDays()});
-    el.appendChild(more);
-  }
+  list.forEach(function(d,i){grid.appendChild(dayCard(d,S.dayOffset+i))});el.appendChild(grid);
+  $('bkDatePrev').disabled=S.dayOffset===0;
+  $('bkDateNext').disabled=S.dayOffset+5>=S.days.length;
+  var first=list.length?dayParts(list[0].date):null,last=list.length?dayParts(list[list.length-1].date):null;
+  $('bkDateRange').textContent=first?first.m+' '+first.n+(first.y!==last.y?', '+first.y:'')+(list.length>1?' – '+last.m+' '+last.n:'')+', '+last.y:'No available dates';
+  show('bkTimes',!!S.days[S.dayIndex]);
+  if(S.days[S.dayIndex])renderTimes(S.dayIndex);else{$('bkTimeBtns').innerHTML='';resetSelection()}
+  step(2);
 }
 function renderTimes(i){
-  var d=S.days[i];$('bkDays').style.display='none';$('bkTimes').style.display='';
-  $('bkTimeDay').textContent=d.label;
+  var d=S.days[i];$('bkTimeDay').textContent='Times for '+d.label;
   var el=$('bkTimeBtns');el.innerHTML='';
   d.slots.forEach(function(s){
     var b=document.createElement('button');b.className='slot';b.type='button';b.textContent=s.label;
+    b.setAttribute('aria-pressed',String(s.start===S.start));
     b.addEventListener('click',function(){
       S.start=s.start;
-      $('bkChosen').textContent=d.label+' at '+s.label+' ('+CFG.typeLabel+', about '+CFG.duration+' minutes)';
-      show('stepTime',false);show('stepDetails',true);step(3);
-      renderQuestions();
+      $('bkChosen').textContent=d.label+' at '+s.label+' · '+CFG.duration+' minutes · Arizona time';
+      $('bkSelectedDay').textContent=d.label;$('bkSelectedTime').textContent=s.label+' · Arizona time';
+      $('bkContinue').disabled=false;$('bkTimeErr').textContent='';
+      Array.from(el.children).forEach(function(button){button.setAttribute('aria-pressed',String(button===b))});step(2);
     });
     el.appendChild(b);
   });
 }
-$('bkBackDays').addEventListener('click',function(){renderDays()});
+function pageDays(direction){
+  if(CFG.preview||S.busy)return;
+  var next=S.dayOffset+direction*5;if(next<0||next>=S.days.length)return;
+  S.dayOffset=next;S.dayIndex=next;resetSelection();renderDays();
+}
+$('bkDatePrev').addEventListener('click',function(){pageDays(-1)});
+$('bkDateNext').addEventListener('click',function(){pageDays(1)});
+$('bkContinue').addEventListener('click',function(){if(CFG.preview||!S.start||S.busy)return;renderQuestions();go(3)});
 
 function renderQuestions(){
   var host=$('bkQuestions');if(host.dataset.done)return;host.dataset.done='1';
@@ -1451,15 +1460,16 @@ function renderQuestions(){
       input=document.createElement('select');
       ['','Yes','No'].forEach(function(o){var op=document.createElement('option');op.value=o;op.textContent=o||'Choose...';input.appendChild(op)});
     } else {input=document.createElement('input')}
-    input.id='q_'+q.id;host.appendChild(input);
+    input.id='q_'+q.id;if(q.required)input.setAttribute('aria-required','true');host.appendChild(input);
     if(q.help){var h=document.createElement('div');h.className='muted';h.style.marginTop='3px';h.textContent=q.help;host.appendChild(h)}
   });
 }
 
 $('bkBook').addEventListener('click',function(){
+  if(CFG.preview||S.busy||S.complete||!S.addr||!S.start)return;
   var answers={};(CFG.questions||[]).forEach(function(q){var el=$('q_'+q.id);if(el&&el.value.trim())answers[q.id]=el.value.trim()});
   $('bkErr').textContent='';
-  var btn=$('bkBook');btn.disabled=true;btn.textContent='Booking...';
+  var btn=$('bkBook');S.busy=true;step(3);$('bkChangeTime').disabled=true;btn.disabled=true;btn.textContent='Booking...';
   api('book',{
     form:CFG.slug,start:S.start,
     name:$('bkName').value.trim(),phone:$('bkPhone').value.trim(),email:$('bkEmail').value.trim(),
@@ -1467,31 +1477,32 @@ $('bkBook').addEventListener('click',function(){
     answers:answers,sms_consent:'true',
     website:$('bkWebsite').value,fill_ms:Date.now()-S.t0
   }).then(function(j){
-    btn.disabled=false;btn.textContent='Book it';
-    if(j.taken){S.days=j.days||S.days;show('stepDetails',false);show('stepTime',true);renderDays();$('bkTimeErr').textContent=j.error||'That time was just taken. Pick another.';step(2);return}
+    S.busy=false;step(3);$('bkChangeTime').disabled=false;btn.disabled=false;btn.textContent='Book appointment';
+    if(j.taken){S.days=Array.isArray(j.days)?j.days:[];S.dayOffset=0;S.dayIndex=0;resetSelection();show('stepDetails',false);show('stepTime',true);renderDays();$('bkTimeErr').textContent=S.days.length?(j.error||'That time is no longer available. Choose another time.'):'No appointments are available online. Please call us to schedule.';step(2);return}
     if(!j.ok){$('bkErr').textContent=j.error||'Something went wrong.';return}
-    show('stepDetails',false);show('stepDone',true);
-    if(j.duplicate){$('doneTitle').textContent='You are already booked'}
+    S.complete=true;step(3);show('bkSteps',false);show('stepDetails',false);show('stepDone',true);
+    if(j.duplicate){$('doneTitle').textContent='Appointment already booked'}
     $('doneMsg').textContent=(j.message||'')+(j.when?(' Your visit: '+j.when+'.'):'');
-    if(j.manage_url){$('doneManage').innerHTML='Need to change it later? Use your private link: <a href="'+j.manage_url+'">reschedule or cancel</a>. We also include it in your confirmation.'}
-  }).catch(function(){btn.disabled=false;btn.textContent='Book it';$('bkErr').textContent='Could not reach us. Check your connection and try again.'});
+    if(j.manage_url){var link=document.createElement('a');link.href=j.manage_url;link.textContent='Reschedule or cancel';$('doneManage').replaceChildren(link,document.createTextNode('. This link is also in your confirmation.'))}
+  }).catch(function(){S.busy=false;step(3);$('bkChangeTime').disabled=false;btn.disabled=false;btn.textContent='Book appointment';$('bkErr').textContent='Could not reach us. Check your connection and try again.'});
 });
 
 // ---- Out of area ----
 $('ooSend').addEventListener('click',function(){
+  if(CFG.preview||S.busy||S.complete||!S.addr)return;
   $('ooErr').textContent='';
-  var btn=$('ooSend');btn.disabled=true;btn.textContent='Sending...';
+  var btn=$('ooSend');S.busy=true;step(1);$('ooChangeAddress').disabled=true;btn.disabled=true;btn.textContent='Sending...';
   api('lead',{
     form:CFG.slug,name:$('ooName').value.trim(),phone:$('ooPhone').value.trim(),email:$('ooEmail').value.trim(),
     address1:S.addr.address1,city:S.addr.city,zip:S.addr.zip,project:$('ooProject').value.trim(),
     sms_consent:'true',website:$('bkWebsite')?$('bkWebsite').value:'',fill_ms:Date.now()-S.t0
   }).then(function(j){
-    btn.disabled=false;btn.textContent='Request a call';
+    S.busy=false;step(1);$('ooChangeAddress').disabled=false;btn.disabled=false;btn.textContent='Request a call';
     if(!j.ok){$('ooErr').textContent=j.error||'Something went wrong.';return}
-    show('stepOut',false);show('stepDone',true);step(3);
-    $('doneTitle').textContent='Got it, we will call you';
+    S.complete=true;show('bkSteps',false);show('stepOut',false);show('stepDone',true);step(3);
+    $('doneTitle').textContent='We’ll call you';
     $('doneMsg').textContent=j.message||'';
-  }).catch(function(){btn.disabled=false;btn.textContent='Request a call';$('ooErr').textContent='Could not reach us. Try again.'});
+  }).catch(function(){S.busy=false;step(1);$('ooChangeAddress').disabled=false;btn.disabled=false;btn.textContent='Request a call';$('ooErr').textContent='Could not reach us. Try again.'});
 });
 
 // ---- Preview mode (prompt 102): the Settings builder drives this page ----
@@ -1504,14 +1515,16 @@ if(CFG.preview){
   $('bkChosen').textContent=CFG.typeLabel+', about '+CFG.duration+' minutes.';
   renderQuestions();
   $('doneMsg').textContent=CFG.successMessage||'';
-  ['bkAddrNext','bkBook','ooSend'].forEach(function(id){var b=$(id);if(b)b.disabled=true});
+  ['st1','st2','st3','bkAddrNext','bkBook','ooSend','bkContinue','bkChangeAddress','bkChangeTime','ooChangeAddress','bkDatePrev','bkDateNext'].forEach(function(id){var b=$(id);if(b)b.disabled=true});
   window.addEventListener('message',function(e){
     var d=e.data&&e.data.pecBookingPreview;if(!d)return;
     if(Array.isArray(d.questions)){CFG.questions=d.questions;var host=$('bkQuestions');host.innerHTML='';delete host.dataset.done;renderQuestions()}
     if(typeof d.headline==='string'){setHeadline(d.headline)}
     if(typeof d.intro==='string'){var ip=$('bkIntro');ip.textContent=d.intro;ip.style.display=d.intro?'':'none'}
     if(typeof d.success==='string'){$('doneMsg').textContent=d.success}
-    if(typeof d.typeLabel==='string'||typeof d.duration==='number'){$('bkChosen').textContent=(d.typeLabel||CFG.typeLabel)+', about '+(d.duration||CFG.duration)+' minutes.'}
+    if(typeof d.typeLabel==='string')CFG.typeLabel=d.typeLabel;
+    if(typeof d.duration==='number')CFG.duration=d.duration;
+    $('bkTypeLabel').textContent=CFG.typeLabel;$('bkDuration').textContent='About '+CFG.duration+' minutes';$('bkTimeDuration').textContent=CFG.duration+'-minute visit · Arizona time';$('bkChosen').textContent=CFG.typeLabel+', about '+CFG.duration+' minutes.';
   });
 }
 })();
@@ -1658,7 +1671,8 @@ exports.handler = async (event) => {
     // write path stays gated server-side regardless.
     const preview = !!(event.queryStringParameters && event.queryStringParameters.preview) && !!form;
     if (!open && !preview) return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed, bare: true }));
-    return htmlResponse(200, pageShell(brand, form.headline || `Book with ${brand.business_name}`, bookingPageInner(form, PEC_MAPS_KEY, { preview, brand }), { embed, bare: true }));
+    const discovery = bookingDiscovery({ brand, form, siteUrl: SITE_URL, publicBooking: !!open, preview, embed });
+    return htmlResponse(200, pageShell(brand, form.headline || `Book with ${brand.business_name}`, bookingPageInner(form, PEC_MAPS_KEY, { preview, brand }), { embed, bare: true, head: discovery.head }), discovery.robots);
   } catch (err) {
     console.error('pec-booking page failed:', err);
     return htmlResponse(200, pageShell(brand, `Book with ${brand.business_name}`, closedInner(brand), { embed }));
@@ -1674,3 +1688,6 @@ exports.checkArea = checkArea;
 exports.routeAnswers = routeAnswers;
 exports.groupSlotsByDay = groupSlotsByDay;
 exports.engineConfig = engineConfig;
+
+exports.pageShell = pageShell;
+exports.bookingPageInner = bookingPageInner;

@@ -1,3 +1,17 @@
+## [2026-09-14 15:58 MST] booking: apply the approved TopCoat layout
+
+By: Codex
+Changed: Replaced the former centered booking card with the approved TopCoat design: compact brand header, three-step navigation, five-date paging, date and time choices shown together, a separate Continue action, and address/appointment summaries with edit links. Contact fields and questions survive backward navigation; changing the address or date clears stale selections. Requests lock navigation and repeated submissions while pending. The existing availability, locked write, attribution, consent, callbacks, confirmation, manage, and iframe-preview paths remain in place.
+Why: Dylan approved the September 10 preview, requested a structure that differs from Routemize, shorter natural copy, and room for future AI-search connections.
+Discovery: Added canonical links and safe WebPage/Service metadata for active public booking pages only. Preview, embed, closed, and private manage pages are noindex. Documented the existing APIs and current provider requirements in docs/booking-integrations.md. This does not enable direct AI booking, expose the staff MCP, or publish live slot data in metadata.
+Saved copy: Updated only the PEC form headline, intro and success text in Supabase, guarded by its prior updated_at and verified returned values. Explicitly advanced updated_at to preserve the form builder's stale-save check (the row has no automatic timestamp trigger). Headline is "Book your free estimate"; intro is "We'll visit your property, take measurements, and give you a price."; success text is "We'll send a confirmation with a link to reschedule or cancel." All remain editable in Settings. No schema changes.
+Verified: npm test including posttest passed after linking the existing estimator dependencies into this isolated checkout; 13 real-inline-script UI regressions and 7 metadata regressions passed. Booking write-path fixtures: 107 passed; availability: 39 passed. Six dashboard scripts and all touched CJS parse; function esbuild bundle parses; JSON manifests load; git diff --check passed. Browser checked desktop and 360px layouts, selected-time state, contact fields, synthetic confirmation, and disabled builder preview. No production appointment or customer message was created. Independent review caught and corrected the required-email label and shared manage-slot spacing.
+Coordination: Used an isolated checkout because separate estimate-search work was active in the shared checkout. Only booking files and required documentation/test registration belong to this change.
+Files touched: netlify/functions/pec-booking.cjs, production/booking-ui.test.cjs, production/booking-discovery.cjs, production/booking-discovery.test.cjs, docs/booking-integrations.md, package.json, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Integrate the latest main branch, publish, and verify the live booking page and indexing headers.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-14 15:53 MST] estimates: readable search results and business contact matching
 
 By: Codex

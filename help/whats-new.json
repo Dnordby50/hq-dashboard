@@ -1,5 +1,16 @@
 [
   {
+    "id": "booking-topcoat-layout",
+    "date": "2026-09-14",
+    "title": "A new look for appointment booking",
+    "summary": "The booking form now uses TopCoat styling, shorter prompts, and a compact date and time picker.",
+    "howto": [
+      "Enter the project address, then choose a date and time.",
+      "Press Continue to add your contact details and book.",
+      "Use Change address or Change time to go back. Your contact details stay filled in."
+    ]
+  },
+  {
     "id": "estimate-business-contact-search",
     "date": "2026-09-14",
     "title": "Find business customers by their contact person.",
