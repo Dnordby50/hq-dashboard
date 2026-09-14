@@ -1,3 +1,13 @@
+## [2026-09-14 16:03 MST] booking: TopCoat redesign verified live
+
+By: Codex
+Changed: Published booking redesign commit `4e3d58a` after integrating the independently completed estimate-search commit `c47aba5`. No estimate-search work was overwritten.
+Verified: Full npm test including both new booking suites passed again after integration. Six merged dashboard scripts parse, JSON manifests load, and the booking function bundles. Live /book and /book/pec serve the new TopCoat layout, shortened saved copy, canonical /book URL and one WebPage/Service JSON-LD block. Live embed and preview return noindex,nofollow with no public metadata; an invalid form and an invalid manage link do too (manage responds 404). Live features.json, help/whats-new.json and production/booking-discovery.cjs match local SHA-256. Browser verification confirmed the published page, real logo, contact number, license and editable address fields. Test-only booking ran entirely on a local fixture; no real appointment or customer message was sent.
+Files touched: PROJECT-LOG.md.
+Next steps: A future direct AI-provider connection requires its own adapter and any required provider enrollment; the current APIs and requirements are documented.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-14 15:58 MST] booking: apply the approved TopCoat layout
 
 By: Codex
