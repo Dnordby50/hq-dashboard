@@ -1,3 +1,16 @@
+## [2026-09-14 14:55 MST] estimates: source carryover and price autosave verified live
+
+By: Codex
+
+Verified: Published 7c3458a to origin/main. Live index.html, features.json, help/whats-new.json and production/estimate-send-readiness.cjs match local SHA-256. The deployed estimator loads index-vWOy00sr.js and contains source-recovery queries, send_readiness pricing context, both correlated save-before-send messages and the new send-only pricing wording. It no longer contains the old floor save-confirmation message. Production and local estimator hashes differ because of build configuration, so this verification checks the deployed feature content and matching static policy/dashboard files instead of claiming byte equivalence.
+
+Validation: Full npm test and the final 47 focused regressions passed. The actual React screen's below-floor saved state was also rendered with the real stylesheet and inspected in a 360px browser viewport: the price warning and required-to-send reason text are readable, Save remains enabled, All changes saved is visible, and document width equals the 360px viewport. The UI check used synthetic fixture data; no customer estimate, email, text or signature was created. Temporary browser viewport was reset and the test tab closed.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Refresh TopCoat to load the update. Drafts preserve price overrides while the configured price requirements block sending.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-14 14:53 MST] estimates: carry lead sources and save unfinished price edits
 
 By: Codex
