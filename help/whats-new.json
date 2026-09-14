@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-business-contact-search",
+    "date": "2026-09-14",
+    "title": "Find business customers by their contact person.",
+    "summary": "Estimate search now finds contact names as well as company names, with readable search results.",
+    "howto": [
+      "In New estimate, search the business name or contact person, such as Dan Mosby.",
+      "Choose the result showing both the business and its contact person. The existing customer and job address fill in.",
+      "Search results now use the same light background as the estimate form."
+    ]
+  },
+  {
     "id": "estimate-source-and-price-autosave",
     "date": "2026-09-14",
     "title": "Estimate sources carry over and price edits keep saving.",

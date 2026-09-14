@@ -31,11 +31,15 @@ export type CustomerMatch = {
 };
 
 const t = (s: string | null | undefined) => (s ?? '').trim();
+const contactLabel = (name: string, first: string | null, last: string | null) => {
+  const person = [t(first), t(last)].filter(Boolean).join(' ');
+  return name && person && name.toLowerCase() !== person.toLowerCase() ? `${name} (${person})` : name || person || '(no name)';
+};
 
 // PostgREST .or() strings are comma/paren-delimited, so strip the delimiters
 // (and the pattern wildcards) out of the typed query rather than trying to
 // escape them.
-const sanitize = (q: string) => q.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim();
+const sanitize = (q: string) => q.replace(/[,()*%_"\\]/g, ' ').replace(/\s+/g, ' ').trim();
 
 function customerToForm(c: CustomerRow): CustomerForm {
   const legacy = splitLegacyName(c.name);
@@ -57,10 +61,10 @@ function customerToForm(c: CustomerRow): CustomerForm {
 function leadToForm(l: LeadRow): CustomerForm {
   const legacy = splitLegacyName(l.full_name);
   return {
-    isCommercial: false,
+    isCommercial: !!t(l.business_name),
     firstName: t(l.first_name) || legacy.firstName,
     lastName: t(l.last_name) || legacy.lastName,
-    company: '',
+    company: t(l.business_name),
     phone: t(l.phone),
     email: t(l.email),
     address1: t(l.address),
@@ -80,6 +84,7 @@ type CustomerRow = {
 };
 type LeadRow = {
   id: string; full_name: string | null; first_name: string | null; last_name: string | null;
+  business_name: string | null;
   email: string | null; phone: string | null; source: string | null; address: string | null;
   city: string | null; state: string | null; zip: string | null; customer_id: string | null;
 };
@@ -88,6 +93,14 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
   const q = sanitize(rawQuery);
   if (q.length < 2) return [];
   const pat = `*${q}*`;
+  // Business records can store the company in name/full_name while the
+  // person's full name spans two columns. Match those parts in the database
+  // before LIMIT, including multiword first names and surnames.
+  const parts = q.split(' ');
+  const contactClause = parts.slice(1).map((_, index) => {
+    const split = index + 1;
+    return `and(first_name.ilike.*${parts.slice(0, split).join(' ')}*,last_name.ilike.*${parts.slice(split).join(' ')}*)`;
+  }).map(clause => ',' + clause).join('');
   const digits = q.replace(/\D/g, '');
   // phone_norm (generated digits-only column on both tables) makes a typed
   // "(928) 555-0147" match "9285550147" and vice versa.
@@ -98,13 +111,13 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
       .from('customers')
       .select('id,name,first_name,last_name,company_name,email,phone,lead_source,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
       .is('archived_at', null)
-      .or(`name.ilike.${pat},first_name.ilike.${pat},last_name.ilike.${pat},company_name.ilike.${pat},email.ilike.${pat},billing_address_line1.ilike.${pat}${phoneClause('phone_norm')}`)
+      .or(`name.ilike.${pat},first_name.ilike.${pat},last_name.ilike.${pat},company_name.ilike.${pat},email.ilike.${pat},billing_address_line1.ilike.${pat}${phoneClause('phone_norm')}${contactClause}`)
       .limit(8),
     supabase
       .from('leads')
-      .select('id,full_name,first_name,last_name,email,phone,source,address,city,state,zip,customer_id')
+      .select('id,full_name,first_name,last_name,business_name,email,phone,source,address,city,state,zip,customer_id')
       .is('deleted_at', null)
-      .or(`full_name.ilike.${pat},first_name.ilike.${pat},last_name.ilike.${pat},email.ilike.${pat},address.ilike.${pat}${phoneClause('phone_norm')}`)
+      .or(`full_name.ilike.${pat},first_name.ilike.${pat},last_name.ilike.${pat},business_name.ilike.${pat},email.ilike.${pat},address.ilike.${pat}${phoneClause('phone_norm')}${contactClause}`)
       .limit(8),
   ]);
   if (custRes.error) throw custRes.error;
@@ -120,7 +133,7 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
     ...leads.map((l): CustomerMatch => ({
       kind: 'lead',
       id: l.id,
-      name: t(l.full_name) || [t(l.first_name), t(l.last_name)].filter(Boolean).join(' ') || '(no name)',
+      name: contactLabel(t(l.business_name) || t(l.full_name), l.first_name, l.last_name),
       phone: t(l.phone) || null,
       email: t(l.email) || null,
       addressLine: [t(l.address), t(l.city)].filter(Boolean).join(', ') || null,
@@ -130,7 +143,7 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
     ...customers.map((c): CustomerMatch => ({
       kind: 'customer',
       id: c.id,
-      name: t(c.company_name) || t(c.name) || '(no name)',
+      name: contactLabel(t(c.company_name) || t(c.name), c.first_name, c.last_name),
       phone: t(c.phone) || null,
       email: t(c.email) || null,
       addressLine: [t(c.billing_address_line1), t(c.billing_city)].filter(Boolean).join(', ') || null,
@@ -142,9 +155,9 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
   // stable within tiers so the DB order (and lead-before-customer) survives.
   const ql = q.toLowerCase();
   const tier = (m: CustomerMatch) => {
-    const n = m.name.toLowerCase();
-    if (n.startsWith(ql)) return 0;
-    if (n.includes(ql)) return 1;
+    const names = [m.name, [m.form.firstName, m.form.lastName].filter(Boolean).join(' ')].map(name => name.toLowerCase());
+    if (names.some(name => name.startsWith(ql))) return 0;
+    if (names.some(name => name.includes(ql))) return 1;
     return 2;
   };
   return matches

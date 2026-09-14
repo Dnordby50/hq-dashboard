@@ -5466,7 +5466,7 @@ async function openEstimateStartPicker(opts = {}) {
   // client-side. Errors degrade to empty lists with New Contact still working.
   const [custRes, leadRes, srcRes, spRes] = await Promise.all([
     supabase.from('customers').select('id,name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_city,billing_state,billing_zip').is('archived_at', null).order('name'),
-    supabase.from('leads').select('id,full_name,stage,phone,email,address,city,state,zip').is('deleted_at', null).is('archived_at', null).order('created_at', { ascending: false }).limit(200),
+    supabase.from('leads').select('id,full_name,first_name,last_name,business_name,stage,phone,email,address,city,state,zip').is('deleted_at', null).is('archived_at', null).order('created_at', { ascending: false }).limit(200),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
     supabase.from('pec_sales_team_members').select('id,name,auth_user_id,active').order('name'),
   ]);
@@ -5475,7 +5475,14 @@ async function openEstimateStartPicker(opts = {}) {
   const sources = (!srcRes.error && srcRes.data) || [];
   const salespeople = ((!spRes.error && spRes.data) || []).filter(s => s.active !== false);
 
-  const custLabel = c => c.company_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || '(no name)';
+  const contactName = record => [record.first_name, record.last_name].map(v => String(v || '').trim()).filter(Boolean).join(' ');
+  const contactLabel = (record, displayName) => {
+    const person = contactName(record);
+    const name = String(displayName || '').trim();
+    return person && name && person.toLowerCase() !== name.toLowerCase() ? `${name} (${person})` : name || person || '(no name)';
+  };
+  const custLabel = c => contactLabel(c, c.company_name || contactName(c) || c.name);
+  const leadLabel = l => contactLabel(l, l.business_name || l.full_name || contactName(l));
   // Salesperson default: the member mapped to THIS login (auth_user_id,
   // prompt 47), else blank; never salespeople[0]. Reported landmine: once
   // salesperson_id lands in intake, renderEstJobInfoBlock's lock means a
@@ -5491,13 +5498,13 @@ async function openEstimateStartPicker(opts = {}) {
     ${secHead('Contact information', true)}
     <div class="pec-field" style="position:relative"><label>Find an existing customer or lead</label>
       <input id="espSearch" placeholder="Search name, phone, or email…" autocomplete="off">
-      <div id="espSearchResults" style="position:absolute;left:0;right:0;top:100%;z-index:60;background:var(--s1,#fff);border:1px solid var(--rd-line,var(--border));border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:250px;overflow-y:auto;display:none;margin-top:2px"></div>
+      <div id="espSearchResults" style="position:absolute;left:0;right:0;top:100%;z-index:60;background:var(--rd-card,var(--s1,#fff));color:var(--rd-ink,var(--text));border:1px solid var(--rd-line,var(--border));border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:250px;overflow-y:auto;display:none;margin-top:2px"></div>
     </div>
     <div class="pec-field"><label>Contact</label>
       <select id="espContact">
         <option value="">New Contact</option>
         ${customers.length ? `<optgroup label="Customers">${customers.map(c => `<option value="cust:${esc(c.id)}">${esc(custLabel(c))}</option>`).join('')}</optgroup>` : ''}
-        ${leads.length ? `<optgroup label="Leads">${leads.map(l => `<option value="lead:${esc(l.id)}">${esc(l.full_name || '(no name)')} · ${esc(titleCaseValue(l.stage))}</option>`).join('')}</optgroup>` : ''}
+        ${leads.length ? `<optgroup label="Leads">${leads.map(l => `<option value="lead:${esc(l.id)}">${esc(leadLabel(l))} · ${esc(titleCaseValue(l.stage))}</option>`).join('')}</optgroup>` : ''}
       </select>
     </div>
     <div id="espSummary" style="display:none;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:.82rem"></div>
@@ -5577,7 +5584,7 @@ async function openEstimateStartPicker(opts = {}) {
       } else if (v.startsWith('lead:')) {
         const l = leads.find(x => 'lead:' + x.id === v);
         if (!l) return;
-        sum.innerHTML = `<strong>${esc(l.full_name || '(no name)')}</strong> <span class="pec-badge system" style="--pec-badge-bg:#64748b;margin-left:4px">${esc(titleCaseValue(l.stage))}</span>
+        sum.innerHTML = `<strong>${esc(leadLabel(l))}</strong> <span class="pec-badge system" style="--pec-badge-bg:#64748b;margin-left:4px">${esc(titleCaseValue(l.stage))}</span>
           <div style="color:var(--muted);font-size:.74rem;margin-top:2px">${esc([l.phone ? qoFmtPhone(l.phone) : '', l.email].filter(Boolean).join(' · ') || 'No phone or email on file')}</div>
           <div style="color:var(--muted);font-size:.68rem;margin-top:2px">Existing lead. The estimate stays linked to it, and the open-estimate check still runs.</div>`;
         sum.style.display = '';
@@ -5596,17 +5603,18 @@ async function openEstimateStartPicker(opts = {}) {
     const resultsEl = q('#espSearchResults');
     const hideResults = () => { resultsEl.style.display = 'none'; };
     const renderResults = () => {
-      const term = (searchBox.value || '').trim().toLowerCase();
+      const normalize = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const term = normalize(searchBox.value);
       if (term.length < 2) { hideResults(); return; }
       const digits = term.replace(/\D/g, '');
-      const hit = (name, phone, email) =>
-        String(name || '').toLowerCase().includes(term)
+      const hit = (names, phone, email) =>
+        names.some(name => normalize(name).includes(term))
         || (digits.length >= 3 && String(phone || '').replace(/\D/g, '').includes(digits))
         || String(email || '').toLowerCase().includes(term);
-      const custHits = customers.filter(c => hit(custLabel(c), c.phone, c.email)).slice(0, 8)
+      const custHits = customers.filter(c => hit([c.name, c.company_name, contactName(c)], c.phone, c.email)).slice(0, 8)
         .map(c => ({ key: 'cust:' + c.id, name: custLabel(c), sub: [c.phone ? qoFmtPhone(c.phone) : '', c.email, c.billing_city].filter(Boolean).join(' · '), badge: 'Customer' }));
-      const leadHits = leads.filter(l => hit(l.full_name, l.phone, l.email)).slice(0, 8)
-        .map(l => ({ key: 'lead:' + l.id, name: l.full_name || '(no name)', sub: [l.phone ? qoFmtPhone(l.phone) : '', l.email].filter(Boolean).join(' · '), badge: titleCaseValue(l.stage) + ' lead' }));
+      const leadHits = leads.filter(l => hit([l.full_name, l.business_name, contactName(l)], l.phone, l.email)).slice(0, 8)
+        .map(l => ({ key: 'lead:' + l.id, name: leadLabel(l), sub: [l.phone ? qoFmtPhone(l.phone) : '', l.email].filter(Boolean).join(' · '), badge: titleCaseValue(l.stage) + ' lead' }));
       const rows = [...custHits, ...leadHits].slice(0, 10);
       resultsEl.innerHTML = rows.length ? rows.map(r => `
         <div data-esp-pick="${esc(r.key)}" style="padding:8px 11px;cursor:pointer;border-top:1px solid var(--rd-line,var(--border));font-size:.84rem">

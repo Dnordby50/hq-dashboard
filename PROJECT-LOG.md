@@ -1,3 +1,16 @@
+## [2026-09-14 15:53 MST] estimates: readable search results and business contact matching
+
+By: Codex
+
+Changed: New Estimate search results now use the light CRM card surface and explicit text color. The previous dropdown inherited the dark legacy surface beneath dark modal text. Customer and lead searches now check company/business, legacy display and joined first/last contact names, so Dan Mosby finds Unacem NA. The Contact dropdown, search result and selected summary show both names as Unacem NA (Dan Mosby), without repeating ordinary individual names. The standalone estimator's database search also matches joined contact names before its result limit, supports multiword first names/surnames, and retains business lead fields when a match is selected.
+
+Validation: Full npm test including posttest passed, including eight new contact-search cases and the existing source/autosave/send regressions. Estimator TypeScript/Vite build passed. Working and HEAD dashboard each have six nonempty inline scripts with zero parse failures; changed CJS and JSON manifests parse; git diff --check passes. Read-only production lookup confirmed Dan/Mosby are the first/last fields on active Unacem NA. Chrome fixtures execute the actual modal code/styles with synthetic data: before the fix full-name search returned no match and result contrast was 1.02:1; after it returned Unacem NA (Dan Mosby), selected the existing customer and populated its address, with white results/dark text at 18.4:1. The 360px viewport has no horizontal overflow and the result remains readable. No production customer records or communications were created. No migration is required.
+
+Files touched: index.html, apps/estimator/src/lib/customerSearch.ts, production/estimate-customer-search.test.cjs, package.json, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Publish and verify the live dashboard and estimator search bundle. Refresh TopCoat after deployment.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-14 14:55 MST] estimates: source carryover and price autosave verified live
 
 By: Codex
