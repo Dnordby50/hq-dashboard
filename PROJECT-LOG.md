@@ -1,3 +1,14 @@
+## [2026-09-14 16:38 MST] estimates: description editor and custom drafts verified live
+
+By: Codex
+
+Verified: Published ece8208 to origin/main. Live index.html, features.json, help/whats-new.json, production/estimate-formatting.cjs and production/estimate-send-readiness.cjs match the checked-in SHA-256 values. The deployed estimator loads index-DB_UmyLV.js and includes the single formatted editor, Save as template/Use description controls, custom-system measurement qualification and savedAreaSellTotal restoration. Template table, grants/policies, setting and index were verified live before publication. Browser interactions and save/reopen regressions used synthetic fixtures; no production estimate/template fixture or customer communication was created. Full npm test including posttest and the final estimator build passed. The task-owned contact-verification stash was removed after its log entry was included in ece8208; the concurrently published booking work remains preserved.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Refresh TopCoat to load the update. Custom work can omit square footage; price edits continue to save while pricing requirements block sending. Descriptions use one formatted editor and can be saved as description-only templates.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
 ## [2026-09-14 16:36 MST] estimates: formatted editor, description templates and optional custom footage
 
 By: Codex
