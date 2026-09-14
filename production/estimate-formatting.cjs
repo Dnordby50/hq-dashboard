@@ -12,7 +12,7 @@ function parseInline(value) {
   const stack = [root];
   const append = (part) => stack[stack.length - 1].children.push(part);
   for (let i = 0; i < text.length;) {
-    if (text[i] === '\\' && /[\\*]/.test(text[i + 1] || '')) {
+    if (text[i] === '\\' && /[!-/:-@[-`{-~]/.test(text[i + 1] || '')) {
       append(text[i + 1]); i += 2; continue;
     }
     if (text[i] !== '*') { append(text[i++]); continue; }

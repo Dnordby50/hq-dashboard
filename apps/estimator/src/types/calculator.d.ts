@@ -287,6 +287,7 @@ declare module '*/production/estimate-installments.cjs' {
 // Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared
 // with pec-estimate-scope.cjs so answer keys match across client and server.
 declare module '*/production/estimate-formatting.cjs' {
+  export function scopePlainText(value: string | null | undefined): string;
   export type FormatCommand = 'bold' | 'italic' | 'bullet' | 'numbered';
   export function mdToSafeHtml(value: string | null | undefined): string;
   export function formatSelection(value: string, start: number, end: number, command: FormatCommand): { value: string; selectionStart: number; selectionEnd: number };

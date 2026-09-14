@@ -1,3 +1,32 @@
+## [2026-09-14 16:36 MST] estimates: formatted editor, description templates and optional custom footage
+
+By: Codex
+
+Changed: Replaced the separate description input/preview with one formatted editor supporting bold, italic, bullets, numbered lists, undo/redo and keyboard shortcuts. Existing markdown descriptions, safe customer rendering and send scope gates remain compatible. Template controls capture only the current formatted description, save it under a reusable name and apply it to the selected line without copying prices, measurements, products or customer details. Applying over existing text asks before replacement; undo remains available. Staff can reuse shared templates (including cached templates offline); creating requires a connection and existing catalog-edit permission. Settings > Estimates > Line editor > Advanced can hide these controls.
+
+Custom work: Square footage is now optional for the manually priced Custom System when its recipe contains only text/choice slots and has no MVB, matching typed custom lines and one-offs. Blank measurement saves as null while the existing percentage labor, commission, sundries and GP calculations remain intact. Material recipes and MVB retain their measurement requirements. Adding the first custom line replaces only a pristine, unpersisted Main placeholder. Reopening restores an estimate-wide price override from complete area-linked saved line amounts, including optional lines and excluding add-ons; opening alone does not autosave or reset that price. This includes 100% discounts and explicitly entered zero-dollar totals, which remain drafts and cannot be sent. The send policy also rejects a zero system sale when a paid add-on makes the opening total positive.
+
+Database: Used the documented no-branch fallback with a rolled-back production transaction and simulated JWT roles. Rehearsal 20260914230632 verified staff persistence, formatting roundtrip, creator spoof/blank rejection and nonstaff/catalog-permission/anonymous boundaries; confirmed rollback left no table, setting or fixture. Applied template table migration 20260914230646 (source 20260914225819) and creator-FK index 20260914230859 (source 20260914230817). Verified live columns, constraints, grants, RLS policies, enabled setting, zero template rows and anonymous REST denial. No customer records or persistent test fixtures were created. Advisor reported no new security finding or missing creator index; the new empty index has the expected unused-index notice.
+
+Validation: Full npm test including posttest passed after all changes. Focused coverage includes 11 template persistence/cache/permission cases, 18 actual template-control/editor UI cases, 6 rich editor cases, 24 custom-footage/override cases and 10 send-policy cases. The latter execute the real React screen, offline save and estimate loader, preserve sell/labor/commission/sundries/GP through cold reopen, protect edited/persisted starter lines, enforce material/MVB measurements and pass send preparation while empty/token scope stays blocked. Estimator TypeScript/Vite/PWA build passed (existing large-chunk warning). Working and HEAD dashboard each have six nonempty inline scripts with zero parse failures; all changed CJS/JSON parse; git diff --check passes. Chrome fixtures used the real editor, template controls, sheet and stylesheet with synthetic API data: formatted text, selection formatting, undo, save/reapply and desktop/360px layout passed with one editable document, no duplicate preview and no horizontal overflow. Temporary test tabs, viewport override and servers were cleaned up. No estimate/email/text/signature was sent.
+
+Files touched: estimator ScopeEditor/DescriptionTemplates/EstimatorScreen, rich-text/template/catalog/load/measurement helpers, styles/types/dependencies, canonical formatter and dashboard mirror/settings, six regression files, the shared send policy and browser mirror, two migrations, SCHEMA.md, features.json, help/whats-new.json, package.json, PROJECT-LOG.md.
+Next steps: Publish and verify the live dashboard, estimator bundle and template controls. Refresh TopCoat after deployment.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+## [2026-09-14 15:57 MST] estimates: business contact search and result colors verified live
+
+By: Codex
+
+Verified: Published c47aba5 to origin/main. Live index.html, features.json and help/whats-new.json match the checked-in files. The deployed estimator loads index-D74Bcojv.js and contains business_name lead reads and the combined first_name/last_name database filter. The dashboard contains joined contact-name matching, combined business/contact labels, and the light card/text dropdown colors. The synthetic Chrome result/selection check passed at desktop and 360px; the viewport was reset and the temporary browser tab closed. No production test records were created.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Refresh TopCoat to load the corrected customer search. Dylan's next request is reusable description-only templates from estimate lines; implementation is underway.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+
 ## [2026-09-14 16:03 MST] booking: TopCoat redesign verified live
 
 By: Codex

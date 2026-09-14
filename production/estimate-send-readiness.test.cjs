@@ -42,6 +42,21 @@ test('per-line floor remains controlled by its existing setting', () => {
   assert.deepEqual(blockers(est, { line_pricing_block_below_floor: 'true', line_pricing_gp_floor_pct: '15' }), []);
 });
 
+test('a saved zero system price stays blocked even when a positive add-on makes the opening total positive', () => {
+  const zeroArea = { estimate_area_id: 'area', label: 'Garage', total: 0, qty: 1, unit_cost: 0, is_optional: false };
+  const addon = { label: 'Travel', total: 700, qty: 1, unit_cost: 20, is_optional: false };
+  const est = estimate({ calcTotal: 1500, finalSell: 0, combinedGpPct: null, lines: [{ label: 'Garage', gpPct: null }] }, {
+    price: 700, calc_price: 1500, price_override_reason: 'Draft discount in progress', commission_pct: 5,
+    estimate_line_items: [zeroArea, addon],
+  });
+  const before = structuredClone(est);
+  assert.ok(blockers(est).length > 0, 'a typed reason and add-on do not make a zero system price sendable');
+  assert.deepEqual(est, before, 'send validation never changes the saved draft price');
+  const legacy = { ...est, pricing_snapshot: null };
+  assert.ok(blockers(legacy).length > 0, 'legacy rows receive the same zero system-price protection');
+  assert.deepEqual(blockers({ ...est, is_custom: true }), [], 'whole-estimate custom pricing keeps its separate existing policy');
+});
+
 test('legacy pricing derives area cost and addon commission without confusing optional totals', () => {
   const est = { calc_price: 5000, price: 4000, gp_pct: .1, commission_pct: 10, estimate_line_items: [
     { estimate_area_id: 'area', label: 'Garage', total: 4000, unit_cost: 2000, qty: 1, is_optional: false },

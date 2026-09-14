@@ -373,12 +373,29 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 .scope-editor-toolbar button { min-width: 2.5rem; min-height: 2.5rem; padding: .4rem .65rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); color: var(--ink); font: inherit; font-size: .85rem; cursor: pointer; }
 .scope-editor-toolbar button:hover { border-color: var(--accent); }
 .scope-editor-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.scope-editor .custom-scope { display: block; border-top-left-radius: 0; border-top-right-radius: 0; }
+.scope-editor-toolbar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scope-editor-toolbar button:disabled { opacity: .4; cursor: default; }
+.scope-editor-content { position: relative; min-height: var(--scope-editor-min-height, 12em); padding: .75rem 1rem; border: 1px solid var(--line); border-radius: 0 0 .65rem .65rem; background: var(--panel); color: var(--ink); font: inherit; font-size: 1rem; line-height: 1.6; white-space: pre-wrap; white-space: break-spaces; overflow-wrap: anywhere; word-wrap: break-word; -webkit-font-variant-ligatures: none; font-variant-ligatures: none; outline: none; }
+.scope-editor-content:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.scope-editor-content[data-empty="true"]::before { content: attr(data-placeholder); position: absolute; pointer-events: none; color: var(--muted); }
+.scope-editor-content p { margin: 0 0 .4em; }
+.scope-editor-content ul, .scope-editor-content ol { margin: .4em 0; padding-left: 1.5em; }
+.scope-editor-content li { position: relative; margin: .2em 0; }
+.scope-editor-content li > p { margin: 0; }
+.scope-editor-content > :first-child { margin-top: 0; }
+.scope-editor-content > :last-child { margin-bottom: 0; }
+.scope-editor-content .ProseMirror-selectednode { outline: 2px solid var(--accent); }
+.scope-editor-content .ProseMirror-separator { display: inline; border: none !important; margin: 0 !important; width: 0 !important; height: 0 !important; }
+.scope-editor-content.ProseMirror-hideselection *::selection { background: transparent; }
+.scope-editor-content.ProseMirror-hideselection { caret-color: transparent; }
+/* Read-only previews remain useful while choosing or saving a template. */
 .scope-editor-preview { border: 1px solid var(--line); border-radius: .65rem; padding: .75rem 1rem; background: var(--panel); overflow-wrap: anywhere; }
-.scope-editor-preview-label { display: block; color: var(--muted); font-size: .7rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin-bottom: .5rem; }
-.scope-editor-preview-content { font-size: .88rem; line-height: 1.6; }
-.scope-editor-preview-content > :first-child { margin-top: 0 !important; }
-.scope-editor-preview-content > :last-child { margin-bottom: 0 !important; }
+.description-templates { margin-bottom: .65rem; }
+.description-template-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem 1rem; }
+.description-template-actions button { min-height: 2.5rem; }
+.description-template-panel { display: grid; gap: .65rem; margin-top: .65rem; padding: .85rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--rd-soft); }
+.description-template-panel .field { min-width: 0; }
+.description-template-panel select { width: 100%; max-width: 100%; }
 .scope-actions { display: flex; gap: 0.9rem; align-items: center; }
 .scope-actions .link:disabled { opacity: 0.45; cursor: default; }
 

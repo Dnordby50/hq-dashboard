@@ -17,6 +17,7 @@ import {
   type RecipeSlot,
 } from '../../lib/calculator';
 import { useOnline } from '../../lib/useOnline';
+import { customSystemMeasurementOptional } from '../../lib/customLineMeasurement';
 import {
   CUSTOM_LINE_LABEL,
   saveEstimateOffline,
@@ -31,6 +32,7 @@ import { composeCustomerAddress, composeCustomerName, emptyCustomer, emailValid,
 import AddressAutocomplete from './AddressAutocomplete';
 import BottomSheet from './BottomSheet';
 import ScopeEditor from './ScopeEditor';
+import type { LineTemplate } from '../../lib/lineTemplates';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps, type OutboxOp } from '../../offline/outbox';
@@ -244,6 +246,13 @@ export default function EstimatorScreen({
   // offline rep still prices (the add-on picker is just empty until a refresh).
   const addonCatalog: Addon[] = catalog.addons ?? [];
   const online = useOnline();
+  const [descriptionTemplates, setDescriptionTemplates] = useState<LineTemplate[]>(catalog.lineTemplates ?? []);
+  const onDescriptionTemplateSaved = useCallback((template: LineTemplate) => {
+    setDescriptionTemplates(prev => [...prev.filter(t => t.id !== template.id), template]);
+  }, []);
+  const descriptionTemplateOptions = (defaultName: string) => config.estimateLineTemplatesEnabled === false ? undefined : ({
+    defaultName, createdBy, initialTemplates: descriptionTemplates, online, onSaved: onDescriptionTemplateSaved,
+  });
   // Prefilled label on a new custom line (prompt 69). Tolerates a pre-69
   // cached catalog (key absent) with the same default the migration seeds.
   const customLabelDefault = config.linePricingCustomLabelDefault || 'Custom work';
@@ -275,6 +284,14 @@ export default function EstimatorScreen({
   );
 
   const fallbackSystemId = editing?.systemTypeId ?? systemTypes[0]?.id ?? '';
+  const measurementOptional = useCallback((a: AreaForm) => customSystemMeasurementOptional(
+    systemTypes.find(system => system.id === a.systemTypeId),
+    recipeSlotsBySystemType[a.systemTypeId] ?? [],
+    a.mvb,
+  ), [systemTypes, recipeSlotsBySystemType]);
+  const calculatorAreaReady = useCallback((a: AreaForm) => !!a.systemTypeId && (
+    Number(a.sqft) > 0 || (measurementOptional(a) && Number.isFinite(Number(a.sqft)) && Number(a.sqft) >= 0)
+  ), [measurementOptional]);
 
   // ---- Scope templates on lines (prompt 94 B1) -----------------------------
   // Picking a system drops its scope_template into the line description,
@@ -471,6 +488,10 @@ export default function EstimatorScreen({
       makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {}, ...emptyLineFields, lineDescription: (templateAutoFillOk && fallbackSystemId ? templateForSystem(fallbackSystemId, false) : null) ?? '' }),
     }) as AreaForm[],
   );
+  // Keep only the original scratch placeholder eligible for replacement by
+  // the first custom line. Any persisted or currently edited area survives.
+  const scratchStarterRef = useRef(editing?.areas.length ? null : areas[0]);
+  const hasPersistedAreasRef = useRef((editing?.areas.length ?? 0) > 0);
   // Prompt 63 Part A: product-kind slots are HIDDEN at estimate time (Dylan:
   // "only things that drive sales on the estimate"). This flag is the escape
   // hatch for commercial bids / a customer who already picked: session-only,
@@ -680,15 +701,15 @@ export default function EstimatorScreen({
   // Custom lines (isCustom) never enter the engine: their price is typed.
   // engineAreas derives from this ONE filtered list so pricing.lines stays
   // index-aligned with it.
-  const pricedAreas = useMemo(() => areas.filter((a) => !a.isCustom && Number(a.sqft) > 0 && a.systemTypeId), [areas]);
+  const pricedAreas = useMemo(() => areas.filter((a) => !a.isCustom && calculatorAreaReady(a)), [areas, calculatorAreaReady]);
   // Every SAVEABLE line in form order: calculator areas that price, plus every
   // custom line. The save's areaInputs and the line items both walk this list,
   // so line items bind to areas by position across both kinds.
   const lineForms = useMemo(
     () => areas
       .map((a, formIdx) => ({ a, formIdx }))
-      .filter(({ a }) => (a.isCustom ? true : Number(a.sqft) > 0 && !!a.systemTypeId)),
-    [areas],
+      .filter(({ a }) => a.isCustom || calculatorAreaReady(a)),
+    [areas, calculatorAreaReady],
   );
 
   const engineAreas: Area[] = useMemo(
@@ -1052,9 +1073,17 @@ export default function EstimatorScreen({
   const calcTotal = linesReady ? r2(lineRows.reduce((s, r) => s + (r.kind === 'calc' ? (r.calcPrice ?? 0) : (r.current ?? 0)), 0)) : null;
 
   // ---- Sell price / discount (decision 9: nothing is blocked, GP goes red) --
-  const [sellInput, setSellInput] = useState('');
+  const initialSavedSellInput = () => {
+    const saved = editing?.savedAreaSellTotal;
+    return saved != null && Number.isFinite(saved) && saved >= 0
+      && (saved === 0 || basePrice == null || Math.abs(saved - basePrice) >= 0.005) ? String(saved) : '';
+  };
+  // Hydrate before the first autosave fingerprint. Opening a saved override
+  // must not itself look like an edit or trigger a write.
+  const [sellInput, setSellInput] = useState(initialSavedSellInput);
   const [discInput, setDiscInput] = useState('');
-  const [priceOverride, setPriceOverride] = useState<null | 'sell' | 'disc'>(null);
+  const [priceOverride, setPriceOverride] = useState<null | 'sell' | 'disc'>(() => initialSavedSellInput() ? 'sell' : null);
+  const lastReadyBasePriceRef = useRef(basePrice);
   // Build 17: overriding the total sell price requires a reason (the paper
   // trail for who is discounting and why). Prefilled from a reopened override.
   const [overrideReason, setOverrideReason] = useState<string>(() => editing?.priceOverrideReason ?? '');
@@ -1063,6 +1092,12 @@ export default function EstimatorScreen({
   // edit) resets any manual override: the old discount was negotiated against
   // the old number.
   useEffect(() => {
+    if (lastReadyBasePriceRef.current == null) {
+      if (basePrice != null) lastReadyBasePriceRef.current = basePrice;
+      return;
+    }
+    if (lastReadyBasePriceRef.current === basePrice) return;
+    if (basePrice != null) lastReadyBasePriceRef.current = basePrice;
     setPriceOverride(null);
     setSellInput('');
     setDiscInput('');
@@ -1073,7 +1108,7 @@ export default function EstimatorScreen({
     if (basePrice == null) return null;
     if (priceOverride === 'sell') {
       const n = Number(sellInput);
-      return Number.isFinite(n) && n > 0 ? n : basePrice;
+      return sellInput.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : basePrice;
     }
     if (priceOverride === 'disc') {
       const d = Number(discInput);
@@ -1676,7 +1711,7 @@ export default function EstimatorScreen({
     // line, or (custom mode) a typed price or scope does.
     const hasContent = isCustom
       ? (customPrice != null || customScope.trim().length > 0)
-      : areas.some((a) => a.isCustom || Number(a.sqft) > 0);
+      : areas.some((a) => a.isCustom || Number(a.sqft) > 0 || (measurementOptional(a) && (Number(a.priceInput) > 0 || a.lineDescription.trim().length > 0)));
     if (!hasContent) {
       draftTrigger.reset();
       return;
@@ -1740,7 +1775,7 @@ export default function EstimatorScreen({
       draftTrigger.reset();
       draftWriteRef.current = false;
     }
-  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customPrice, customSqft, areas, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending, leadSource]);
+  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customPrice, customSqft, areas, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending, leadSource, measurementOptional]);
   const saveDraftRef = useRef(saveDraft);
   useEffect(() => { saveDraftRef.current = saveDraft; }, [saveDraft]);
 
@@ -1801,8 +1836,11 @@ export default function EstimatorScreen({
   // one-off scope with its own price, cost, and hours, riding the same
   // area-row pipeline. No system, no recipe, no catalog products.
   const addCustomLine = () => {
-    const newIdx = areas.length;
-    setAreas((prev) => [...prev, {
+    const replaceStarter = !hasPersistedAreasRef.current && areas.length === 1
+      && scratchStarterRef.current != null
+      && JSON.stringify(areas[0]) === JSON.stringify(scratchStarterRef.current);
+    const newIdx = replaceStarter ? 0 : areas.length;
+    setAreas((prev) => [...(replaceStarter ? [] : prev), {
       name: customLabelDefault, sqft: '', systemTypeId: '', mvb: false, slotValues: {},
       ...emptyLineFields, isCustom: true,
     }]);
@@ -1960,8 +1998,21 @@ export default function EstimatorScreen({
       areas.forEach((a, i) => {
         if (a.isCustom) return;
         const label = a.name || `Area ${i + 1}`;
-        if (!(Number(a.sqft) > 0)) list.push(`Enter the square footage on "${label}" (or remove that line).`);
-        else if (!a.systemTypeId) list.push(`Pick a system on "${label}".`);
+        if (!calculatorAreaReady(a)) {
+          if (!a.systemTypeId) list.push(`Pick a system on "${label}".`);
+          else list.push(`Enter the square footage on "${label}" (or remove that line).`);
+        }
+        // Text-only Custom System has a zero material solve: its price may
+        // come from the line field OR an overall sell-price override.
+        if (measurementOptional(a)) {
+          const rowIdx = lineRows.findIndex(row => row.formIdx === i);
+          // An explicitly entered/restored zero total is a real draft edit,
+          // unlike the engine's untouched zero solve. Send rejects it later.
+          const hasTypedTotal = priceOverride === 'sell' && sellInput.trim() !== ''
+            && Number.isFinite(Number(sellInput)) && Number(sellInput) >= 0;
+          const hasPriceBasis = rowIdx >= 0 && (hasTypedTotal || (lineRows[rowIdx].current ?? 0) > 0 || (finalLineAmounts?.[rowIdx] ?? 0) > 0);
+          if (!hasPriceBasis) list.push(`Type a price on the custom line "${label}".`);
+        }
       });
       for (const r of lineRows) {
         if (r.kind === 'custom' && r.current == null) list.push(`Type a price on the custom line "${r.label}".`);
@@ -1973,7 +2024,7 @@ export default function EstimatorScreen({
     }
     if (addonsIncomplete) list.push('Finish the add-on lines (each needs a label and a price).');
     return list;
-  }, [salesperson, customerIncomplete, customer.isCommercial, customer.firstName, customer.phone, customer.email, leadSource, isCustom, customPrice, mvbMissing, err, areas, lineRows, linesReady, addonsIncomplete]);
+  }, [salesperson, customerIncomplete, customer.isCommercial, customer.firstName, customer.phone, customer.email, leadSource, isCustom, customPrice, mvbMissing, err, areas, lineRows, linesReady, addonsIncomplete, calculatorAreaReady, measurementOptional, finalLineAmounts, priceOverride, sellInput]);
   const canSave = saveBlockers.length === 0 && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
@@ -2463,7 +2514,7 @@ export default function EstimatorScreen({
           });
         return {
           name: a.name || 'Area',
-          sqft: Number(a.sqft) || 0,
+          sqft: Number(a.sqft) > 0 ? Number(a.sqft) : null,
           systemTypeId: a.systemTypeId,
           flakeProductId: d.flake,
           basecoatProductId: d.basecoat,
@@ -2766,6 +2817,7 @@ export default function EstimatorScreen({
         return saveEstimateOffline(saveArgs);
       });
       lastSavedAreaIdsRef.current = savedAreaIds ?? [];
+      if (areaInputs.length > 0) hasPersistedAreasRef.current = true;
       // Auto-first, then manual (build 25): the ONE automatic generation
       // happens on the save that has a scope-templated estimate with every
       // scope question answered and no document yet. Prompt 94 B4: only
@@ -3416,6 +3468,7 @@ export default function EstimatorScreen({
               <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Polish (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
               <ScopeEditor
                 label="Scope of work"
+                templateOptions={descriptionTemplateOptions('Custom work')}
                 rows={10}
                 value={customScope}
                 onChange={setCustomScope}
@@ -3484,7 +3537,7 @@ export default function EstimatorScreen({
                       {a.isCustom
                         ? <span className="line-chip custom">custom</span>
                         : <span className="line-row-sys">{sys?.name ?? 'No system'}{a.mvb ? ' +MVB' : ''}</span>}
-                      {!a.isCustom && (
+                      {!a.isCustom && (sqftNum > 0 || !measurementOptional(a)) && (
                         <span className="line-row-sys">{sqftNum > 0 ? `${Math.round(sqftNum).toLocaleString()} sqft` : 'no sqft yet'}</span>
                       )}
                     </span>
@@ -3899,7 +3952,7 @@ export default function EstimatorScreen({
                 custom-line-only estimate needs no sqft, and telling Ron to
                 enter one was exactly the wrong advice (prompt 82). */}
             {!isCustom && salesperson && !hasPrice && !err && !mvbMissing &&
-              areas.some((a) => !a.isCustom && !(Number(a.sqft) > 0 && a.systemTypeId)) &&
+              areas.some((a) => !a.isCustom && !calculatorAreaReady(a)) &&
               <p className="hint">Enter the square footage to price the job.</p>}
             {err && <p className="error">{(ERROR_COPY[err] ?? err) + (pricing?.errorArea ? ` (area: ${pricing.errorArea})` : '')}</p>}
             {!isCustom && hasPrice && customLineUnpriced && (
@@ -4049,7 +4102,7 @@ export default function EstimatorScreen({
               onClose={close}
               title={`Edit line: ${title}`}
               breakpointPx={sheetBreakpoint}
-              focusSelector={sheetFocusDesc ? 'textarea[data-sheet-desc]' : null}
+              focusSelector={sheetFocusDesc ? '[data-sheet-desc]' : null}
               footer={<>
                 <button
                   type="button"
@@ -4074,7 +4127,7 @@ export default function EstimatorScreen({
                         {systemTypes.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
                       </select>
                     </label>
-                    <label className="field"><span>Square footage</span>
+                    <label className="field"><span>Square footage{measurementOptional(a) ? ' (optional)' : ''}</span>
                       <input inputMode="decimal" value={a.sqft} onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="sq ft" />
                     </label>
                     {!isMvbOnly && (
@@ -4108,6 +4161,10 @@ export default function EstimatorScreen({
                       <p className="warn addon-warn">No material cost or hours on this line: it books as pure margin and inflates GP until they are typed.</p>
                     )}
                   </>
+                ) : measurementOptional(a) ? (
+                  <label className="field"><span>Line price $ (you set it)</span>
+                    <input inputMode="decimal" value={a.priceInput} placeholder="0" onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} />
+                  </label>
                 ) : row && row.calcPrice != null ? (
                   <label className="field"><span>Line price $ (calc {money(row.calcPrice)})</span>
                     <input inputMode="decimal" value={a.priceInput} placeholder={String(row.calcPrice)} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} />
@@ -4181,6 +4238,8 @@ export default function EstimatorScreen({
                     WINS (the save round-trips it verbatim); changing systems
                     over rep text asks first, defaulting to keep. */}
                 <ScopeEditor
+                  key={`area-${i}`}
+                  templateOptions={descriptionTemplateOptions(a.isCustom ? title : [sys?.name, title].filter(Boolean).join(' - '))}
                   sheetDescription
                   rows={7}
                   value={descValue}
@@ -4250,7 +4309,7 @@ export default function EstimatorScreen({
             onClose={close}
             title={`Edit line: ${f.label.trim() || 'One-off'}`}
             breakpointPx={sheetBreakpoint}
-            focusSelector={sheetFocusDesc ? 'textarea[data-sheet-desc]' : null}
+            focusSelector={sheetFocusDesc ? '[data-sheet-desc]' : null}
             footer={<>
               <button
                 type="button"
@@ -4307,6 +4366,8 @@ export default function EstimatorScreen({
                 </span>
               </div>
               <ScopeEditor
+                key={`addon-${f.key}`}
+                templateOptions={descriptionTemplateOptions(f.label)}
                 sheetDescription
                 rows={5}
                 value={f.description}

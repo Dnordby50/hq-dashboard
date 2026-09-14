@@ -70,6 +70,10 @@ export type LoadedEstimate = {
   scopeStale: boolean;
   scopeAnswers: Record<string, string>;
   priceOverrideReason: string | null;
+  // All area lines at their saved final prices, including optional ones and
+  // excluding add-ons. Restores a job-level override after reopening without
+  // guessing from a required-only/customer-selected estimate total.
+  savedAreaSellTotal?: number | null;
   // Per-line pricing / custom lines (prompt 69): the new columns round-trip as
   // ready-to-edit input strings (the areas.sqft pattern). A pre-69 row loads
   // them all empty/false and the form behaves exactly as before.
@@ -237,6 +241,27 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       lineDescription: !isCustomLine && descByAreaId.has(row.id) ? (descByAreaId.get(row.id) as string) : '',
     };
   });
+  let savedAreaSellTotal: number | null = null;
+  if (!areasRes.error && !linesRes.error && areasRes.data?.length) {
+    const areaIds = new Set(areasRes.data.map(area => String(area.id)));
+    const totalsByArea = new Map<string, number>();
+    let complete = true;
+    for (const line of linesRes.data ?? []) {
+      const areaId = String(line.estimate_area_id ?? '');
+      if (!areaIds.has(areaId)) continue;
+      const qty = Number(line.qty);
+      const price = line.unit_price == null ? NaN : Number(line.unit_price);
+      if (totalsByArea.has(areaId) || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price < 0) {
+        complete = false;
+        break;
+      }
+      totalsByArea.set(areaId, qty * price);
+    }
+    if (complete && totalsByArea.size === areaIds.size) {
+      const total = Math.round([...totalsByArea.values()].reduce((sum, price) => sum + price, 0) * 100) / 100;
+      if (Number.isFinite(total) && total >= 0) savedAreaSellTotal = total;
+    }
+  }
   // Payment schedule rows (prompt 74). Loaded separately and tolerantly: a
   // database the estimate_installments migration has not reached yet must not
   // 400 the whole edit load (the forward-compat pattern above).
@@ -304,6 +329,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     scopeStale: e.scope_stale === true,
     scopeAnswers: (e.scope_answers && typeof e.scope_answers === 'object' ? e.scope_answers : {}) as Record<string, string>,
     priceOverrideReason: (e.price_override_reason as string | null) ?? null,
+    savedAreaSellTotal,
     // Returned as-is, INCLUDING empty: EstimatorScreen seeds the create-path
     // Main area (with the system's default slot values) when a loaded draft
     // has none. A placeholder here would skip that default seeding.

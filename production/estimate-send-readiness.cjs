@@ -15,6 +15,11 @@ function estimatePricingSendBlockers(est, settings = {}) {
   const calculated = saved ? finite(saved.calcTotal) : finite(est.calc_price);
   const sell = saved ? finite(saved.finalSell) : (areaItems.length ? round(areaItems.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0)) : finite(est.price));
   const blockers = [];
+  // A fully discounted draft has no defined GP percentage. Keep it saved,
+  // but do not let null GP silently bypass the send-only pricing checks.
+  if (sell != null && sell <= 0) {
+    blockers.push({ msg: 'Set a price above $0 before sending. Your estimate changes are saved.' });
+  }
   const threshold = Math.max((calculated ?? 0) * configured('line_pricing_reason_threshold_pct', 2) / 100, configured('line_pricing_reason_threshold_dollars', 100));
   if (calculated != null && sell != null && round(calculated - sell) > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
     blockers.push({ msg: 'Add a reason for the price change before sending. Your estimate changes are saved.' });

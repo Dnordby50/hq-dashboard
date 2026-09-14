@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import type { Product, RecipeSlot, SystemType } from './calculator';
 import { idbGet, idbPut } from '../offline/idb';
+import { loadLineTemplates, type LineTemplate } from './lineTemplates';
 
 const CATALOG_CACHE_KEY = 'catalog';
 
@@ -69,6 +70,9 @@ export type PricingConfig = {
   // already typed into a line's description (never authors scope), so it
   // stays available while generate is off. Default MUST match the seed: true.
   estimateLinePolishEnabled: boolean; // estimate_line_polish_enabled: the per-line Polish with AI button on/off
+  // Optional for older cached catalogs. Controls template tools only; copied
+  // descriptions remain ordinary estimate text when this setting is off.
+  estimateLineTemplatesEnabled?: boolean;
   lineSheetBreakpointPx: number;        // estimator_line_sheet_breakpoint_px: below it the line editor is a bottom sheet, above it a centered modal
   syncStuckThreshold: number; // sync_stuck_threshold_attempts: failed attempts before a queued save shows the red not-syncing state (prompt 48)
   syncStuckEscalationEnabled: boolean; // sync_stuck_escalation_enabled: report stuck saves to the office (bell notification) (prompt 48)
@@ -86,6 +90,7 @@ export type Catalog = {
   // (2026-08-26). Absent in caches written before the field existed; readers
   // default to [] and fall back to a free-text input.
   leadSources: string[];
+  lineTemplates?: LineTemplate[];
   config: PricingConfig;
 };
 
@@ -93,7 +98,7 @@ export type Catalog = {
 // Each query is RLS-gated to admin staff (same as the dashboard), so this only
 // returns data for a signed-in admin.
 export async function loadCatalog(): Promise<Catalog> {
-  const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes, leadSourcesRes] = await Promise.all([
+  const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes, leadSourcesRes, lineTemplates] = await Promise.all([
     supabase
       .from('pec_prod_system_types')
       .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order,scope_template,scope_template_mvb,deposit_pct')
@@ -154,6 +159,7 @@ export async function loadCatalog(): Promise<Catalog> {
         'sync_stuck_escalation_enabled',
         'estimate_line_generate_enabled',
         'estimate_line_polish_enabled',
+        'estimate_line_templates_enabled',
         'estimator_line_sheet_breakpoint_px',
         'estimate_autosave_enabled',
       ]),
@@ -162,6 +168,10 @@ export async function loadCatalog(): Promise<Catalog> {
       .select('name')
       .eq('active', true)
       .order('name', { ascending: true }),
+    // Reusable descriptions are optional catalog data. An unavailable
+    // template table must not stop ordinary estimate loading or pricing;
+    // the template picker refreshes separately and reports its own errors.
+    loadLineTemplates().catch((): LineTemplate[] => []),
   ]);
 
   const firstError =
@@ -214,6 +224,7 @@ export async function loadCatalog(): Promise<Catalog> {
     customerSearchEnabled: String(settings['estimator_customer_search_enabled'] ?? 'true').toLowerCase() !== 'false',
     estimateLineGenerateEnabled: String(settings['estimate_line_generate_enabled'] ?? 'true').toLowerCase() !== 'false',
     estimateLinePolishEnabled: String(settings['estimate_line_polish_enabled'] ?? 'true').toLowerCase() !== 'false',
+    estimateLineTemplatesEnabled: String(settings['estimate_line_templates_enabled'] ?? 'true').toLowerCase() !== 'false',
     lineSheetBreakpointPx: Math.max(320, num('estimator_line_sheet_breakpoint_px', 700)) || 700,
     // Guard against a zero/negative row making every queued op instantly
     // "broken": anything unparseable or < 1 falls back to 2.
@@ -229,6 +240,7 @@ export async function loadCatalog(): Promise<Catalog> {
     salespeople: (salesRes.data ?? []) as SalesPerson[],
     addons: (addonsRes.data ?? []) as Addon[],
     leadSources: ((leadSourcesRes.data ?? []) as { name: string }[]).map((r) => r.name),
+    lineTemplates,
     config,
   };
 

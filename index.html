@@ -18912,7 +18912,7 @@ async function renderSettingsEstimates() {
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample', 'accept_celebration_enabled',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
-      'estimate_line_generate_enabled', 'estimate_line_polish_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
+      'estimate_line_generate_enabled', 'estimate_line_polish_enabled', 'estimate_line_templates_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
       'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
       'companycam_name_match_min_score', 'companycam_max_customer_photos',
       'estimate_warranty_enabled', 'estimate_warranty_pdf_path', 'estimate_color_chart_enabled',
@@ -18960,6 +18960,7 @@ async function renderSettingsEstimates() {
   const lsGenOn = (map.estimate_line_generate_enabled || 'true') !== 'false';
   // Polish (2026-08-20): its own flag, description-cleanup only; default on.
   const lsPolishOn = (map.estimate_line_polish_enabled || 'true') !== 'false';
+  const lsTemplatesOn = (map.estimate_line_templates_enabled || 'true') !== 'false';
   const lsBreak = Number(map.estimator_line_sheet_breakpoint_px) >= 320 ? Number(map.estimator_line_sheet_breakpoint_px) : 700;
   // Autosave (prompt 87 Task D). Default MUST match the migration seed and
   // catalog.ts (true). Deliberately behind Advanced: rule 12's kill switch,
@@ -19114,6 +19115,13 @@ async function renderSettingsEstimates() {
         </label>
         <button type="button" class="pec-btn ghost sm" id="lsSave">Save</button>
       </div>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.8rem">
+          <input type="checkbox" id="lsSetTemplatesOn" ${lsTemplatesOn ? 'checked' : ''}> Saved description templates
+        </label>
+        <div style="color:var(--muted);font-size:.76rem;margin-top:5px">Save a line description as a named template and reuse it on another estimate line. Turning this off hides the template tools; descriptions already on estimates stay unchanged. Applies on the estimator's next open.</div>
+      </details>
     </div>
     ${toggleCard('CompanyCam photos on estimates', ccEstOn,
       'Shows the linked CompanyCam project\'s photos on the estimate page while you price, auto-matched by customer name. Ticked photos ship on the customer proposal, frozen at send.', 'setCcEstPhotos',
@@ -19388,6 +19396,12 @@ async function renderSettingsEstimates() {
     } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     showToast('Line editor settings saved.');
     renderSettings();
+  });
+  $('lsSetTemplatesOn').addEventListener('change', async (e) => {
+    const cb = e.target; cb.disabled = true;
+    try { await saveSetting('estimate_line_templates_enabled', cb.checked ? 'true' : 'false'); }
+    catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); cb.checked = !cb.checked; }
+    cb.disabled = false;
   });
 }
 
@@ -33627,6 +33641,11 @@ function estimatePricingSendBlockers(est, settings = {}) {
   const calculated = saved ? finite(saved.calcTotal) : finite(est.calc_price);
   const sell = saved ? finite(saved.finalSell) : (areaItems.length ? round(areaItems.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0)) : finite(est.price));
   const blockers = [];
+  // A fully discounted draft has no defined GP percentage. Keep it saved,
+  // but do not let null GP silently bypass the send-only pricing checks.
+  if (sell != null && sell <= 0) {
+    blockers.push({ msg: 'Set a price above $0 before sending. Your estimate changes are saved.' });
+  }
   const threshold = Math.max((calculated ?? 0) * configured('line_pricing_reason_threshold_pct', 2) / 100, configured('line_pricing_reason_threshold_dollars', 100));
   if (calculated != null && sell != null && round(calculated - sell) > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
     blockers.push({ msg: 'Add a reason for the price change before sending. Your estimate changes are saved.' });
@@ -33918,7 +33937,7 @@ function parseInline(value) {
   const stack = [root];
   const append = (part) => stack[stack.length - 1].children.push(part);
   for (let i = 0; i < text.length;) {
-    if (text[i] === '\\' && /[\\*]/.test(text[i + 1] || '')) {
+    if (text[i] === '\\' && /[!-/:-@[-`{-~]/.test(text[i + 1] || '')) {
       append(text[i + 1]); i += 2; continue;
     }
     if (text[i] !== '*') { append(text[i++]); continue; }

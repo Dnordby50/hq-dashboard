@@ -1,5 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
+Refreshed 2026-09-14 (Codex, estimate description templates): applied 20260914230646_estimate_line_description_templates after a successful rollback-only role/persistence rehearsal. Verified table, constraints, RLS/grants, empty template library and enabled setting; no customer records changed. Other sections remain unchanged.
+
 Refreshed 2026-09-07 (Codex, owner workspace private storage): applied `20260907185049_owner_workspace_private.sql` after a rolled-back production rehearsal. Three owner tables verified live with RLS and one owner-only SELECT policy each, eight protected `owner_*` settings, private membership/session helper, and service-role-only revision-save RPC. One verified owner entitlement; documents and revisions empty. Owner Studio remains disabled. Other sections are unchanged, including Claude's separately pending appointment migration.
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
@@ -1053,6 +1055,22 @@ RLS: enabled · rows: 21
 PK: id
 FK: campaign_id → pec_drip_campaigns.id
 Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). ai_guidance is the per-step instruction to the model (not customer copy); the runner appends real links/amounts from data. Prompt 73 (2026-08-06): ai_guidance became NULLABLE and fixed_template / fixed_subject / auto_send were added. fixed_template set = the step sends that text verbatim after token substitution ({first_name}, {booking_link}, {{#booking_link}}...{{/booking_link}} conditional) with ZERO model calls; auto_send=true = the step bypasses the approval gate and quiet hours (PER-STEP by design, never a global flag). Today exactly one step has them: the lead campaign's day-0 instant touch. RLS staff-only.
+
+### pec_estimate_line_templates
+RLS: enabled · rows: 0 at creation (2026-09-14)
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| name | text | no |  |
+| description | text | no |  |
+| active | boolean | no | true |
+| created_by | uuid | yes | auth.uid() |
+| created_at | timestamptz | no | now() |
+
+PK: id. FK: created_by -> auth.users.id (on delete set null). Index: pec_estimate_line_templates_created_by_idx on created_by (verified live migration 20260914230859).
+Checks: trimmed name length 1–160; description length 1–30000 and nonblank after trimming.
+Staff SELECT uses is_admin_staff(). INSERT requires is_admin_staff(), has_permission('can_edit_catalog') and created_by=auth.uid(). Authenticated has SELECT/INSERT only; no UPDATE/DELETE. Anonymous has no grants. Service role has full access. The editor creates templates with a captured UUID; retries verify the same row without overwriting existing text. No customer/estimate/price fields are stored. Active rows are reusable descriptions; applying copies text into the existing line's description and preserves other fields. Created by migration 20260914230646_estimate_line_description_templates (repository file 20260914225819_estimate_line_description_templates.sql), following rollback-only rehearsal 20260914230632.
 
 ### pec_estimate_views
 RLS: enabled · rows: 0
@@ -2445,6 +2463,8 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
+Estimate description templates (2026-09-14): estimate_line_templates_enabled ('true'), Settings > Estimates > Line editor > Advanced. Hides/shows template controls only; saved line text is unchanged. Templates are stored in pec_estimate_line_templates, not in settings.
+
 Google calendar booking protection (2026-09-09, verified live): google_booking_max_sync_age_minutes ('45', clamped 15–1440), under Settings > Appointments > Google Advanced. Public availability and the service-role-only five-argument book_appointment_slot RPC both require every selected rep's enabled source calendars and dedicated calendar to have completed recovery (pull_version >= 2), no error, a completion after reconnect, and a completion within this freshness limit. Disconnected dependencies fail closed; never-connected reps without source dependencies remain bookable. Ordinary in-progress work can coexist with a fresh completed baseline. The RPC checks health after acquiring its existing per-rep/day advisory lock, before overlap checks and writes, and returns calendar_unavailable when unverified.
 
 Owner MBP refresh settings (2026-09-08): owner_mbp_live_enabled ('true') and owner_mbp_refresh_minutes ('5', whole minutes 1–60), editable in the private owner Routine settings. Insert-only seed; the existing owner_* settings RLS boundary applies.

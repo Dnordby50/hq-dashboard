@@ -28,6 +28,14 @@ test('empty selection is a no-op and ordinary text stays unchanged', () => {
   assert.equal(mdToSafeHtml(''), '');
 });
 
+test('rich editor serializer punctuation escapes display as literal text', () => {
+  const source = '\\# Not a heading\n\\- Not a bullet\n1\\. Not a numbered item\n\\[Prep\\] \\_coat\\_ \\*literal\\* \\`code\\` \\\\ path';
+  const html = mdToSafeHtml(source);
+  assert.doesNotMatch(html, /<strong>|<em>|<ul|<ol|font-weight:800/);
+  assert.equal(scopePlainText(source), '# Not a heading - Not a bullet 1. Not a numbered item [Prep] _coat_ *literal* `code` \\ path');
+  assert.equal(scopePlainText('**970 sqft**'), '970 sqft');
+});
+
 test('list controls affect whole selected lines, toggle, and switch list type', () => {
   const bullets = formatSelection('Prep\nCoat\nLeave this', 0, 10, 'bullet');
   assert.equal(bullets.value, '- Prep\n- Coat\nLeave this');

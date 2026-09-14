@@ -1,5 +1,27 @@
 [
   {
+    "id": "estimate-custom-optional-footage",
+    "date": "2026-09-14",
+    "title": "Custom work can be quoted without square footage.",
+    "summary": "Custom lines can save without a measurement, and saved price overrides stay in place when you reopen the estimate.",
+    "howto": [
+      "Use a custom line or the Custom System option for work with a manually entered price. Leave square footage blank when it does not apply.",
+      "Reopen the estimate to continue editing with its saved price and description.",
+      "Systems that calculate material quantities, including MVB, still need square footage."
+    ]
+  },
+  {
+    "id": "estimate-description-editor-and-templates",
+    "date": "2026-09-14",
+    "title": "Edit formatted descriptions and save them for next time.",
+    "summary": "Write directly in one formatted editor, then save useful descriptions as reusable templates.",
+    "howto": [
+      "Open a line item and use Bold, Italic or the list buttons while you type. Undo and Redo are available in the same editor.",
+      "Choose Save as template and give the description a name. Its formatting is saved with it.",
+      "On another line, choose Use template, preview it and apply it. Only the description changes; pricing and other line details stay as entered."
+    ]
+  },
+  {
     "id": "booking-topcoat-layout",
     "date": "2026-09-14",
     "title": "A new look for appointment booking",
