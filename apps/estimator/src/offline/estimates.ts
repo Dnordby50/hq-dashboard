@@ -1,5 +1,6 @@
-import { idbPut } from './idb';
-import { enqueue, listOps, removeOp } from './outbox';
+import { assertAccount, captureAccount, type AccountScope } from './account';
+import { replaceEstimateQueue } from './idb';
+import { makeOutboxOp, listOps, type OutboxOp } from './outbox';
 import { uuid } from './uuid';
 import type { PricingResult } from '../lib/calculator';
 import { composeCustomerAddress, composeCustomerName, type CustomerForm } from '../lib/customer';
@@ -219,7 +220,8 @@ export type SaveEstimateArgs = {
 // default assigns it on insert (concurrency-safe), and the upsert's
 // on-conflict update only touches supplied columns, so a replay or an edit can
 // never renumber a row.
-export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id: string; areaIds: string[] }> {
+export async function saveEstimateOffline(args: SaveEstimateArgs, scope: AccountScope = captureAccount()): Promise<{ id: string; areaIds: string[] }> {
+  assertAccount(scope);
   const estimateId = args.estimateId || uuid();
   const now = new Date().toISOString();
   const p = args.pricing; // null on a custom estimate: engine columns land null
@@ -349,8 +351,10 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
   // 'draft' parent op is also safe: estimates.status defaults to 'draft'
   // on insert, so the row still births as a draft even when the replacing
   // save omits the status key (prompt 84 shape).
-  try {
-    const queued = await listOps();
+  const removeIds: string[] = [];
+  const ops: OutboxOp[] = [];
+  {
+    const queued = await listOps(scope);
     const droppedAreaIds = new Set<string>();
     for (const op of queued) {
       if (op.table === 'estimate_areas' && op.row.estimate_id === estimateId) droppedAreaIds.add(op.id);
@@ -360,12 +364,11 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
         (op.table === 'estimates' && op.id === estimateId) ||
         ((op.table === 'estimate_areas' || op.table === 'estimate_line_items' || op.table === 'estimate_installments') && op.row.estimate_id === estimateId) ||
         (op.table === 'estimate_area_materials' && typeof op.row.estimate_area_id === 'string' && droppedAreaIds.has(op.row.estimate_area_id));
-      if (mine) await removeOp(op.opId);
+      if (mine) removeIds.push(op.opId);
     }
-  } catch { /* coalescing is an optimization; a failed cleanup never blocks the save */ }
+  }
 
-  await idbPut('estimates', estimateRow);
-  await enqueue({ table: 'estimates', id: estimateId, row: estimateRow, client_updated_at: now });
+  ops.push(makeOutboxOp({ table: 'estimates', id: estimateId, row: estimateRow, client_updated_at: now }, scope));
 
   // Areas first (line items FK them), collecting the minted ids by position.
   const areaIds: string[] = [];
@@ -398,7 +401,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       is_optional: a.isOptional === true,
       preselected: a.preselected !== false,
     };
-    await enqueue({ table: 'estimate_areas', id: areaId, row: areaRow, client_updated_at: now });
+    ops.push(makeOutboxOp({ table: 'estimate_areas', id: areaId, row: areaRow, client_updated_at: now }, scope));
 
     for (const m of a.materials) {
       const matId = uuid();
@@ -415,7 +418,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
         pick_index: m.pick_index,
         order_index: m.order_index,
       };
-      await enqueue({ table: 'estimate_area_materials', id: matId, row: matRow, client_updated_at: now });
+      ops.push(makeOutboxOp({ table: 'estimate_area_materials', id: matId, row: matRow, client_updated_at: now }, scope));
     }
   }
 
@@ -434,7 +437,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       due_date: inst.dueDate,
       is_deposit: inst.isDeposit,
     };
-    await enqueue({ table: 'estimate_installments', id: instId, row: instRow, client_updated_at: now });
+    ops.push(makeOutboxOp({ table: 'estimate_installments', id: instId, row: instRow, client_updated_at: now }, scope));
   }
 
   // Line items LAST (they FK both the estimate and, for system lines, an area).
@@ -457,8 +460,9 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       selected_by_customer: li.selectedByCustomer,
       sort_order: li.sortOrder,
     };
-    await enqueue({ table: 'estimate_line_items', id: liId, row: liRow, client_updated_at: now });
+    ops.push(makeOutboxOp({ table: 'estimate_line_items', id: liId, row: liRow, client_updated_at: now }, scope));
   }
 
+  await replaceEstimateQueue(estimateRow, ops, removeIds, scope);
   return { id: estimateId, areaIds };
 }

@@ -1,3 +1,4 @@
+import { assertAccount, captureAccount, matchesSession, type AccountScope } from '../offline/account';
 import { createClient } from '@supabase/supabase-js';
 
 // Same Supabase project and the same DEFAULT storageKey as the dashboard
@@ -6,9 +7,9 @@ import { createClient } from '@supabase/supabase-js';
 // login, and the same is_admin_staff() RLS applies. The URL + anon key are
 // public by design (RLS-protected); they are the same values the dashboard
 // hardcodes. Netlify build env can override them via VITE_SUPABASE_*.
-const SUPABASE_URL =
+export const SUPABASE_URL =
   import.meta.env.VITE_SUPABASE_URL || 'https://zdfpzmmrgotynrwkeakd.supabase.co';
-const SUPABASE_ANON_KEY =
+export const SUPABASE_ANON_KEY =
   import.meta.env.VITE_SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpkZnB6bW1yZ290eW5yd2tlYWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2NjA0NTEsImV4cCI6MjA5MjIzNjQ1MX0.kpZvbMhFEU8MtPa78k2xEbSdrdaW52NE6r9FLwDtn2I';
 
@@ -33,3 +34,33 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   global: { fetch: timedFetch },
 });
+
+// Per-operation client: the access token is checked against the captured
+// account before every request. It cannot borrow credentials after a switch.
+const scopedClients = new WeakMap<AccountScope, ReturnType<typeof makeScopedClient>>();
+function makeScopedClient(scope: AccountScope) {
+  const getSession = async () => {
+    assertAccount(scope);
+    const result = await supabase.auth.getSession();
+    assertAccount(scope);
+    if (result.error || !matchesSession(scope, result.data.session)) throw new Error('The account changed. Reopen the estimator.');
+    return result;
+  };
+  const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    accessToken: async () => (await getSession()).data.session!.access_token,
+    global: { fetch: async (input, init) => {
+      assertAccount(scope);
+      const signal = init?.signal ? AbortSignal.any([scope.signal, init.signal]) : scope.signal;
+      const response = await fetch(input, { ...init, signal });
+      assertAccount(scope);
+      return response;
+    } },
+  });
+  return { from: client.from.bind(client), rpc: client.rpc.bind(client), auth: { getSession } };
+}
+export function scopedSupabase(scope: AccountScope = captureAccount()) {
+  assertAccount(scope);
+  let client = scopedClients.get(scope);
+  if (!client) { client = makeScopedClient(scope); scopedClients.set(scope, client); }
+  return client;
+}

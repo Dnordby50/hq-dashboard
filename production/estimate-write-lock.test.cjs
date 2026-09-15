@@ -24,25 +24,33 @@ function deferred() {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const operation = (id, table = 'estimate_line_items') => ({
-  opId: 'op-' + id, table, id, row: { id, estimate_id: 'estimate-1' },
+  opId: 'op-' + id, table, id, ownerId: 'fixture-user', row: { id, estimate_id: 'estimate-1' },
   attempts: 0, status: 'pending', client_updated_at: '2026-09-14T12:00:00Z',
 });
 
 // Run the real drain and lock with a controllable network and durable queue.
 function harness(initial = []) {
+  const account = { ownerId: 'fixture-user', sessionId: 'fixture-session', generation: 1 };
   const queue = [...initial], live = new Map(), events = [];
   let beforeUpload = async () => {}, failRead = false;
   const lock = loadModule('writeLock.ts');
   const sync = loadModule('sync.ts', {
     './writeLock': lock,
     '../../../../production/outbox-drain.cjs': drainPolicy,
-    '../lib/supabase': { supabase: { from: table => ({ upsert: async row => {
+    './account': {
+      captureAccount: () => account,
+      assertAccount: scope => assert.equal(scope, account),
+    },
+    './access': { verifyOnlineAccess: async scope => { assert.equal(scope, account); return { role: 'staff' }; } },
+    './session': { accountRequest: async (scope, requestPath, row) => {
+      assert.equal(scope, account);
+      const table = requestPath.slice(1).split('?')[0];
       events.push('upload-start:' + row.id);
       await beforeUpload(row);
       live.set(row.id, { table, ...row });
       events.push('upload-end:' + row.id);
-      return { error: null };
-    } }) } },
+      return null;
+    } },
     './outbox': {
       listOps: async () => {
         events.push('queue-read');

@@ -55,7 +55,7 @@ const { notifyLeadSlack, notifyLeadBell } = require('./_pec-lead-notify.cjs');
 // keeps the pricing page's in-area verdict identical to /book's by
 // construction. (If pec-booking ever grows require-time side effects, extract
 // checkArea to production/ instead.)
-const { checkArea, validPublicBody } = require('./pec-booking.cjs');
+const { checkArea, validPublicBody, DUPLICATE_BOOKING_MESSAGE } = require('./pec-booking.cjs');
 const { takeBookingRateLimit } = require('./_pec-booking-drive.cjs');
 const { computePriceRange, normTiers, fmtMoney, renderRevealCopy } = require('../../production/pricing-range.cjs');
 
@@ -717,6 +717,7 @@ function pricingPageInner(cfg) {
     mapsKey: preview ? '' : (mapsKey || ''),
     preview: preview === true,
     disclosure: cleanStr(settings.booking_sms_disclosure) || '',
+    duplicateMessage: DUPLICATE_BOOKING_MESSAGE,
   }).replace(/</g, '\\u003c');
   return `
 ${preview ? '<div class="card" style="border-style:dashed;padding:10px 14px;margin-bottom:12px"><span class="muted" style="font-size:.78rem">Preview. Nothing here submits; save changes in Settings and this refreshes.</span></div>' : ''}
@@ -1068,10 +1069,11 @@ $('prBookIt').addEventListener('click',function(){
     btn.disabled=false;btn.textContent='Book it';
     if(j.taken){S.days=j.days||S.days;show('stepConfirm',false);show('stepPrice',true);renderDays();$('prBookErr').textContent=j.error||'That time was just taken. Pick another.';return}
     if(!j.ok){$('prConfirmErr').textContent=j.error||'Something went wrong.';return}
+    if(j.duplicate){$('prDoneMsg').textContent='';$('prDoneManage').replaceChildren();$('prConfirmErr').textContent=CFG.duplicateMessage;return}
     show('stepConfirm',false);show('stepDone',true);
-    if(j.duplicate){$('prDoneTitle').textContent='You are already booked'}
+    $('prDoneTitle').textContent='You are booked!';$('prDoneManage').replaceChildren();
     $('prDoneMsg').textContent=(j.message||'')+(j.when?(' Your visit: '+j.when+'.'):'');
-    if(j.manage_url){$('prDoneManage').innerHTML='Need to change it later? Use your private link: <a href="'+j.manage_url+'">reschedule or cancel</a>. We also include it in your confirmation.'}
+    if(j.manage_url){var link=document.createElement('a');link.href=j.manage_url;link.textContent='reschedule or cancel';$('prDoneManage').replaceChildren(document.createTextNode('Need to change it later? Use your private link: '),link,document.createTextNode('. We also include it in your confirmation.'))}
     if(S.quote&&S.quote.request_id&&j.appointment_id){apiP('booked',{request_id:S.quote.request_id,appointment_id:j.appointment_id}).catch(function(){})}
   }).catch(function(){btn.disabled=false;btn.textContent='Book it';$('prConfirmErr').textContent='Could not reach us. Check your connection and try again.'});
 });
@@ -1166,4 +1168,4 @@ exports.processQuote = processQuote;
 exports.processBookedCallback = processBookedCallback;
 exports.processConfig = processConfig;
 exports.captureLead = captureLead;
-exports._internals = { getPricingSettings, loadProjectTypes, loadBookingContext, typeImageUrl, htmlResponse };
+exports._internals = { getPricingSettings, loadProjectTypes, loadBookingContext, typeImageUrl, htmlResponse, pricingPageInner };

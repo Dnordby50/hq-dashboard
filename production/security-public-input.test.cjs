@@ -132,6 +132,48 @@ test('booking requests consume quota before duplicate-contact lookup', async () 
   assert.equal(fx.calls.some(c => c.path.startsWith('/leads?')), false);
 });
 
+test('phone-only duplicate probes and legitimate retries disclose no private appointment fields', async () => {
+  const original = {
+    id: 'private-appointment-id', status: 'scheduled', appt_type: 'on_site_estimate',
+    start_at: '2026-09-15T17:00:00.000Z', booking_manage_token: 'private-manage-token',
+    title: 'Original Customer', customer_notes: 'Private project details',
+  };
+  const fx = makeDb({
+    settings: [{ key: 'booking_enabled', value: 'true' }],
+    pec_booking_forms: [{ id: 'fixture-form', slug: 'pec', active: true, questions: [], appt_types: [] }],
+    pec_booking_service_areas: [{ form_id: 'fixture-form', zip: '86301', city: 'Prescott', active: true }],
+    pec_booking_requests: [{ phone: '9285551111', status: 'booked', created_at: NOW.toISOString(), appointment_id: original.id }],
+    pec_appointments: [original],
+  });
+  const reads = [];
+  const deps = {
+    sb: async (method, path, payload, ...rest) => {
+      reads.push({ method, path });
+      return fx.sb(method, path, payload, ...rest);
+    },
+    now: () => NOW, logIngest: async () => {},
+    bookSlot: async () => assert.fail('duplicate must not create or change an appointment'),
+    kickPush: async () => assert.fail('duplicate must not push a calendar event'),
+    runReminders: async () => assert.fail('duplicate must not send another confirmation'),
+  };
+  const expected = { ok: true, duplicate: true, message: booking.DUPLICATE_BOOKING_MESSAGE };
+  // A different name/email/address/time is no proof of access. An identical
+  // retry after a lost response is still protected by the same duplicate guard.
+  const request = { ...SLOT_BODY, name: 'Unrelated Visitor', phone: '9285551111', email: 'visitor@invalid.test', start: '2026-09-16T18:00:00Z', fill_ms: 5000 };
+  for (const body of [request, request, { ...request, name: 'Original Customer', email: 'original@invalid.test', start: original.start_at }]) {
+    const out = await booking.processBook(deps, body, { ipHash: IP_HASH });
+    assert.equal(out.status, 200);
+    assert.deepEqual(out.body, expected);
+    for (const value of Object.values(original)) assert.equal(JSON.stringify(out.body).includes(value), false, 'response omits ' + value);
+  }
+  const appointmentReads = reads.filter(c => c.method === 'GET' && c.path.startsWith('/pec_appointments?'));
+  assert.equal(appointmentReads.length, 3);
+  appointmentReads.forEach(c => assert.equal(new URL(c.path, 'https://fixture.invalid').searchParams.get('select'), 'id'));
+  assert.equal(fx.db.pec_appointments.length, 1);
+  assert.deepEqual(fx.db.pec_appointments[0], original);
+  assert.equal(fx.db.pec_booking_requests.filter(r => r.error_text === 'duplicate').length, 3);
+});
+
 test('callback capture is closed when booking is disabled or its persistent quota is exhausted', async () => {
   for (const disabled of [false, true]) {
     const fx = slotsDb({ allowed: false });

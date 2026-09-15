@@ -2,7 +2,7 @@
 // functions (pec-estimate-scope.cjs, pec-estimate-ai.cjs) with _pec-supabase
 // swapped for an in-memory PostgREST subset through the require cache and
 // global.fetch captured, and the REAL apps/estimator offline TS bundled by
-// esbuild with only IndexedDB + the outbox enqueue stubbed. No reimplementations.
+// esbuild with IndexedDB and authenticated transport stubbed. No reimplementations.
 //
 // Run: `node production/estimate15b.test.js` (wired into `npm test`).
 
@@ -920,6 +920,7 @@ await section('duplicate guard: open-status set + every-path wiring', async () =
 // ===========================================================================
 await section('offline save: areas + add-on line items land complete when the outbox drains', async () => {
   const esbuild = require(path.join(__dirname, '..', 'apps', 'estimator', 'node_modules', 'esbuild'));
+  const fixtureSession = { user: { id: 'user1' }, access_token: 'header.' + Buffer.from(JSON.stringify({ session_id: 'fixture-session', aal: 'aal1' })).toString('base64url') + '.signature' };
 
   // In-memory IndexedDB + supabase stubs, injected by rewriting the two lib
   // imports to virtual modules. The REAL offline code (estimates.ts, outbox.ts,
@@ -928,11 +929,26 @@ await section('offline save: areas + add-on line items land complete when the ou
     import { saveEstimateOffline } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'estimates.ts'))};
     import { drainOutbox } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'sync.ts'))};
     import { listOps } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'outbox.ts'))};
+    import { setAccount } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'account.ts'))};
     globalThis.__run = async (args) => {
-      const { id } = await saveEstimateOffline(args);
-      const queued = (await listOps()).map(o => ({ table: o.table, row: o.row }));
-      const drain = await drainOutbox();
-      return { id, queued, drain, uploaded: globalThis.__uploads };
+      const account = setAccount(${JSON.stringify(fixtureSession)});
+      const previousFetch = globalThis.fetch;
+      globalThis.fetch = async (url, options) => {
+        const target = new URL(url);
+        if (target.origin !== 'https://fixture.invalid' || options.method !== 'POST' || options.headers.Authorization !== ${JSON.stringify('Bearer ' + fixtureSession.access_token)}) throw new Error('Unexpected fixture transport');
+        if (target.pathname === '/rest/v1/rpc/pec_staff_session') return { ok: true, status: 200, text: async () => JSON.stringify({ auth_user_id: 'user1', role: 'office' }) };
+        const table = target.pathname.slice('/rest/v1/'.length);
+        if (!target.pathname.startsWith('/rest/v1/') || !['estimates', 'estimate_areas', 'estimate_area_materials', 'estimate_line_items', 'estimate_installments'].includes(table) || target.searchParams.get('on_conflict') !== 'id') throw new Error('Unexpected fixture write');
+        const row = JSON.parse(options.body);
+        globalThis.__uploads.push({ table, id: row.id, row });
+        return { ok: true, status: 200, text: async () => '' };
+      };
+      try {
+        const { id } = await saveEstimateOffline(args, account);
+        const queued = (await listOps(account)).map(o => ({ table: o.table, row: o.row }));
+        const drain = await drainOutbox({ account });
+        return { id, queued, drain, uploaded: globalThis.__uploads };
+      } finally { globalThis.fetch = previousFetch; }
     };
   `;
 
@@ -950,11 +966,24 @@ await section('offline save: areas + add-on line items land complete when the ou
           export async function idbGet(s, k){ return (store[s]||{})[k]; }
           export async function idbGetAll(s){ return Object.values(store[s]||{}); }
           export async function idbDelete(s, k){ delete (store[s]||{})[k]; }
+          export async function replaceEstimateQueue(estimate, ops, removeIds){
+            store.estimates[estimate.id] = estimate;
+            for (const id of removeIds) delete store.outbox[id];
+            for (const op of ops) store.outbox[op.opId] = op;
+          }
         `, loader: 'js' };
         if (a.path === 'stub-supa') return { contents: `
           globalThis.__uploads = globalThis.__uploads || [];
+          export const SUPABASE_URL = 'https://fixture.invalid';
+          export const SUPABASE_ANON_KEY = 'public-fixture';
           export const supabase = {
-            from(table){ return { upsert: async (row) => { globalThis.__uploads.push({ table, id: row.id, row: JSON.parse(JSON.stringify(row)) }); return { error: null }; } }; },
+            auth: {
+              getSession: async () => ({ data: { session: ${JSON.stringify(fixtureSession)} }, error: null }),
+              mfa: {
+                getAuthenticatorAssuranceLevel: async () => ({ data: { currentLevel: 'aal1', nextLevel: 'aal1' }, error: null }),
+                listFactors: async () => ({ data: { all: [], totp: [] }, error: null }),
+              },
+            },
           };
         `, loader: 'js' };
         if (a.path === 'stub-uuid') return { contents: `let n=0; export function uuid(){ return 'uuid-'+(++n); }`, loader: 'js' };
@@ -1130,6 +1159,7 @@ await section('edit load: the composed custom line does not round-trip into the 
             return { select: () => chain(table === 'estimates' ? 'est' : table === 'estimate_line_items' ? 'lines' : 'areas') };
           },
         };
+        export const scopedSupabase = () => supabase;
       `, loader: 'js' }));
     },
   };

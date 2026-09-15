@@ -134,8 +134,10 @@ function compile(file, imports = {}) {
 }
 const customerModule = compile('apps/estimator/src/lib/customer.ts');
 function loadWith(db) {
+  const account = { ownerId: 'staff', sessionId: 'fixture-session', generation: 1 };
   return compile('apps/estimator/src/lib/estimateLoad.ts', {
-    './supabase': { supabase: db }, './customer': customerModule,
+    './supabase': { scopedSupabase: () => db }, './customer': customerModule,
+    '../offline/account': { captureAccount: () => account },
     '../offline/estimates': { CUSTOM_LINE_LABEL: 'Custom scope of work' },
   }).loadEstimateForEdit('e1');
 }

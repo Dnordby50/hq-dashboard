@@ -1,4 +1,5 @@
-import { supabase } from './supabase';
+import { assertAccount, captureAccount } from '../offline/account';
+import { scopedSupabase } from './supabase';
 import type { Product, RecipeSlot, SystemType } from './calculator';
 import { idbGet, idbPut } from '../offline/idb';
 import { loadLineTemplates, type LineTemplate } from './lineTemplates';
@@ -98,6 +99,8 @@ export type Catalog = {
 // Each query is RLS-gated to admin staff (same as the dashboard), so this only
 // returns data for a signed-in admin.
 export async function loadCatalog(): Promise<Catalog> {
+  const account = captureAccount();
+  const supabase = scopedSupabase(account);
   const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes, leadSourcesRes, lineTemplates] = await Promise.all([
     supabase
       .from('pec_prod_system_types')
@@ -247,11 +250,12 @@ export async function loadCatalog(): Promise<Catalog> {
   // Cache for offline use (best-effort; never fail the online load on a cache
   // write error, e.g. IndexedDB unavailable in private mode).
   try {
-    await idbPut('catalog', { ...catalog, cachedAt: new Date().toISOString() }, CATALOG_CACHE_KEY);
+    await idbPut('catalog', { ...catalog, cachedAt: new Date().toISOString() }, CATALOG_CACHE_KEY, account);
   } catch {
     /* ignore */
   }
 
+  assertAccount(account);
   return catalog;
 }
 

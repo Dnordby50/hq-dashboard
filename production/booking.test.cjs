@@ -200,9 +200,15 @@ const goodBody = (over = {}) => ({
 
     // Duplicate guard: same phone, same type, inside the window.
     const dup = await processBook(deps, goodBody(), { ipHash: 'ip1' });
-    ok(dup.status === 200 && dup.body.duplicate === true && dup.body.manage_url === out.body.manage_url,
-      'duplicate: returns the EXISTING appointment and manage link');
+    ok(dup.status === 200 && dup.body.duplicate === true && dup.body.ok === true,
+      'duplicate: returns a generic duplicate notice');
+    ok(Object.keys(dup.body).sort().join(',') === 'duplicate,message,ok',
+      'duplicate: never returns a manage link, appointment id, time, or customer fields');
+    ok(!JSON.stringify(dup.body).includes(appt.booking_manage_token) && !JSON.stringify(dup.body).includes(appt.start_at),
+      'duplicate: private link and original appointment time are absent from all response text');
     ok(fx.db.pec_appointments.length === 1, 'duplicate: no second appointment row');
+    ok(spies.reminded.length === 1 && spies.pushed.length === 1 && spies.scored.length === 1,
+      'duplicate retry: no repeated confirmation, calendar push, or lead scoring');
     ok(fx.db.pec_booking_requests.some(r => r.status === 'rejected' && r.error_text === 'duplicate'),
       'duplicate: rejected row recorded');
   }

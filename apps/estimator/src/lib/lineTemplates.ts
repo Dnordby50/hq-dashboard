@@ -1,4 +1,5 @@
-import { supabase } from './supabase';
+import { assertAccount, captureAccount, type AccountScope } from '../offline/account';
+import { scopedSupabase } from './supabase';
 import { idbGet, idbPut } from '../offline/idb';
 import { scopePlainText } from '../../../../production/estimate-formatting.cjs';
 
@@ -35,27 +36,31 @@ function templateRow(value: unknown): LineTemplate {
   return { id: row.id, name: row.name, description: row.description, active: row.active, created_by: row.created_by, created_at: row.created_at };
 }
 
-async function cacheTemplates(rows: LineTemplate[]): Promise<void> {
-  try { await idbPut('catalog', rows, CACHE_KEY); } catch { /* online success does not require offline storage */ }
+async function cacheTemplates(rows: LineTemplate[], account: AccountScope): Promise<void> {
+  try { await idbPut('catalog', rows, CACHE_KEY, account); } catch { /* online success does not require offline storage */ }
 }
 
-export async function getCachedLineTemplates(): Promise<LineTemplate[]> {
+export async function getCachedLineTemplates(account: AccountScope = captureAccount()): Promise<LineTemplate[]> {
   try {
-    const rows = await idbGet<unknown>('catalog', CACHE_KEY);
+    const rows = await idbGet<unknown>('catalog', CACHE_KEY, account);
     return Array.isArray(rows) ? rows.map(templateRow).filter(row => row.active) : [];
   } catch { return []; }
 }
 
 export async function loadLineTemplates(): Promise<LineTemplate[]> {
+  const account = captureAccount();
+  const supabase = scopedSupabase(account);
   const result = await supabase.from(TABLE).select(COLUMNS).eq('active', true).order('name').order('id');
   if (result.error) throw result.error;
   if (!Array.isArray(result.data)) throw new Error('Templates could not be loaded. Try again.');
   const rows = result.data.map(templateRow);
-  await cacheTemplates(rows);
+  await cacheTemplates(rows, account);
+  assertAccount(account);
   return rows;
 }
 
 export async function canSaveLineTemplates(): Promise<boolean> {
+  const supabase = scopedSupabase();
   try {
     const [staff, permission] = await Promise.all([
       supabase.rpc('is_admin_staff'),
@@ -71,6 +76,9 @@ export async function saveLineTemplate(input: {
   description: string;
   createdBy: string | null;
 }): Promise<LineTemplate> {
+  const account = captureAccount();
+  const supabase = scopedSupabase(account);
+  if (input.createdBy !== account.ownerId) throw new Error("Reopen templates under the current account.");
   const validation = templateValidationError(input.name, input.description);
   if (validation) throw new Error(validation);
   if (!UUID.test(input.id)) throw new Error('Start a new template and try saving again.');
@@ -86,9 +94,10 @@ export async function saveLineTemplate(input: {
         saved.created_by !== row.created_by || saved.active !== true) {
       throw new Error('This template was already saved with different content. Close it and save a new template.');
     }
-    const cached = await getCachedLineTemplates();
+    const cached = await getCachedLineTemplates(account);
     await cacheTemplates([...cached.filter(template => template.id !== saved.id), saved]
-      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)));
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)), account);
+    assertAccount(account);
     return saved;
   };
 

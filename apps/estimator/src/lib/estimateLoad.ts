@@ -1,4 +1,5 @@
-import { supabase } from './supabase';
+import { captureAccount, type AccountScope } from '../offline/account';
+import { scopedSupabase } from './supabase';
 import { splitLegacyAddress, splitLegacyName, type CustomerForm } from './customer';
 import { CUSTOM_LINE_LABEL } from '../offline/estimates';
 
@@ -156,6 +157,7 @@ function loadCustomer(e: Record<string, unknown>): CustomerForm {
 }
 
 export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | null> {
+  const supabase = scopedSupabase();
   const [estRes, areasRes, linesRes] = await Promise.all([
     supabase
       .from('estimates')
@@ -352,7 +354,8 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
 // so deleting areas first would orphan the old system lines as area-less rows
 // instead of removing them. estimate_area_materials rows cascade from
 // estimate_areas.
-export async function deleteEstimateChildren(estimateId: string): Promise<void> {
+export async function deleteEstimateChildren(estimateId: string, account: AccountScope = captureAccount()): Promise<void> {
+  const supabase = scopedSupabase(account);
   const items = await supabase.from('estimate_line_items').delete().eq('estimate_id', estimateId);
   if (items.error) throw items.error;
   const areas = await supabase.from('estimate_areas').delete().eq('estimate_id', estimateId);

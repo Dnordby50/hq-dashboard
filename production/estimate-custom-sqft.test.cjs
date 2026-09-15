@@ -113,14 +113,15 @@ async function harness(options = {}) {
     });
     return query;
   };
-  const saveEstimateOffline = async payload => {
+  const saveEstimateOffline = async (payload, account) => {
+    accountApi.assertAccount(account);
     // Clone at the persistence boundary so later edits cannot alter evidence.
     saves.push(JSON.parse(JSON.stringify(payload)));
     activeWrites += 1;
     maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
     try {
       if (options.onSave) await options.onSave(payload, saves.length);
-      if (options.persistRows) return await load(path.join(root, 'apps/estimator/src/offline/estimates.ts'), true).saveEstimateOffline(payload);
+      if (options.persistRows) return await load(path.join(root, 'apps/estimator/src/offline/estimates.ts'), true).saveEstimateOffline(payload, account);
       return { id: payload.estimateId, areaIds: ['fixture-area'] };
     } finally { activeWrites -= 1; }
   };
@@ -128,9 +129,16 @@ async function harness(options = {}) {
     'lib/useOnline': { useOnline: () => options.online !== false },
     'offline/estimates': { CUSTOM_LINE_LABEL: 'Custom estimate', saveEstimateOffline },
     'lib/estimateLoad': { deleteEstimateChildren: async id => { deletes.push(id); } },
-    'offline/idb': { idbPut: async () => {} },
+    'offline/idb': {
+      idbPut: async () => {},
+      replaceEstimateQueue: async (_estimate, ops, removeIds, account) => {
+        accountApi.assertAccount(account);
+        storedOps = storedOps.filter(op => !removeIds.includes(op.opId)).concat(JSON.parse(JSON.stringify(ops)));
+      },
+    },
     'offline/outbox': {
       listOps: async () => options.persistRows ? storedOps : options.listOps ? options.listOps() : [],
+      makeOutboxOp: (op, account) => load(path.join(root, 'apps/estimator/src/offline/outbox.ts'), true).makeOutboxOp(op, account),
       enqueue: async op => { storedOps.push({ ...JSON.parse(JSON.stringify(op)), opId: `fixture-op-${++uuidId}` }); },
       removeOp: async id => { storedOps = storedOps.filter(op => op.opId !== id); },
     },
@@ -138,7 +146,10 @@ async function harness(options = {}) {
     'lib/comps': { loadCompCandidates: async () => [], buildComps: () => null,
       compsGpCaveat: () => '', compsRuleLabel: () => '' },
     'lib/ai': { compsForAi: () => null, fetchAiRecommendation: async () => null },
-    'lib/supabase': { supabase: { from: queryFor, auth: { getSession: async () => ({ data: { session: null } }) } } },
+    'lib/supabase': { scopedSupabase: (account = accountApi.captureAccount()) => {
+      accountApi.assertAccount(account);
+      return { from: queryFor, auth: { getSession: async () => ({ data: { session: null } }) } };
+    } },
     'lib/customerSearch': { searchCustomersAndLeads: async () => [], ensureLeadForCustomer: async () => 'fixture-lead' },
     'offline/uuid': { uuid: () => `fixture-uuid-${++uuidId}` },
     'features/estimator/AddressAutocomplete': { __esModule: true, default: 'address-autocomplete' },
@@ -146,7 +157,7 @@ async function harness(options = {}) {
     'features/estimator/ScopeEditor': { __esModule: true, default: 'scope-editor' },
   };
   const context = vm.createContext({
-    console, window, document, navigator: { onLine: options.online !== false }, URL, setTimeout, clearTimeout,
+    console, window, document, AbortController, atob, navigator: { onLine: options.online !== false }, URL, setTimeout, clearTimeout,
     fetch: async url => {
       assert.equal(url, '/estimator/index.html', 'No fixture request may reach production');
       return { ok: false };
@@ -180,11 +191,13 @@ async function harness(options = {}) {
       { filename })(localRequire, module, module.exports);
     return module.exports;
   }
+  const accountApi = load(path.join(root, 'apps/estimator/src/offline/account.ts'));
+  const account = accountApi.setAccount({ user: { id: 'fixture-user' }, access_token: 'header.' + Buffer.from(JSON.stringify({ session_id: 'fixture-session' })).toString('base64url') + '.signature' });
   const Screen = load(screenPath).default;
   let renderer;
   await act(async () => {
     renderer = create(React.createElement(Screen, {
-      catalog: catalog(), createdBy: 'fixture-user', viewerIsAdmin: false,
+      account, catalog: catalog(), createdBy: 'fixture-user', viewerIsAdmin: false,
       catalogFromCache: false, leadLink: null, embed: false,
       editing: existingEstimate(), ...options.props,
     }));

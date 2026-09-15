@@ -17,6 +17,7 @@ const record = (overrides = {}) => ({ id: ID, name: 'Garage floor', description:
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function harness(options = {}) {
+  const account = { ownerId: USER, sessionId: 'fixture-session', generation: 1 };
   const rows = (options.rows || []).map(row => ({ ...row }));
   const writes = [], reads = [], rpcCalls = [], cacheWrites = [];
   let cache = options.cache;
@@ -74,7 +75,11 @@ function harness(options = {}) {
     },
   };
   const context = vm.createContext({ exports: {}, navigator: { onLine: options.online !== false }, require(name) {
-    if (name === './supabase') return { supabase };
+    if (name === './supabase') return { scopedSupabase: () => supabase };
+    if (name === '../offline/account') return {
+      captureAccount: () => account,
+      assertAccount: scope => assert.equal(scope, account),
+    };
     if (name === '../offline/idb') return idb;
     if (name.endsWith('estimate-formatting.cjs')) return formatting;
     throw new Error('Unexpected import ' + name);

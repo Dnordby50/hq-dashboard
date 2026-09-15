@@ -1,5 +1,18 @@
 [
   {
+    "id": "account-privacy-and-current-help",
+    "date": "2026-09-14",
+    "title": "Safer shared-device work and more relevant Help.",
+    "summary": "Offline estimate work stays with its account, Help follows your current page, and sign-in verification has clearer retry guidance.",
+    "howto": [
+      "Sign in with your own account before using the estimator. Switching accounts keeps saved drafts with their original account and pauses pending uploads.",
+      "If you see an older-drafts notice, keep this browser’s saved data and ask Dylan to verify the owner before recovery.",
+      "Open Help from any page. Each question uses your current page, and Help and SOP conversations clear when accounts change.",
+      "If sign-in verification cannot finish, use Retry or Cancel and contact an admin. Existing two-factor setup remains optional.",
+      "If an appointment was already booked, use the private link from its original confirmation. Repeating the booking form shows a notice without creating another visit."
+    ]
+  },
+  {
     "id": "estimate-custom-optional-footage",
     "date": "2026-09-14",
     "title": "Custom work can be quoted without square footage.",

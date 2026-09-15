@@ -127,7 +127,7 @@ async function harness(options = {}) {
     'lib/comps': { loadCompCandidates: async () => [], buildComps: () => null,
       compsGpCaveat: () => '', compsRuleLabel: () => '' },
     'lib/ai': { compsForAi: () => null, fetchAiRecommendation: async () => null },
-    'lib/supabase': { supabase: { from: () => query, auth: { getSession: async () => ({ data: { session: null } }) } } },
+    'lib/supabase': { scopedSupabase: () => ({ from: () => query, auth: { getSession: async () => ({ data: { session: null } }) } }) },
     'lib/customerSearch': { searchCustomersAndLeads: async () => [], ensureLeadForCustomer: async () => 'fixture-lead' },
     'offline/uuid': { uuid: () => `fixture-uuid-${++uuidId}` },
     'features/estimator/AddressAutocomplete': { __esModule: true, default: 'address-autocomplete' },
@@ -135,7 +135,7 @@ async function harness(options = {}) {
     'features/estimator/ScopeEditor': { __esModule: true, default: 'scope-editor' },
   };
   const context = vm.createContext({
-    console, window, document, navigator: { onLine: options.online !== false }, URL, setTimeout, clearTimeout,
+    console, window, document, AbortController, atob, navigator: { onLine: options.online !== false }, URL, setTimeout, clearTimeout,
     fetch: async url => {
       assert.equal(url, '/estimator/index.html', 'No fixture request may reach production');
       return { ok: false };
@@ -169,11 +169,13 @@ async function harness(options = {}) {
       { filename })(localRequire, module, module.exports);
     return module.exports;
   }
+  const accountApi = load(path.join(root, 'apps/estimator/src/offline/account.ts'));
+  const account = accountApi.setAccount({ user: { id: 'fixture-user' }, access_token: 'header.' + Buffer.from(JSON.stringify({ session_id: 'fixture-session' })).toString('base64url') + '.signature' });
   const Screen = load(screenPath).default;
   let renderer;
   await act(async () => {
     renderer = create(React.createElement(Screen, {
-      catalog: catalog(), createdBy: 'fixture-user', viewerIsAdmin: false,
+      account, catalog: catalog(), createdBy: 'fixture-user', viewerIsAdmin: false,
       catalogFromCache: false, leadLink: null, embed: false,
       editing: existingEstimate(), ...options.props,
     }));

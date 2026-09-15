@@ -39,8 +39,8 @@
 // success so the bot learns nothing, the request row records the truth),
 // minimum fill time, a per-ip_hash bookings-per-hour limit read from
 // pec_booking_requests, and a duplicate guard (same phone + appt type inside
-// the window returns the EXISTING appointment's manage link instead of
-// double-booking). Rejections still write status='rejected' rows so a real
+// the window returns a generic notice instead of double-booking or revealing
+// private appointment details). Rejections still write status='rejected' rows so a real
 // customer being blocked is visible, never invisible. No CAPTCHA.
 //
 // FAIL-OPEN COPY, FAIL-CLOSED WRITES: any render/slots failure shows the
@@ -79,6 +79,7 @@ const TYPE_LABELS = {
   other: 'Appointment',
 };
 const STOP_LINE = ' Reply STOP to opt out.';
+const DUPLICATE_BOOKING_MESSAGE = 'We already received a booking for this phone number. Check your original confirmation for the appointment details and private link, or call us for help. No new appointment was created.';
 const CALENDAR_UNAVAILABLE_COPY = 'We cannot confirm open times right now. Please call us and we will get you scheduled.';
 const calendarUnavailable = () => ({ status: 503, body: { ok: false, calendar_unavailable: true, error: CALENDAR_UNAVAILABLE_COPY, days: [] } });
 const PUBLIC_HEADERS = {
@@ -695,8 +696,8 @@ async function processBook(deps, body, meta = {}) {
     const slotLimit = await guardSlotRequest(deps, settings, meta);
     if (slotLimit) return slotLimit;
 
-    // -- Duplicate guard: same phone + type inside the window returns the
-    //    existing appointment, never a second row -----------------------------
+    // -- Duplicate guard: a phone match prevents another row, but does not
+    //    prove ownership of the original appointment or its private link. ----
     const t = formApptType(form);
     const dupWindowH = numSetting(settings, 'booking_duplicate_window_hours', 24);
     if (phone10 && dupWindowH > 0) {
@@ -705,17 +706,16 @@ async function processBook(deps, body, meta = {}) {
         `/pec_booking_requests?phone=eq.${encodeURIComponent(phone10)}&status=eq.booked&created_at=gte.${encodeURIComponent(since)}&select=appointment_id&order=created_at.desc&limit=1`);
       const dupApptId = Array.isArray(dupReq) && dupReq[0] && dupReq[0].appointment_id;
       if (dupApptId) {
-        const rows = await db('GET', `/pec_appointments?id=eq.${encodeURIComponent(dupApptId)}&status=eq.scheduled&appt_type=eq.${encodeURIComponent(t.key)}&select=id,start_at,booking_manage_token&limit=1`);
+        const rows = await db('GET', `/pec_appointments?id=eq.${encodeURIComponent(dupApptId)}&status=eq.scheduled&appt_type=eq.${encodeURIComponent(t.key)}&select=id&limit=1`);
         const dup = Array.isArray(rows) && rows[0];
         if (dup) {
           await writeRequestRow(db, { ...baseRow, status: 'rejected', in_area: true, appointment_id: dup.id, error_text: 'duplicate' });
-          await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 200, message: `duplicate: returned existing appointment ${dup.id}`, payload: null });
+          await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 200, message: `duplicate: prevented another booking for appointment ${dup.id}`, payload: null });
           return {
             status: 200,
             body: {
               ok: true, duplicate: true,
-              message: `You already have a visit booked for ${apptDateStr(dup.start_at)} at ${apptTimeStr(dup.start_at)}. Use your link to change it.`,
-              manage_url: dup.booking_manage_token ? `${SITE_URL}/book/manage/${dup.booking_manage_token}` : null,
+              message: DUPLICATE_BOOKING_MESSAGE,
             },
           };
         }
@@ -1252,6 +1252,7 @@ function bookingPageInner(form, mapsKey, opts = {}) {
     mapsKey: preview ? '' : (mapsKey || ''),
     preview,
     successMessage: form.success_message || 'You are booked!',
+    duplicateMessage: DUPLICATE_BOOKING_MESSAGE,
   }).replace(/</g, '\\u003c');
   const headline = form.headline || 'Book your free estimate';
   const brand = opts.brand || {};
@@ -1539,8 +1540,9 @@ $('bkBook').addEventListener('click',function(){
     S.busy=false;step(3);$('bkChangeTime').disabled=false;btn.disabled=false;btn.textContent='Book appointment';
     if(j.taken){S.days=Array.isArray(j.days)?j.days:[];S.dayOffset=0;S.dayIndex=0;resetSelection();show('stepDetails',false);show('stepTime',true);renderDays();$('bkTimeErr').textContent=S.days.length?(j.error||'That time is no longer available. Choose another time.'):'No appointments are available online. Please call us to schedule.';step(2);return}
     if(!j.ok){$('bkErr').textContent=j.error||'Something went wrong.';return}
+    if(j.duplicate){$('doneMsg').textContent='';$('doneManage').replaceChildren();$('bkErr').textContent=CFG.duplicateMessage;return}
     S.complete=true;step(3);show('bkSteps',false);show('stepDetails',false);show('stepDone',true);
-    if(j.duplicate){$('doneTitle').textContent='Appointment already booked'}
+    $('doneTitle').textContent='Appointment booked';$('doneManage').replaceChildren();
     $('doneMsg').textContent=(j.message||'')+(j.when?(' Your visit: '+j.when+'.'):'');
     if(j.manage_url){var link=document.createElement('a');link.href=j.manage_url;link.textContent='Reschedule or cancel';$('doneManage').replaceChildren(link,document.createTextNode('. This link is also in your confirmation.'))}
   }).catch(function(){S.busy=false;step(3);$('bkChangeTime').disabled=false;btn.disabled=false;btn.textContent='Book appointment';$('bkErr').textContent='Could not reach us. Check your connection and try again.'});
@@ -1750,6 +1752,7 @@ exports.routeAnswers = routeAnswers;
 exports.groupSlotsByDay = groupSlotsByDay;
 exports.engineConfig = engineConfig;
 exports.validPublicBody = validPublicBody;
+exports.DUPLICATE_BOOKING_MESSAGE = DUPLICATE_BOOKING_MESSAGE;
 exports.htmlResponse = htmlResponse;
 
 exports.pageShell = pageShell;

@@ -1,3 +1,4 @@
+import { assertAccount, type AccountScope } from '../../offline/account';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Addon, Catalog, SalesPerson } from '../../lib/catalog';
 import {
@@ -51,7 +52,7 @@ import { CLOBBER_DESC_RE, optionalControlsVisible, splitLineTotals } from '../..
 // resolves and freezes with, so the card's dollars and the customer page can
 // never disagree.
 import { computeScheduleCents, defaultScheduleRows, resolveDepositPct, scheduleValidationError } from '../../../../../production/estimate-installments.cjs';
-import { supabase } from '../../lib/supabase';
+import { scopedSupabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
 import { applyAnswers as scopeApplyAnswers, applyTokens as scopeApplyTokens, openQuestions as scopeOpenQuestions, scopeBlanks as scopeBlanksScan, tokenFields as scopeTokenFields, type ScopeQuestion, type TokenField } from '../../../../../production/scope.cjs';
@@ -221,6 +222,7 @@ function intakeFromLoaded(raw: Record<string, unknown>): Intake {
 const customerComplete = (c: CustomerForm) => (c.isCommercial ? c.company.trim() !== '' : c.lastName.trim() !== '');
 
 export default function EstimatorScreen({
+  account,
   catalog,
   createdBy,
   viewerIsAdmin,
@@ -230,6 +232,7 @@ export default function EstimatorScreen({
   editing,
   focusLine,
 }: {
+  account: AccountScope;
   catalog: Catalog;
   createdBy: string | null;
   viewerIsAdmin: boolean;
@@ -241,6 +244,7 @@ export default function EstimatorScreen({
   // opens that line's editor sheet with the description focused.
   focusLine?: number | null;
 }) {
+  const supabase = useMemo(() => scopedSupabase(account), [account]);
   const { systemTypes, productsById, recipeSlotsBySystemType, salespeople, config } = catalog;
   // A catalog cached before 2026-07-13 has no addons key; tolerate it so an
   // offline rep still prices (the add-on picker is just empty until a refresh).
@@ -867,7 +871,7 @@ export default function EstimatorScreen({
       const token = data.session?.access_token;
       if (!token) throw new Error('Sign in to write the proposal.');
       const res = await fetch('/.netlify/functions/pec-estimate-scope', {
-        method: 'POST',
+        method: 'POST', signal: account.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(force ? { estimate_id: estimateId, force: true } : { estimate_id: estimateId }),
       });
@@ -1563,7 +1567,7 @@ export default function EstimatorScreen({
 
   const refreshPending = useCallback(async () => {
     try {
-      setPendingOps(await listOps());
+      setPendingOps(await listOps(account));
     } catch {
       /* IndexedDB unavailable */
     }
@@ -1642,7 +1646,7 @@ export default function EstimatorScreen({
         const token = data.session?.access_token;
         if (!token) return;
         await fetch('/.netlify/functions/pec-sync-stuck', {
-          method: 'POST',
+          method: 'POST', signal: account.signal,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(payload),
         });
@@ -1657,7 +1661,7 @@ export default function EstimatorScreen({
     setRetryState('running');
     setRetryOutcome('');
     try {
-      const r = await drainOutbox({ force: true });
+      const r = await drainOutbox({ force: true, account });
       await refreshPending();
       setRetryOutcome(
         r.synced > 0 && r.remaining === 0 ? 'All saved to the office.'
@@ -1673,7 +1677,7 @@ export default function EstimatorScreen({
 
   useEffect(() => {
     if (!online) return;
-    drainOutbox()
+    drainOutbox({ account })
       .then(refreshPending)
       .then(() => {
         // Offline-first-save catch-up (build 25): the auto-first proposal
@@ -1732,7 +1736,7 @@ export default function EstimatorScreen({
     }
     draftWriteRef.current = true;
     try {
-      await withEstimateWriteLock(() => saveEstimateOffline({
+      await withEstimateWriteLock(() => { assertAccount(account); return saveEstimateOffline({
         estimateId: draftId,
         status: 'draft',
         systemTypeId: null,
@@ -1768,8 +1772,9 @@ export default function EstimatorScreen({
         crewNotes,
         clientNotes,
         companyNotes,
-      }));
-      if (navigator.onLine) drainOutbox().then(refreshPending).catch(() => {});
+      }, account); });
+      assertAccount(account);
+      if (navigator.onLine) drainOutbox({ account }).then(refreshPending).catch(() => {});
       else void refreshPending();
     } catch {
       draftTrigger.reset();
@@ -2149,7 +2154,7 @@ export default function EstimatorScreen({
       const token = data.session?.access_token;
       if (!token) throw new Error('Sign in to use polish.');
       const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
-        method: 'POST',
+        method: 'POST', signal: account.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ text }),
       });
@@ -2212,7 +2217,7 @@ export default function EstimatorScreen({
     const token = data.session?.access_token;
     if (!token) throw new Error('Sign in to use Polish.');
     const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
-      method: 'POST',
+      method: 'POST', signal: account.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ text }),
     });
@@ -2352,7 +2357,7 @@ export default function EstimatorScreen({
         'add-on lines': addonForms.map((f) => f.label.trim() + (f.optional ? ' (optional)' : '')).filter(Boolean).join('; ') || null,
       };
       const res = await fetch('/.netlify/functions/pec-estimate-crew-notes', {
-        method: 'POST',
+        method: 'POST', signal: account.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ scope: crewNotesScopeSource, facts }),
       });
@@ -2402,12 +2407,14 @@ export default function EstimatorScreen({
 
   const lastSavedAreaIdsRef = useRef<string[]>([]);
   const persistEstimate = useCallback(async (opts?: { skipAutoScope?: boolean; auto?: boolean }): Promise<string | null> => {
+    assertAccount(account);
     const auto = opts?.auto === true;
     // Captured at entry: state typed DURING the await stays dirty and re-arms
     // the autosave timer instead of being silently marked saved.
     const keyAtSave = autosaveKeyRef.current;
     // The earlier parent-only draft must finish before its full replacement.
     if (draftSaveInFlightRef.current) await draftSaveInFlightRef.current;
+    assertAccount(account);
     // sellPrice non-null covers both modes: the typed custom price, or the
     // engine/override price. The engine snapshot is only required when a
     // calculator line exists (prompt 82): a custom-line-only estimate saves
@@ -2442,7 +2449,7 @@ export default function EstimatorScreen({
     if (!editing && savedEstimateId && !online) {
       let parentQueued = false;
       try {
-        parentQueued = (await listOps()).some((op) => op.table === 'estimates' && op.id === savedEstimateId);
+        parentQueued = (await listOps(account)).some((op) => op.table === 'estimates' && op.id === savedEstimateId);
       } catch { parentQueued = false; }
       if (!parentQueued) {
         if (auto) { setAutosaveHold('offline'); return null; }
@@ -2810,12 +2817,14 @@ export default function EstimatorScreen({
       // server, so there is nothing live to delete and the replacement set in
       // the outbox is the whole story.
       const { id, areaIds: savedAreaIds } = await withEstimateWriteLock(async () => {
+        assertAccount(account);
         if (online) {
-          if (editing) await deleteEstimateChildren(editing.id);
-          else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
+          if (editing) await deleteEstimateChildren(editing.id, account);
+          else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId, account);
         }
-        return saveEstimateOffline(saveArgs);
+        return saveEstimateOffline(saveArgs, account);
       });
+      assertAccount(account);
       lastSavedAreaIdsRef.current = savedAreaIds ?? [];
       if (areaInputs.length > 0) hasPersistedAreasRef.current = true;
       // Auto-first, then manual (build 25): the ONE automatic generation
@@ -2829,7 +2838,7 @@ export default function EstimatorScreen({
         !dbScopeEdited && !scopeGenerated && scopeQuestions.length === 0;
       let syncedNumber: number | null = editing?.estimateNumber ?? null;
       if (navigator.onLine) {
-        await drainOutbox().catch(() => {});
+        await drainOutbox({ account }).catch(() => {});
         if (syncedNumber == null) {
           try {
             const { data } = await supabase.from('estimates').select('estimate_number').eq('id', id).maybeSingle();
@@ -2845,6 +2854,7 @@ export default function EstimatorScreen({
       }
       // Prompt 94: the save writes the current assembly (or, on a legacy
       // hand-edited document, touches nothing), so nothing is stale after it.
+      assertAccount(account);
       setScopeStale(false);
       setSavedEstimateId(id);
       draftWriteRef.current = true; // the row exists; the early draft must never fire after a full save
@@ -2964,8 +2974,8 @@ export default function EstimatorScreen({
             const id = await current.performSave({ auto: true });
             if (!id) throw new Error('The latest changes could not save. Press Save to retry before sending.');
           }
-          await drainOutbox();
-          const queued = await listOps();
+          await drainOutbox({ account });
+          const queued = await listOps(account);
           const ownPending = queued.some((op) =>
             (op.table === 'estimates' && op.id === current.estimateId) ||
             op.row.estimate_id === current.estimateId ||

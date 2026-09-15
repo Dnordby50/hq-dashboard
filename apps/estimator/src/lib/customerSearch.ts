@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase, scopedSupabase } from './supabase';
 import type { CustomerForm } from './customer';
 import { splitLegacyName } from './customer';
 
@@ -171,6 +171,7 @@ export async function searchCustomersAndLeads(rawQuery: string): Promise<Custome
 // block. Insert failures bubble to the caller, which degrades to
 // prefill-without-link (never blocks the estimate).
 export async function ensureLeadForCustomer(customerId: string, form: CustomerForm, source?: string | null): Promise<string> {
+  const supabase = scopedSupabase();
   const existing = await supabase
     .from('leads')
     .select('id')

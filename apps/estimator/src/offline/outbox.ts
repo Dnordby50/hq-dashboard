@@ -1,3 +1,4 @@
+import { assertAccount, captureAccount, type AccountScope } from './account';
 import { idbDelete, idbGetAll, idbPut } from './idb';
 
 // A queued mutation. The row's PRIMARY KEY (`id`) is client-minted, so syncing
@@ -9,6 +10,7 @@ import { idbDelete, idbGetAll, idbPut } from './idb';
 // uploaded before its children (areas, then area materials) which carry its id
 // in a foreign key.
 export type OutboxOp = {
+  ownerId: string;
   opId: string;
   table: 'leads' | 'estimates' | 'estimate_areas' | 'estimate_area_materials' | 'estimate_line_items' | 'estimate_installments';
   id: string;
@@ -35,23 +37,27 @@ function nextOpId(): string {
   return `${iso}_${seq}_${rand}`;
 }
 
-export async function enqueue(op: {
+export function makeOutboxOp(op: {
   table: OutboxOp['table'];
   id: string;
   row: Record<string, unknown>;
   client_updated_at: string;
-}): Promise<void> {
-  const full: OutboxOp = { opId: nextOpId(), attempts: 0, status: 'pending', queuedAt: new Date().toISOString(), ...op };
-  await idbPut('outbox', full);
+}, scope: AccountScope): OutboxOp {
+  assertAccount(scope);
+  return { opId: nextOpId(), attempts: 0, status: 'pending', queuedAt: new Date().toISOString(), ...op, ownerId: scope.ownerId };
+}
+
+export async function enqueue(op: Parameters<typeof makeOutboxOp>[0], scope: AccountScope = captureAccount()): Promise<void> {
+  await idbPut('outbox', makeOutboxOp(op, scope), undefined, scope);
 }
 
 // FIFO by opId (chronological), so parents land before children.
-export async function listOps(): Promise<OutboxOp[]> {
-  const ops = await idbGetAll<OutboxOp>('outbox');
-  return ops.sort((a, b) => a.opId.localeCompare(b.opId));
+export async function listOps(scope: AccountScope = captureAccount()): Promise<OutboxOp[]> {
+  const ops = await idbGetAll<OutboxOp>('outbox', scope);
+  return ops.filter(op => op.ownerId === scope.ownerId).sort((a, b) => a.opId.localeCompare(b.opId));
 }
 
-export const markError = (op: OutboxOp, message: string, nextAttemptAt?: string) =>
-  idbPut('outbox', { ...op, attempts: op.attempts + 1, status: 'error' as const, lastError: message, nextAttemptAt });
+export const markError = (op: OutboxOp, message: string, nextAttemptAt?: string, scope: AccountScope = captureAccount()) =>
+  idbPut('outbox', { ...op, attempts: op.attempts + 1, status: 'error' as const, lastError: message, nextAttemptAt }, undefined, scope);
 
-export const removeOp = (opId: string) => idbDelete('outbox', opId);
+export const removeOp = (opId: string, scope: AccountScope = captureAccount()) => idbDelete('outbox', opId, scope);

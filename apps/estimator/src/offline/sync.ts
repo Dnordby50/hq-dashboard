@@ -1,46 +1,39 @@
-import { supabase } from '../lib/supabase';
 import { listOps, markError, removeOp } from './outbox';
 import { drainPass } from '../../../../production/outbox-drain.cjs';
 import { withEstimateWriteLock } from './writeLock';
+import { assertAccount, captureAccount, type AccountScope } from './account';
+import { accountRequest } from './session';
+import { verifyOnlineAccess } from './access';
 
-// blocked = skipped this pass because a parent op failed or was skipped
-// (one root cause reads as one problem); deferred = skipped waiting out its
-// backoff timer. Both stay queued; neither counts as a new failure.
 export type SyncResult = { synced: number; failed: number; blocked: number; deferred: number; remaining: number };
+const draining = new Map<AccountScope, Promise<SyncResult>>();
 
-let _draining: Promise<SyncResult> | null = null;
-
-// Drain the outbox: upsert each queued row by its client-minted PK. Upsert with
-// onConflict:'id' is idempotent, so a row that actually landed before an
-// ambiguous failure is updated-in-place on replay, never duplicated. Processed
-// FIFO so a parent (estimate) lands before its children. Single-flight so the
-// 'online' event + the post-load drain can't run concurrently.
-//
-// The retry POLICY (backoff schedule, absent-means-due, skip children of a
-// failed parent, retry-forever-with-no-cap) lives in the shared
-// production/outbox-drain.cjs so the fixture tests exercise the exact code
-// this runs. { force: true } is the manual "Retry now": every backoff timer
-// is ignored for the pass, so a rep who knows the problem is fixed does not
-// wait out an hour.
-export async function drainOutbox(opts?: { force?: boolean }): Promise<SyncResult> {
-  if (_draining) return _draining;
-  _draining = withEstimateWriteLock(async () => {
-    const ops = await listOps();
+// Single flight per captured account generation. Cancellation rejects the
+// pass without deleting or reassigning queued work. Server RLS still checks
+// current staff/session state for every upsert; tokens are pinned explicitly.
+export async function drainOutbox(opts?: { force?: boolean; account?: AccountScope }): Promise<SyncResult> {
+  const account = opts?.account ?? captureAccount();
+  assertAccount(account);
+  const running = draining.get(account);
+  if (running) return running;
+  const task = withEstimateWriteLock(async () => {
+    assertAccount(account);
+    await verifyOnlineAccess(account);
+    const ops = await listOps(account);
     const counts = await drainPass(ops, {
-      upsert: async (op) => {
-        const { error } = await supabase.from(op.table).upsert(op.row, { onConflict: 'id' });
-        return error ? error.message : null;
+      upsert: async op => {
+        assertAccount(account);
+        if (op.ownerId !== account.ownerId) throw new Error('Offline draft belongs to another account.');
+        await accountRequest(account, `/${op.table}?on_conflict=id`, op.row, { Prefer: 'resolution=merge-duplicates,return=minimal' });
+        return null;
       },
-      markError: (op, message, nextAttemptAt) => markError(op, message, nextAttemptAt),
-      removeOp: (opId) => removeOp(opId),
+      markError: (op, message, nextAttemptAt) => { assertAccount(account); return markError(op, message, nextAttemptAt, account); },
+      removeOp: opId => { assertAccount(account); return removeOp(opId, account); },
       now: () => Date.now(),
     }, { force: opts?.force });
-    const remaining = (await listOps()).length;
-    return { ...counts, remaining };
+    assertAccount(account);
+    return { ...counts, remaining: (await listOps(account)).length };
   });
-  try {
-    return await _draining;
-  } finally {
-    _draining = null;
-  }
+  draining.set(account, task);
+  try { return await task; } finally { draining.delete(account); }
 }

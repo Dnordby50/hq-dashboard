@@ -1,3 +1,17 @@
+## [2026-09-14 20:51 MST] security: approved frontend account and booking privacy
+By: Codex
+
+Changed: Implemented Dylan's four approved frontend findings. Duplicate bookings return only a generic notice; booking/pricing keep the form and create no confirmation link or booked callback. The estimator partitions local caches/drafts/outboxes by authenticated account, pins queued requests to their captured session, cancels stale operations and preserves the prior local snapshot/queue atomically. Existing shared legacy drafts stay untouched with a recovery notice. Dashboard and standalone estimator checks fail closed for enrolled MFA verification errors, with session/assurance binding, retry/cancel and a visible auth-level modal. Fresh Help page context and bounded relevant references replace the cached whole prompt; Help and SOP chat clear/abort on account changes. Feature references, booking API contract and What's New updated.
+
+Verified: Full npm run build passed, including npm test/posttest, all94 security tests, all server syntax checks,6 dashboard script parses, TypeScript/Vite/PWA build and21-file publication allowlist. HEAD baseline also had6 passing dashboard script parses. Dependency audit reports0 vulnerabilities; git diff --check passes. Actual Chromium desktop/360px fixtures verified booking/pricing duplicate privacy, intact inputs and no overflow; MFA error/retry/wrong-code/verified-code and Help invoices-to-calendar/account-switch flows pass. Real Chromium IndexedDB fixtures verify separate accounts, stale-operation denial, local transaction abort and preserved legacy work. No real customer booking, provider message, estimate or payment was used for testing. Estimator output: index-CClHItKj.js. Representative synthetic Help request270490 to3510 bytes (98.7% smaller); provider token usage/cost not measured.
+
+Limits: Local draft+queue replacement is atomic; the existing multi-request server child replacement remains a separate hardening item. A disconnected device cannot discover remote revocation until reconnecting, but previously observed denials block offline reopening. Legacy ownership must be verified before recovery. MFA enrollment remains opt-in; this batch does not impose a global server AAL2 requirement.
+
+Next steps: Verify this commit's production deployment and live assets/denials. GitHub organization/security setup is authorized, but requires the requested organization name, GitHub sign-in and the exact paid checkout review before purchase. Repository remains public with existing coverage until private coverage is ready. MCP V2 credential entry/reconnection and previously documented separate product/security decisions remain outstanding.
+
+Handoff to Cowork: None. Remaining GitHub inputs must come from Dylan; this task can continue after they arrive.
+Handoff to Dylan: Sign in as Dnordby50 in the TopCoat security Chrome tab and provide the organization name. Do not send passwords, codes or tokens in chat. Refresh TopCoat online after release; preserve browser data if an older-draft notice appears. Private evidence and recovery procedure: /Users/dylannordby/Documents/Codex/TopCoat-Audit-2026-09-14/.
+
 ## [2026-09-14 20:01 MST] security: backend release verified live
 
 By: Codex

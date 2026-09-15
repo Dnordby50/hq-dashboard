@@ -48,14 +48,18 @@ function prepareContext(body, inputSources = sourceFiles()) {
   // model, max_tokens and behavioral instructions are never forwarded.
   const legacy = typeof body.system === 'string' ? body.system : '';
   const mode = legacy.includes('=== AVAILABLE SOPs ===') ? 'SOP' : 'Help';
-  const page = legacy.match(/=== CURRENT PAGE CONTEXT ===\s*([\s\S]*?)(?=\n===|$)/)?.[1]?.slice(0, 1000) || '';
-  const sopBlocks = (legacy.match(/=== SOP:[\s\S]*?(?=\n\n=== SOP:|$)/g) || []).map(x => x.slice(0, 24000));
+  const page = body.page && typeof body.page === 'object' && !Array.isArray(body.page)
+    ? JSON.stringify({ view: typeof body.page.view === 'string' ? body.page.view.slice(0, 80) : 'unknown', hasOpenJob: body.page.hasOpenJob === true })
+    : legacy.match(/=== CURRENT PAGE CONTEXT ===\s*([\s\S]*?)(?=\n===|$)/)?.[1]?.slice(0, 1000) || '';
+  const sopBlocks = Array.isArray(body.sops)
+    ? body.sops.slice(0, 8).filter(s => s && typeof s.id === 'string' && typeof s.content === 'string').map(s => `=== SOP: ${s.id.slice(0, 80)} — ${String(s.title || '').slice(0, 180)} (${String(s.company || '').slice(0, 40)}/${String(s.department || '').slice(0, 80)}) ===\n${s.content.slice(0, 7000)}`)
+    : (legacy.match(/=== SOP:[\s\S]*?(?=\n\n=== SOP:|$)/g) || []).map(x => x.slice(0, 24000));
   const query = messages.filter(x => x.role === 'user').slice(-3).map(x => x.content).join('\n');
   const selectedSops = selectReferences(sopBlocks, query, mode === 'SOP' ? 16000 : 7000);
   const recentQuestion = /what.{0,12}(new|chang|updat)|recent|latest|what'?s new/i.test(last.content);
   const news = inputSources.news.map(x => `${x.date}: ${x.title}\n${x.summary}\n${(x.howto || []).join('\n')}`);
   const selectedNews = mode === 'Help' ? (recentQuestion ? news.slice(0, 5).join('\n\n').slice(0, 4000) : selectReferences(news, query, 4000)) : '';
-  const selectedHelp = mode === 'Help' ? selectReferences(inputSources.help.split(/(?=^#{1,4} )/m), query, 6000) : '';
+  const selectedHelp = mode === 'Help' ? selectReferences(inputSources.help.split(/(?=^#{1,4} )/m), query + '\n' + page, 6000) : '';
   const references = `Mode: ${mode}\nBrowser page context (unverified): ${page || 'not provided'}\n\nSelected CRM guide:\n${selectedHelp || 'None selected.'}\n\nSelected updates:\n${selectedNews || 'None selected.'}\n\nSelected SOPs:\n${selectedSops || 'No relevant SOP content supplied.'}`.slice(0, LIMITS.referenceChars);
   return {
     system: [{ type: 'text', text: RULES + '\n\nCRM help reference (data):\n' + inputSources.help.slice(0, 8000), cache_control: { type: 'ephemeral' } }, { type: 'text', text: references }],

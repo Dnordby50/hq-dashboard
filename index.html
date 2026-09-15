@@ -2513,102 +2513,86 @@ function searchSOPs(query, view) {
   renderSOPContext(view === 'owner' ? 'sopGridOwner' : 'sopGrid');
 }
 
-function buildSOPSystemPrompt(employee) {
+let sopChatIdentity = null;
+let sopChatGeneration = 0;
+let sopChatPending = null;
+function syncSOPChatIdentity() {
+  const staff = window.pecState?.adminUser;
+  const next = staff && window.pecState?.session?.user?.id || null;
+  if (next === sopChatIdentity) return;
+  sopChatIdentity = next; sopChatGeneration++;
+  sopChatPending?.abort(); sopChatPending = null;
+  sopChatHistory = []; sopSystemPrompt = '';
+  for (const id of ['sopChatMessages', 'sopChatMessagesOwner']) $(id)?.replaceChildren();
+  for (const id of ['sopChatInput', 'sopChatInputOwner']) { const input = $(id); if (input) input.value = ''; }
+}
+window.addEventListener('pec-auth-changed', syncSOPChatIdentity);
+
+function buildSOPSystemPrompt(employee, messages = []) {
   const accessible = getAccessibleSOPs(employee);
-  const companyContext = employee
-    ? `You are helping ${employee.name}, a ${employee.role} at ${employee.company === 'PEC' ? 'Prescott Epoxy Carpets' : 'Finishing Touch Painting'} in Prescott, AZ.`
-    : 'You are assisting Dylan, the owner of Prescott Epoxy Carpets (PEC) and Finishing Touch Painting (FTP) in Prescott, AZ.';
-
+  const query = messages.filter(m => m.role === 'user').slice(-3).map(m => m.content).join(' ').toLowerCase();
+  const words = [...new Set(query.match(/[a-z0-9-]{3,}/g) || [])].filter(w => !['the','and','how','what','this','that','with','for','can','you','help'].includes(w)).slice(0, 60);
+  const ranked = accessible.map((s, i) => ({ s, i, score: words.reduce((n, w) => n + (String(s.content).toLowerCase().includes(w) ? 1 : 0) + (`${s.id} ${s.title}`.toLowerCase().includes(w) ? 2 : 0), 0) }))
+    .filter(x => x.score > 0).sort((a, b) => b.score - a.score || a.i - b.i);
   let sopBlob = '';
-  let totalChars = 0;
-  const charBudget = 250000; // ~60k tokens, leaves room for response and user messages
-
-  for (const s of accessible) {
+  for (const { s } of ranked) {
     const block = `\n\n=== SOP: ${s.id} — ${s.title} (${s.company}/${s.department}) ===\n${s.content}`;
-    if (totalChars + block.length > charBudget) {
-      sopBlob += `\n\n[Additional SOPs available but not included in context: ${accessible.length - sopData.indexOf(s)} more. If asked about one of these, suggest opening it in the SOP Library.]`;
-      break;
-    }
-    sopBlob += block;
-    totalChars += block.length;
+    sopBlob += block.slice(0, Math.max(0, 16000 - sopBlob.length));
+    if (sopBlob.length >= 16000) break;
   }
-
-  if (!accessible.length) {
-    sopBlob = '\n\n[No SOPs are currently loaded. Tell the user the SOP library is empty or not yet configured.]';
-  }
-
-  return `You are an SOP assistant for the HQ Command Center.
-
-${companyContext}
-
-STRICT RULES:
-1. Answer ONLY from the SOP content provided below. Do not guess, infer beyond the text, or use general knowledge to fill gaps.
-2. If the answer is not in the SOPs, say exactly: "I don't have that in our SOPs — check with Dylan."
-3. When citing an SOP, reference its ID (e.g., "See PEC-OPS-001").
-4. Be concise and direct. No hedging, no filler.
-5. If the user asks about product specs (Penntek, Sherwin-Williams, etc.) and it's not in the SOPs, say so and suggest they check the manufacturer TDS.
-
-=== AVAILABLE SOPs ===${sopBlob}`;
+  // This tag preserves server-side SOP-only rules and ID citations. The client
+  // supplies selected reference data only, never behavioral instructions.
+  return `=== AVAILABLE SOPs ===${sopBlob || '\n[No relevant SOPs loaded. Suggest the SOP Library.]'}`;
 }
 
 async function sendSOPChat(view) {
+  syncSOPChatIdentity();
+  if (!sopChatIdentity || sopChatPending) return;
   const inputId = view === 'owner' ? 'sopChatInputOwner' : 'sopChatInput';
   const msgsId = view === 'owner' ? 'sopChatMessagesOwner' : 'sopChatMessages';
-  const input = $(inputId);
-  const text = input.value.trim();
+  const input = $(inputId), text = input.value.trim();
   if (!text) return;
-
-  input.value = '';
-  input.style.height = 'auto';
-
-  sopChatHistory.push({ role: 'user', content: text });
+  if (text.length > 8000) { renderSOPChatMsg(msgsId, 'system', 'Please shorten your question to 8000 characters or fewer.'); return; }
+  input.value = ''; input.style.height = 'auto';
+  const question = { role: 'user', content: text };
+  sopChatHistory.push(question);
+  const bounded = []; let chars = 0;
+  for (const message of sopChatHistory.slice(-12).reverse()) {
+    if (chars + message.content.length > 16000) break;
+    bounded.unshift(message); chars += message.content.length;
+  }
+  while (bounded[0]?.role === 'assistant') bounded.shift();
+  sopChatHistory = bounded;
   renderSOPChatMsg(msgsId, 'user', text);
-
+  const epoch = sopChatGeneration, identity = sopChatIdentity;
+  const controller = new AbortController(); sopChatPending = controller;
+  const active = () => epoch === sopChatGeneration && identity === window.pecState?.session?.user?.id && sopChatPending === controller;
   const typing = document.createElement('div');
-  typing.className = 'sop-typing';
-  typing.textContent = 'Thinking...';
+  typing.className = 'sop-typing'; typing.textContent = 'Thinking...';
   $(msgsId).appendChild(typing);
   $(msgsId).scrollTop = $(msgsId).scrollHeight;
-
   try {
+    const staff = window.pecState.adminUser;
+    const system = buildSOPSystemPrompt(staff.role === 'admin' ? null : { ...staff, company: staff.company || 'both' }, sopChatHistory);
     const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
-      method: 'POST',
+      method: 'POST', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${window.pecState?.session?.access_token || ''}` },
-      body: JSON.stringify({
-        system: sopSystemPrompt,
-        messages: sopChatHistory,
-        model: CONFIG.COACH_MODEL,
-        max_tokens: 1024
-      })
+      body: JSON.stringify({ system, messages: sopChatHistory })
     });
-    typing.remove();
-
-    // Read raw body first so we can report non-JSON responses clearly
     const raw = await res.text();
-    let data;
-    try {
-      data = raw ? JSON.parse(raw) : {};
-    } catch (parseErr) {
-      console.error('SOP chat: non-JSON response from', CONFIG.SOP_CHAT_ENDPOINT, { status: res.status, raw });
-      const preview = (raw || '(empty body)').slice(0, 200).replace(/\s+/g, ' ');
-      renderSOPChatMsg(msgsId, 'system', `Server returned non-JSON (HTTP ${res.status}). First 200 chars: ${preview}`);
-      sopChatHistory.pop();
-      return;
-    }
-
-    if (!res.ok) {
-      const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error || data);
-      renderSOPChatMsg(msgsId, 'system', `Error ${res.status}: ${errMsg}`);
-      sopChatHistory.pop();
-      return;
-    }
-    const reply = data.content && data.content[0] && data.content[0].text ? data.content[0].text : '(no response)';
+    if (!active()) return;
+    const data = raw ? JSON.parse(raw) : {};
+    const reply = data?.content?.find(item => item?.type === 'text' && typeof item.text === 'string')?.text;
+    if (!res.ok || !reply?.trim()) throw new Error('Help unavailable');
     sopChatHistory.push({ role: 'assistant', content: reply });
     renderSOPChatMsg(msgsId, 'assistant', reply);
-  } catch (e) {
+  } catch (_) {
+    if (!active()) return;
+    sopChatHistory = sopChatHistory.filter(m => m !== question);
+    renderSOPChatMsg(msgsId, 'system', 'Could not reach the help service. Please try again.');
+  } finally {
     typing.remove();
-    renderSOPChatMsg(msgsId, 'system', 'Network error: ' + e.message);
-    sopChatHistory.pop();
+    if (active()) sopChatPending = null;
   }
 }
 
@@ -3497,31 +3481,33 @@ async function recoverWedgedClient() {
 // time it binds, since boot / recovery already paint state from getSession.
 function wireAuthListener() {
   let sawInitialAuthEvent = false;
-  const { data } = supabase.auth.onAuthStateChange(async (ev, session) => {
-    const prevUid = state.session?.user?.id;
-    state.session = session;
-    syncWhatsNewSession();
-    // Clear private DOM and in-flight owner requests immediately on identity
-    // changes, including the initial auth event. Never await auth in this hook.
-    ownerStudio.sessionChanged();
-    if (!sawInitialAuthEvent) { sawInitialAuthEvent = true; return; }
-    // IDEMPOTENT GUARD (the fix for the mid-session "re-boot/reset to dashboard"):
-    // supabase-js emits SIGNED_IN / USER_UPDATED / TOKEN_REFRESHED for the SAME
-    // already-signed-in user on token revalidation, tab focus, and after every
-    // setSession() -- which recoverWedgedClient() calls during wedge recovery and
-    // which the finalize path triggers. The old code only skipped a same-user
-    // TOKEN_REFRESHED, so any OTHER same-user event fell through to
-    // renderGlobalAuthGate() -> renderAuthUI() -> switchView(state.view), re-running
-    // the initial boot in place (the burst Dylan sees as a reload that resets him to
-    // the dashboard, and that makes a finalize look like it failed then saved).
-    // If this is still the same signed-in user we already resolved, do NOTHING,
-    // regardless of event type. Only a REAL transition repaints the gate:
-    // no-session -> session (sign in), session -> no-session (sign out), user change.
-    const newUid = session?.user?.id || null;
-    if (session && newUid === prevUid && state.adminUser) return;
-    if (session) await resolveAdminUser();
-    else { state.adminUser = null; }
+  const { data } = supabase.auth.onAuthStateChange((ev, session) => {
+    // Never await Supabase in this callback: it runs inside the auth lock.
+    const initialIncoming = pecAuthSessionIdentity(session), initialAccepted = pecAuthSessionIdentity(state.session);
+    if (!sawInitialAuthEvent && ev === 'INITIAL_SESSION' && (!state.session || (initialIncoming && initialAccepted && initialIncoming.key === initialAccepted.key && initialIncoming.aal === initialAccepted.aal))) { sawInitialAuthEvent = true; return; }
+    sawInitialAuthEvent = true;
+    if (!session) {
+      pecClearAuthIdentity();
+      renderGlobalAuthGate();
+      return;
+    }
+    // Password sign-in owns its verification. Auth events must not expose the
+    // password-only session while the enrolled factor is still being checked.
+    const incoming = pecAuthSessionIdentity(session);
+    if (_pecAuthChecking?.epoch === _pecAuthEpoch) {
+      if (incoming && incoming.key === _pecAuthChecking.key && (!_pecAuthChecking.aal || incoming.aal === _pecAuthChecking.aal)) return;
+      pecClearAuthIdentity();
+      renderGlobalAuthGate();
+    }
+    if (_pecPasswordSignInBusy) return;
+    const accepted = pecAuthSessionIdentity(state.session);
+    if (incoming && accepted && incoming.key === accepted.key && incoming.aal === accepted.aal && state.adminUser) {
+      state.session = session;
+      return; // ordinary refresh: preserve the current screen and drafts
+    }
+    const epoch = pecClearAuthIdentity();
     renderGlobalAuthGate();
+    setTimeout(() => { void pecAcceptAuthSession(session, epoch); }, 0);
   });
   _pecAuthSub = data?.subscription || null;
 }
@@ -4178,10 +4164,10 @@ async function _pecRevokedLoginCheck(label) {
   _pecRevokeCheckBusy = true;
   try {
     const r = await withFreshSession(() => supabase.from('admin_users').select('login_revoked_at').eq('auth_user_id', uid).maybeSingle(), { label: `revoked-check-${label}` });
-    if (r && !r.error && r.data && r.data.login_revoked_at) {
-      try { await supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
-      state.session = null; state.adminUser = null;
+    if (r && !r.error && r.data && r.data.login_revoked_at && state.session?.user?.id === uid) {
+      pecClearAuthIdentity();
       renderGlobalAuthGate();
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
       const errEl = $('pecSigninError');
       if (errEl) { errEl.style.color = 'var(--danger)'; errEl.textContent = 'Your access was removed by an admin. If you think this is a mistake, contact them.'; }
     }
@@ -4777,32 +4763,95 @@ const PAGE = 20;
 // ============================================================
 // Auth
 // ============================================================
+let _pecAuthEpoch = 0;
+let _pecPasswordSignInBusy = false;
+let _pecMfaCancel = null;
+let _pecAuthChecking = null;
+
+function pecAuthSessionIdentity(session) {
+  // This is a transition/race guard, not a substitute for Supabase validation.
+  try {
+    const segment = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(segment));
+    if (!session.user?.id || typeof payload.session_id !== 'string' || !payload.session_id || !['aal1', 'aal2'].includes(payload.aal)) return null;
+    return { key: `${session.user.id}:${payload.session_id}`, aal: payload.aal };
+  } catch (_) { return null; }
+}
+
+function pecClearAuthIdentity() {
+  _pecAuthEpoch++;
+  if (_pecMfaCancel) _pecMfaCancel();
+  state.session = null; state.adminUser = null;
+  // Revoke the embedded editor's identity before any asynchronous sign-out.
+  document.querySelectorAll('iframe.pec-estimator-frame, iframe.pec-estimator-inline').forEach(frame => {
+    try { frame.contentWindow?.postMessage({ type: 'pec-auth-cleared' }, location.origin); } catch (_) {}
+  });
+  // Private modal contents must not remain above the sign-in gate. Saved and
+  // offline drafts remain in their owning stores; remove only rendered DOM.
+  $('pecModalRoot')?.replaceChildren();
+  $('prodModalRoot')?.replaceChildren();
+  window.dispatchEvent(new Event('pec-auth-changed'));
+  syncWhatsNewSession();
+  ownerStudio.sessionChanged();
+  return _pecAuthEpoch;
+}
+
+async function pecAcceptAuthSession(session, epoch) {
+  const isCurrent = () => epoch === _pecAuthEpoch;
+  if (!session?.user?.id || !isCurrent()) return false;
+  const identity = pecAuthSessionIdentity(session);
+  const checking = { key: identity?.key, epoch };
+  _pecAuthChecking = checking;
+  let accepted = false;
+  try {
+    if (!identity) throw new Error('Session could not be checked');
+    if (!await pecMfaLoginChallenge(isCurrent) || !isCurrent()) return false;
+    const fresh = await supabase.auth.getSession();
+    if (!isCurrent()) return false;
+    const freshIdentity = pecAuthSessionIdentity(fresh?.data?.session);
+    if (fresh?.error || !freshIdentity || freshIdentity.key !== identity.key) throw new Error('Session changed');
+    const finalMfa = await pecReadMfaState();
+    const finalSession = await supabase.auth.getSession();
+    const finalIdentity = pecAuthSessionIdentity(finalSession?.data?.session);
+    if (!isCurrent()) return false;
+    if (finalSession?.error || !finalIdentity || finalIdentity.key !== identity.key || finalIdentity.aal !== freshIdentity.aal || finalMfa.needsCode || finalMfa.currentLevel !== finalIdentity.aal) throw new Error('Session verification changed');
+    checking.aal = finalIdentity.aal;
+    state.session = finalSession.data.session;
+    await resolveAdminUser();
+    if (!isCurrent()) return false;
+    accepted = true;
+    if (state.adminUser) document.querySelectorAll('iframe.pec-estimator-frame, iframe.pec-estimator-inline').forEach(frame => {
+      try { frame.contentWindow?.postMessage({ type: 'pec-auth-ready' }, location.origin); } catch (_) {}
+    });
+    window.dispatchEvent(new Event('pec-auth-changed'));
+    renderGlobalAuthGate();
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    if (_pecAuthChecking === checking) _pecAuthChecking = null;
+    if (!accepted && isCurrent()) {
+      pecClearAuthIdentity();
+      renderGlobalAuthGate();
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
+      const err = $('authGateError') || $('pecSigninError');
+      if (err) err.textContent = 'Sign-in verification was not completed. Please sign in again to retry, or contact an admin for help.';
+    }
+  }
+}
+
 async function initAuth() {
-  const { data } = await supabase.auth.getSession();
-  state.session = data.session;
-  // B-001 fix: boot() calls renderAuthUI() explicitly right after initAuth()
-  // resolves the session, so the FIRST event onAuthStateChange emits on
-  // subscribe (INITIAL_SESSION in supabase-js v2; a SIGNED_IN on older builds)
-  // is a DUPLICATE of that initial paint. Left unguarded it makes renderAuthUI
-  // -> switchView -> renderDashboard each fire twice on load (doubled network
-  // calls, UI flicker, and the data-fetch races the eval flagged). Swallow only
-  // that first event (still keep state.session fresh from it); every real later
-  // event (sign-in, sign-out, token refresh) flows through as before.
-  // Auth-state listener lives in wireAuthListener() so recoverWedgedClient can
-  // re-bind it onto a rebuilt client (and drop the dead client's subscription).
+  const epoch = pecClearAuthIdentity();
+  const result = await supabase.auth.getSession();
   wireAuthListener();
-  if (state.session) await resolveAdminUser();
-  // Fire-and-forget: reconcile every bridged job's status to the calendar (the
-  // single source of truth) via deriveJobStatus. Best-effort, failures swallowed
-  // inside, so it cannot delay or break the first paint. This unified sweep also
-  // yields in_progress for today-start jobs, so the old runAutoProgressSweep is
-  // gone (it was one of the six conflicting paths).
-  runScheduleStatusSync();
+  if (!result?.error && result?.data?.session) await pecAcceptAuthSession(result.data.session, epoch);
+  // Run only after verified sign-in; it can read staff scheduling records.
+  if (state.adminUser) runScheduleStatusSync();
 }
 
 async function resolveAdminUser() {
   if (!state.session) return;
-  const uid = state.session.user.id;
+  const uid = state.session.user.id, epoch = _pecAuthEpoch;
   let { data, error } = await supabase
     .from('admin_users')
     .select('id, auth_user_id, email, name, role, company')
@@ -4819,6 +4868,7 @@ async function resolveAdminUser() {
       .eq('auth_user_id', uid)
       .maybeSingle());
   }
+  if (epoch !== _pecAuthEpoch || state.session?.user?.id !== uid) return;
   if (error) {
     // A transient failure here (network blip, or an in-flight token refresh)
     // must NOT clear a previously-resolved admin user. Doing so bounces the
@@ -4837,7 +4887,7 @@ async function resolveAdminUser() {
     try {
       const { data: perm, error: pErr } = await supabase
         .from('user_permissions').select('*').eq('admin_user_id', state.adminUser.id).maybeSingle();
-      if (!pErr && perm) state.adminUser.permissions = perm;
+      if (!pErr && perm && epoch === _pecAuthEpoch && state.session?.user?.id === uid && state.adminUser) state.adminUser.permissions = perm;
     } catch (_) { /* keep all-true default */ }
   }
 }
@@ -4847,28 +4897,29 @@ const PERMS_KEYS = ['can_move_pipeline','can_view_job_costing','can_override_sta
 function PERMS_ALL_TRUE() { const o = {}; for (const k of PERMS_KEYS) o[k] = true; return o; }
 
 async function passwordSignIn(email, password, errEl) {
+  if (_pecPasswordSignInBusy) return;
   const err = errEl || $('pecSigninError');
   if (err) { err.textContent = ''; err.style.color = 'var(--danger)'; }
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) { if (err) err.textContent = error.message; return; }
-  // If this user has enrolled 2FA, require the code now. Opt-in: users without a
-  // factor pass straight through. A cancel/failure signs them back out.
-  const mfaOk = await pecMfaLoginChallenge();
-  if (!mfaOk) {
-    await supabase.auth.signOut();
-    state.session = null; state.adminUser = null;
-    try { renderGlobalAuthGate(); } catch (_) {}
-    if (err) err.textContent = 'Two-factor verification is required to sign in.';
-    return;
-  }
-  // Fire-and-forget sign-in audit (IP + timestamp) via Netlify Function
+  _pecPasswordSignInBusy = true;
+  const epoch = pecClearAuthIdentity();
+  renderGlobalAuthGate();
   try {
+    const result = await supabase.auth.signInWithPassword({ email, password });
+    if (epoch !== _pecAuthEpoch) return;
+    if (result?.error || !result?.data?.session) {
+      if (err) err.textContent = result?.error?.message || 'Could not sign in. Please try again.';
+      return;
+    }
+    if (!await pecAcceptAuthSession(result.data.session, epoch)) return;
+    // Fire-and-forget audit only after the enrolled-factor check succeeds.
     fetch('/.netlify/functions/pec-log-signin', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token || ''}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
       body: '{}',
     }).catch(() => {});
-  } catch (_) {}
+  } catch (_) {
+    if (epoch === _pecAuthEpoch && err) err.textContent = 'Could not sign in. Please try again.';
+  } finally { _pecPasswordSignInBusy = false; }
 }
 
 async function passwordReset(email, errEl) {
@@ -4882,10 +4933,11 @@ async function passwordReset(email, errEl) {
 }
 
 async function signOut() {
-  await supabase.auth.signOut();
-  state.session = null; state.adminUser = null;
+  pecClearAuthIdentity();
   renderGlobalAuthGate();
+  try { await supabase.auth.signOut(); } catch (_) {}
 }
+
 window.pecAuthSignOut = signOut;
 
 // ============================================================
@@ -4968,46 +5020,87 @@ async function pecMfaSetup() {
 }
 window.pecMfaSetup = pecMfaSetup;
 
-// Called right after a successful password sign-in. If the user has a verified
-// TOTP factor, block until they enter a valid code. Returns true when satisfied
-// (no factor enrolled, already AAL2, or verified), false if they cancel/fail so
-// the caller signs them back out. Fails OPEN on an API error so a Supabase hiccup
-// never locks a staff member out during the opt-in stage.
-async function pecMfaLoginChallenge() {
-  let aal;
-  try {
-    const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    if (error) return true;
-    aal = data;
-  } catch (_) { return true; }
-  if (!aal || aal.nextLevel !== 'aal2' || aal.currentLevel === 'aal2') return true;
-  let factorId = null;
-  try {
-    const { data } = await supabase.auth.mfa.listFactors();
-    const f = ((data && data.totp) || []).find(x => x.status === 'verified');
-    factorId = f && f.id;
-  } catch (_) {}
-  if (!factorId) return true;
-  return new Promise((resolve) => {
+// Check both session assurance and enrolled factors. Missing/error responses
+// are not evidence that 2FA is off. Enrollment remains entirely opt-in.
+async function pecReadMfaState() {
+  const assurance = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (assurance?.error || !assurance?.data || !['aal1', 'aal2'].includes(assurance.data.currentLevel) || !['aal1', 'aal2'].includes(assurance.data.nextLevel)) throw new Error('Could not check sign-in verification.');
+  const factors = await supabase.auth.mfa.listFactors();
+  if (factors?.error || !Array.isArray(factors?.data?.totp) || !Array.isArray(factors?.data?.all)) throw new Error('Could not check two-factor status.');
+  if ([...factors.data.all, ...factors.data.totp].some(f => !f || !['verified', 'unverified'].includes(f.status) || typeof f.id !== 'string' || !f.id)) throw new Error('Could not check two-factor status.');
+  const verified = factors.data.totp.filter(f => f?.status === 'verified');
+  if (verified.some(f => typeof f.id !== 'string' || !f.id)) throw new Error('Could not check two-factor status.');
+  const enrolled = factors.data.all.some(f => f.status === 'verified') || verified.length > 0;
+  const needsCode = assurance.data.currentLevel !== 'aal2' && (enrolled || assurance.data.nextLevel === 'aal2');
+  if (needsCode && !verified.length) throw new Error('Your verification method could not be loaded. Please retry or contact an admin.');
+  return { needsCode, factorId: verified[0]?.id, currentLevel: assurance.data.currentLevel };
+}
+
+function pecMfaModalRoot() {
+  let root = $('pecAuthModalRoot');
+  if (!root) {
+    root = document.createElement('div'); root.id = 'pecAuthModalRoot';
+    root.style.cssText = 'position:relative;z-index:10001';
+    document.body.appendChild(root);
+  }
+  return root;
+}
+
+function pecMfaRetry(isCurrent) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = ok => { if (settled) return; settled = true; _pecMfaCancel = null; pecMfaModalRoot().replaceChildren(); resolve(ok && isCurrent()); };
+    _pecMfaCancel = () => finish(false);
+    openModal(`<h3 style="margin-top:0">Sign-in verification</h3>
+      <p style="font-size:.85rem">We could not check your two-factor sign-in status. Your account is still locked. Check your connection and retry, or cancel and contact an admin for help.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="pec-btn ghost" id="mfaRetryCancel">Cancel</button><button class="pec-btn primary" id="mfaRetry">Retry</button></div>`,
+      { root: pecMfaModalRoot(), closeButton: false, backdropClose: false, onMount(root) {
+        root.querySelector('#mfaRetryCancel').addEventListener('click', () => finish(false));
+        root.querySelector('#mfaRetry').addEventListener('click', () => finish(true));
+      } });
+  });
+}
+
+async function pecMfaLoginChallenge(isCurrent = () => true) {
+  let mfa;
+  while (isCurrent()) {
+    try { mfa = await pecReadMfaState(); break; }
+    catch (_) { if (!isCurrent() || !await pecMfaRetry(isCurrent)) return false; }
+  }
+  if (!isCurrent()) return false;
+  if (!mfa.needsCode) return true;
+  return new Promise(resolve => {
+    let settled = false, busy = false;
+    const finish = ok => { if (settled) return; settled = true; _pecMfaCancel = null; pecMfaModalRoot().replaceChildren(); resolve(ok && isCurrent()); };
+    _pecMfaCancel = () => finish(false);
     openModal(`
       <h3 style="margin-top:0">Two-factor authentication</h3>
-      <p style="font-size:.85rem">Enter the 6-digit code from your authenticator app.</p>
+      <p style="font-size:.85rem">Enter the 6-digit code from your authenticator app. If you cannot use your authenticator, cancel and contact an admin for help.</p>
       <input id="mfaChalCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="width:100%;text-align:center;font-size:1.2rem;letter-spacing:4px;padding:10px">
       <div id="mfaChalMsg" style="min-height:18px;font-size:.8rem;color:var(--danger);margin-top:6px"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
         <button class="pec-btn ghost" id="mfaChalCancel">Cancel</button>
         <button class="pec-btn primary" id="mfaChalVerify">Verify</button>
-      </div>`, { onMount(root) {
-        const msg = root.querySelector('#mfaChalMsg');
-        const finish = (ok) => { closeModal(); resolve(ok); };
+      </div>`, { root: pecMfaModalRoot(), closeButton: false, backdropClose: false, onMount(root) {
+        const msg = root.querySelector('#mfaChalMsg'), button = root.querySelector('#mfaChalVerify');
         root.querySelector('#mfaChalCancel').addEventListener('click', () => finish(false));
-        root.querySelector('#mfaChalVerify').addEventListener('click', async () => {
+        button.addEventListener('click', async () => {
+          if (busy || settled || !isCurrent()) return;
           const code = (root.querySelector('#mfaChalCode').value || '').trim();
           msg.textContent = '';
           if (!/^\d{6}$/.test(code)) { msg.textContent = 'Enter the 6-digit code.'; return; }
-          const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
-          if (error) { msg.textContent = error.message; return; }
-          finish(true);
+          busy = true; button.disabled = true;
+          try {
+            const result = await supabase.auth.mfa.challengeAndVerify({ factorId: mfa.factorId, code });
+            if (settled || !isCurrent()) return;
+            if (result?.error || !result?.data?.access_token) throw new Error('Verification failed. Check the code and retry.');
+            const checked = await pecReadMfaState();
+            if (settled || !isCurrent()) return;
+            if (checked.currentLevel !== 'aal2') throw new Error('Verification could not be confirmed. Please retry.');
+            finish(true);
+          } catch (error) {
+            if (!settled && isCurrent()) msg.textContent = error?.message || 'Verification failed. Please retry.';
+          } finally { busy = false; button.disabled = false; }
         });
       } });
   });
@@ -46971,13 +47064,8 @@ function _mergeAcrossAreas(areaPlans) {
 </script>
 
 <!-- ============================================================
-     HELP WIDGET LOGIC (bottom-right slide-in AI chat, answers-only v1)
-     A self-contained classic script. It reuses the existing generic Claude
-     proxy (CONFIG.SOP_CHAT_ENDPOINT -> netlify/functions/sop-chat.js), the SOP
-     loader (loadSOPs / getAccessibleSOPs / sopData), and window.pecState for
-     live page context. No backend change and no new secret were needed: the
-     proxy already forwards an arbitrary {system, messages} to Anthropic using
-     the existing server-side ANTHROPIC_API_KEY.
+     HELP WIDGET LOGIC: current page and bounded conversation/SOP data.
+     Instructions, app guide, release references and model live on the server.
      ============================================================ -->
 <script>
 (function(){
@@ -46990,10 +47078,26 @@ function _mergeAcrossAreas(areaPlans) {
   const input = $('pecHelpInput');
   const send = $('pecHelpSend');
 
-  let history = [];          // [{role, content}], the running conversation
-  let systemPrompt = null;   // built lazily on first open, then reused
-  let crmHelpDoc = null;     // /help/crm-help.md, fetched once
+  let history = [];
   let greeted = false;
+  let identity = null;
+  let generation = 0;
+  let pending = null;
+
+  function currentIdentity(){
+    const st = window.pecState;
+    return st?.session?.user?.id && st?.adminUser ? st.session.user.id : null;
+  }
+  function syncIdentity(){
+    const next = currentIdentity();
+    if (next === identity) return;
+    identity = next; generation++;
+    pending?.abort(); pending = null;
+    history = []; greeted = false;
+    msgs.replaceChildren(); input.value = ''; send.disabled = false;
+    wrap.classList.remove('open');
+  }
+  window.addEventListener('pec-auth-changed', syncIdentity);
 
   // ---- Visibility: show only to a signed-in, approved user (auth gate hidden)
   // and never in customer portal mode. We watch #authGate's style (the auth
@@ -47003,7 +47107,8 @@ function _mergeAcrossAreas(areaPlans) {
   const gate = $('authGate');
   function syncVisible(){
     const portal = document.body.classList.contains('pec-portal-mode');
-    const signedIn = !gate || gate.style.display === 'none';
+    syncIdentity();
+    const signedIn = !!identity && (!gate || gate.style.display === 'none');
     wrap.style.display = (signedIn && !portal) ? 'block' : 'none';
   }
   if (gate) new MutationObserver(syncVisible).observe(gate, { attributes:true, attributeFilter:['style'] });
@@ -47012,13 +47117,16 @@ function _mergeAcrossAreas(areaPlans) {
 
   // ---- Open / close ----
   function openPanel(){
+    syncIdentity();
+    if (!identity) return;
     wrap.classList.add('open');
     if (!greeted){
       greeted = true;
       addMsg('assistant', "Hi. I can explain how TopCoat works, where to find things, and how to do common tasks (job costing, invoicing, scheduling, ordering, customers, and more). What do you need?");
     }
     setTimeout(() => { try { input.focus(); } catch(_){} }, 60);
-    buildSystemPrompt(); // warm the knowledge so the first answer is fast
+    // Only warm the shared library; page/account context is built per request.
+    try { if (typeof loadSOPs === 'function') void loadSOPs().catch(() => {}); } catch (_) {}
   }
   function closePanel(){ wrap.classList.remove('open'); }
   btn.addEventListener('click', () => wrap.classList.contains('open') ? closePanel() : openPanel());
@@ -47034,121 +47142,88 @@ function _mergeAcrossAreas(areaPlans) {
     return d;
   }
 
-  // ---- Knowledge sources ----
-  async function getCrmHelpDoc(){
-    if (crmHelpDoc !== null) return crmHelpDoc;
-    try {
-      const res = await fetch('help/crm-help.md', { cache: 'no-cache' });
-      crmHelpDoc = res.ok ? await res.text() : '';
-    } catch { crmHelpDoc = ''; }
-    return crmHelpDoc;
-  }
-  // What's New grounding (prompt 14): the SAME repo JSON the sign-in popup and
-  // Help card read, flattened to text so the assistant can answer "how do I
-  // use <new feature>" and "what changed recently" from one source instead of
-  // duplicated prose in crm-help.md. This widget is a separate classic script,
-  // so it fetches the file itself (no cross-module sharing).
-  let whatsNewDoc = null;
-  async function getWhatsNewDoc(){
-    if (whatsNewDoc !== null) return whatsNewDoc;
-    try {
-      const res = await fetch('help/whats-new.json', { cache: 'no-cache' });
-      const list = res.ok ? await res.json() : [];
-      whatsNewDoc = (Array.isArray(list) ? list : []).map(e =>
-        `- ${e.date} | ${e.title}: ${e.summary}${Array.isArray(e.howto) && e.howto.length ? ' Steps: ' + e.howto.join(' ') : ''}`
-      ).join('\n');
-    } catch { whatsNewDoc = ''; }
-    return whatsNewDoc;
-  }
+  // ---- Bounded request data (no account names, record IDs or duplicated guide) ----
   function pageContext(){
-    try {
-      const st = window.pecState || {};
-      let ctx = `The user is on the "${st.view || 'dashboard'}" view.`;
-      if (st.openJobId) ctx += ` A job is open (id ${st.openJobId}).`;
-      return ctx;
-    } catch { return 'Current view unknown.'; }
+    const st = window.pecState || {};
+    return { view: String(st.view || 'dashboard').slice(0, 80), hasOpenJob: !!st.openJobId };
   }
-  function sopBlob(){
-    // Reuse the already-loaded SOP library (loadSOPs caches it). Respect access:
-    // staff get their accessible SOPs, owner (currentEmployee null) gets all.
-    let list = [];
-    try { list = (typeof getAccessibleSOPs === 'function') ? getAccessibleSOPs(currentEmployee) : (sopData || []); }
-    catch { list = (typeof sopData !== 'undefined' ? sopData : []) || []; }
-    if (!list || !list.length) return '';
-    let blob = '', total = 0; const budget = 120000;
-    for (const s of list){
-      const block = `\n\n=== SOP: ${s.id} - ${s.title} (${s.company}/${s.department}) ===\n${s.content}`;
-      if (total + block.length > budget){ blob += `\n\n[More SOPs exist than fit here. Suggest the SOP Library for the rest.]`; break; }
-      blob += block; total += block.length;
+  function recentHistory(messages){
+    const kept = []; let chars = 0;
+    for (const message of messages.slice(-12).reverse()) {
+      if (chars + message.content.length > 16000) break;
+      kept.unshift(message); chars += message.content.length;
     }
-    return blob;
+    while (kept[0]?.role === 'assistant') kept.shift();
+    return kept;
   }
-  async function buildSystemPrompt(){
-    if (systemPrompt) return systemPrompt;
-    try { if (typeof loadSOPs === 'function') await loadSOPs(); } catch {}
-    const doc = await getCrmHelpDoc();
-    const news = await getWhatsNewDoc();
-    const sops = sopBlob();
-    systemPrompt = `You are the in-app Help assistant for TopCoat, the CRM used by Prescott Epoxy Company (PEC) and Finishing Touch Painting (FTP) in Prescott, AZ.
-
-YOUR JOB: help signed-in staff understand HOW to use the app and WHERE features are. You explain and orient. You do NOT perform actions, navigate the app, or change data. If asked to do something, explain the steps so the user can do it.
-
-HOW TO ANSWER:
-1. Prefer the CRM HELP DOC below for how the app works, and the SOPs for business-process questions. Ground answers in those when they apply.
-2. Use the current-page context to make answers specific to what the user is looking at.
-3. If the curated sources do not cover it, you may use general knowledge, but stay on the topic of using this CRM and getting the user's work done. Do not invent app features that are not in the help doc; if unsure a feature exists, say so and suggest checking with Dylan.
-4. Be concise and concrete. Short steps, no filler.
-
-=== CURRENT PAGE CONTEXT ===
-${pageContext()}
-
-=== WHAT'S NEW (recent app updates, newest first; use for "what changed" and how-to questions about new features) ===
-${news || '(No recent-updates list loaded.)'}
-
-=== CRM HELP DOC ===
-${doc || '(The CRM help doc could not be loaded. Answer from general CRM knowledge and clearly note you could not load the app-specific help.)'}
-
-=== SOPs (business processes) ===${sops || '\n(No SOPs are loaded right now.)'}`;
-    return systemPrompt;
+  function selectedSops(messages){
+    const staff = window.pecState?.adminUser;
+    if (!staff || typeof getAccessibleSOPs !== 'function') return [];
+    // Null means owner in the legacy library; ordinary staff always pass their
+    // current verified role/company instead of the old employee-screen cache.
+    const list = getAccessibleSOPs(staff.role === 'admin' ? null : { ...staff, company: staff.company || 'both' });
+    if (!Array.isArray(list)) return [];
+    const query = messages.filter(m => m.role === 'user').slice(-3).map(m => m.content).join(' ').toLowerCase();
+    const words = [...new Set(query.match(/[a-z0-9-]{3,}/g) || [])].filter(w => !['the','and','how','what','this','that','with','for','can','you','help'].includes(w)).slice(0, 60);
+    const ranked = list.map((s, i) => ({ s, i, score: words.reduce((n, w) => n + (String(s.content).toLowerCase().includes(w) ? 1 : 0) + (`${s.id} ${s.title}`.toLowerCase().includes(w) ? 2 : 0), 0) }))
+      .filter(x => x.score > 0).sort((a, b) => b.score - a.score || a.i - b.i);
+    let room = 7000;
+    const selected = [];
+    for (const { s } of ranked.slice(0, 8)) {
+      const item = { id: String(s.id || '').slice(0, 80), title: String(s.title || '').slice(0, 180), company: String(s.company || '').slice(0, 40), department: String(s.department || '').slice(0, 80), content: String(s.content || '').slice(0, Math.max(0, room - 500)) };
+      const size = JSON.stringify(item).length;
+      if (!item.content || size > room) continue;
+      selected.push(item); room -= size;
+    }
+    return selected;
   }
 
   // ---- Send a message ----
   async function doSend(){
+    syncIdentity();
+    if (!identity || pending) return;
     const text = input.value.trim();
     if (!text) return;
+    if (text.length > 8000) { addMsg('system', 'Please shorten your question to 8000 characters or fewer.'); return; }
+    const owner = identity, epoch = generation;
+    const controller = new AbortController(); pending = controller;
+    const active = () => owner === currentIdentity() && epoch === generation && pending === controller;
     input.value = ''; input.style.height = 'auto'; send.disabled = true;
     addMsg('user', text);
-    history.push({ role:'user', content:text });
+    const question = { role:'user', content:text };
+    history = recentHistory([...history, question]);
 
     const typing = document.createElement('div');
-    typing.className = 'pec-help-typing';
-    typing.textContent = 'Thinking...';
+    typing.className = 'pec-help-typing'; typing.textContent = 'Thinking...';
     msgs.appendChild(typing); msgs.scrollTop = msgs.scrollHeight;
-
     try {
-      const system = await buildSystemPrompt();
+      try { if (typeof loadSOPs === 'function') await loadSOPs(); } catch (_) {}
+      if (!active()) return;
+      // Read the page immediately before every request, including navigation
+      // that happened while the SOP library was loading.
+      const body = { page: pageContext(), sops: selectedSops(history), messages: history };
       const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
-        method:'POST',
+        method:'POST', signal: controller.signal,
         headers:{ 'Content-Type':'application/json', Authorization: `Bearer ${window.pecState?.session?.access_token || ''}` },
-        body: JSON.stringify({ system, messages: history, model: CONFIG.COACH_MODEL, max_tokens: 1024 })
+        body: JSON.stringify(body)
       });
-      typing.remove();
       const raw = await res.text();
+      if (!active()) return;
       let data; try { data = raw ? JSON.parse(raw) : {}; } catch { data = null; }
-      if (!data || !res.ok){
-        history.pop();
-        addMsg('system', "Sorry, I could not reach the help service just now. Please try again in a moment, or ask Dylan if it keeps happening.");
-        return;
-      }
-      const reply = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text : '(no response)';
-      history.push({ role:'assistant', content:reply });
+      const reply = data?.content?.find(item => item?.type === 'text' && typeof item.text === 'string')?.text;
+      if (!res.ok || !reply?.trim()) throw new Error('Help unavailable');
+      history = recentHistory([...history, { role:'assistant', content:reply }]);
       renderAssistantReply(reply);
-    } catch (e){
-      typing.remove(); history.pop();
-      addMsg('system', "Network hiccup, I could not send that. Check your connection and try again.");
+    } catch (_) {
+      if (!active()) return;
+      history = history.filter(m => m !== question);
+      addMsg('system', 'Sorry, I could not reach the help service just now. Please try again in a moment.');
     } finally {
-      send.disabled = false;
-      try { input.focus(); } catch(_){}
+      typing.remove();
+      if (active()) {
+        pending = null; send.disabled = false;
+        try { input.focus(); } catch(_){}
+      }
     }
   }
 

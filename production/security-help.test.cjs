@@ -56,3 +56,9 @@ test('long conversations retain the latest question and bound complete recent tu
   assert.equal(ctx.messages.at(-1).content, messages.at(-1).content); assert.equal(ctx.messages[0].role, 'user');
   assert.ok(ctx.messages.length <= LIMITS.historyTurns); assert.ok(ctx.metrics.history_chars <= LIMITS.historyChars);
 });
+test('compact current-page/SOP data preserves server guidance and drops unknown private fields', () => {
+  const ctx = prepareContext({ page: { view: 'invoices', hasOpenJob: true, customerName: 'PRIVATE-NAME', openJobId: 'PRIVATE-ID' }, sops: [{ id: 'PEC-OPS-001', title: 'Grinding', content: 'Use the grinder for surface preparation.' }], messages: [{ role: 'user', content: 'How do I use the grinder?' }] }, sources);
+  assert.equal(ctx.mode, 'Help'); assert.match(ctx.system[1].text, /invoices/); assert.match(ctx.system[1].text, /PEC-OPS-001/);
+  assert.doesNotMatch(JSON.stringify(ctx), /PRIVATE-NAME|PRIVATE-ID/); assert.ok(ctx.system[1].text.length <= LIMITS.referenceChars);
+  assert.equal(ctx.metrics.legacy_chars, 0);
+});

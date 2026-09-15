@@ -6,7 +6,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const vm = require('node:vm');
-const { bookingPageInner } = require('../netlify/functions/pec-booking.cjs');
+const { bookingPageInner, DUPLICATE_BOOKING_MESSAGE } = require('../netlify/functions/pec-booking.cjs');
+const { _internals: { pricingPageInner } } = require('../netlify/functions/pec-pricing.cjs');
 
 function decode(value) {
   return String(value).replace(/&#(x[0-9a-f]+|\d+);|&(amp|lt|gt|quot|apos|nbsp);/gi, (_, code, name) => code
@@ -108,7 +109,10 @@ const DAYS = Array.from({ length: 12 }, (_, i) => {
 });
 
 async function fixture(options = {}) {
-  const html = bookingPageInner(FORM, '', { preview: !!options.preview, brand: { business_name: 'Prescott Epoxy Company', phone: '(928) 800-8154' } });
+  const brand = { business_name: 'Prescott Epoxy Company', phone: '(928) 800-8154' };
+  const html = options.pricing
+    ? pricingPageInner({ brand, settings: {}, types: [{ id: 'fixture-project', name: 'Garage', priceable: true }], booking: FORM, mapsKey: '', preview: !!options.preview })
+    : bookingPageInner(FORM, '', { preview: !!options.preview, brand });
   const body = new Element('body');
   parseInto(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ''), body);
   const document = { body, head: new Element('head'), documentElement: body,
@@ -119,7 +123,7 @@ async function fixture(options = {}) {
   };
   const window = new Element('window'); window.parent = window; window.location = { origin: 'http://booking.test' };
   const requests = [];
-  const responses = { slots: [], book: [], lead: [] };
+  const responses = { slots: [], book: [], lead: [], quote: [], booked: [] };
   const context = vm.createContext({ window, document, console, URL, Date,
     setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
     MutationObserver: class { observe() {} },
@@ -146,7 +150,17 @@ async function fixture(options = {}) {
     $('bkName').value = 'Taylor Example'; $('bkPhone').value = '9285550100'; $('bkEmail').value = 'taylor@example.com';
     $('q_source').value = 'Referral';
   }
-  return { $, visible, click, buttons, settle, address, selectTime, details, requests, responses, window, context, html };
+  async function pricingDetails() {
+    buttons('prTypes')[0].click();
+    $('prSqft').value = '450'; $('prAddr').value = '123 Test Street'; $('prCity').value = 'Prescott'; $('prZip').value = '86301';
+    await click('prSizeNext');
+    $('prName').value = 'Taylor Example'; $('prPhone').value = '9285550100'; $('prEmail').value = 'taylor@example.com';
+    responses.quote.push({ ok: true, request_id: 'fixture-quote', priceable: true, price_low_label: '$2,000', price_high_label: '$3,000', booking: { open: true } });
+    await click('prSeePrice');
+    buttons('prDays')[0].click(); buttons('prTimeBtns')[0].click(); await settle();
+    $('pq_source').value = 'Referral';
+  }
+  return { $, visible, click, buttons, settle, address, selectTime, details, pricingDetails, requests, responses, window, context, html };
 }
 
 test('address comes first and no later step can bypass validated availability', async () => {
@@ -318,6 +332,79 @@ test('booking stays single-submit while pending and preserves answers after a ne
   assert.equal(f.$('q_project').value, 'Keep this project text');
   assert.ok(f.$('bkErr').textContent);
 });
+
+for (const pricing of [false, true]) {
+  const label = pricing ? 'pricing continuation' : 'booking';
+  const ids = pricing
+    ? { submit: 'prBookIt', form: 'stepConfirm', error: 'prConfirmErr', manage: 'prDoneManage', message: 'prDoneMsg', name: 'prName', phone: 'prPhone', question: 'pq_source' }
+    : { submit: 'bkBook', form: 'stepDetails', error: 'bkErr', manage: 'doneManage', message: 'doneMsg', name: 'bkName', phone: 'bkPhone', question: 'q_source' };
+
+  test(label + ': duplicate notice retains the form and ignores private fields without entering success', async () => {
+    const f = await fixture({ pricing });
+    await (pricing ? f.pricingDetails() : f.details());
+    // Even an old/stale response carrying private fields must not become a
+    // successful confirmation, create a link, or record a pricing conversion.
+    f.$(ids.manage).innerHTML = '<a href="https://fixture.invalid/old-private-link">Old private link</a>';
+    f.$(ids.message).textContent = 'Old appointment details';
+    f.responses.book.push({ ok: true, duplicate: true, message: 'Original Customer at a private time', when: 'September 15, 10 AM', manage_url: 'https://fixture.invalid/private-token', appointment_id: 'private-appointment' });
+    await f.click(ids.submit);
+    assert.equal(f.visible(ids.form), true);
+    assert.equal(f.visible('stepDone'), false);
+    assert.equal(f.$(ids.error).textContent, DUPLICATE_BOOKING_MESSAGE);
+    assert.equal(f.$(ids.name).value, 'Taylor Example');
+    assert.equal(f.$(ids.phone).value, '9285550100');
+    assert.equal(f.$(ids.question).value, 'Referral');
+    assert.equal(f.$(ids.manage).querySelectorAll('a').length, 0);
+    assert.equal(f.$(ids.manage).textContent, '');
+    assert.equal(f.$(ids.message).textContent, '');
+    assert.equal(f.requests.some(r => r.path === 'booked'), false);
+    assert.equal(f.$(ids.submit).disabled, false);
+    // The unchanged form can still submit after a correction; it was not
+    // marked complete by a duplicate and no appointment id was invented.
+    f.$(ids.question).value = 'Google';
+    f.responses.book.push({ ok: false, error: 'Review your corrected details.' });
+    await f.click(ids.submit);
+    assert.equal(f.requests.filter(r => r.path === 'book').length, 2);
+    assert.equal(f.requests.filter(r => r.path === 'book')[1].body.answers.source, 'Google');
+    assert.equal(f.visible('stepDone'), false);
+  });
+
+  test(label + ': a lost-response retry shows the generic notice and preserves entered answers', async () => {
+    const f = await fixture({ pricing });
+    await (pricing ? f.pricingDetails() : f.details());
+    f.responses.book.push(() => Promise.reject(new Error('Fixture connection dropped after submission')));
+    await f.click(ids.submit);
+    assert.match(f.$(ids.error).textContent, /connection/i);
+    f.responses.book.push({ ok: true, duplicate: true, message: DUPLICATE_BOOKING_MESSAGE });
+    await f.click(ids.submit);
+    const submitted = f.requests.filter(r => r.path === 'book');
+    assert.equal(submitted.length, 2);
+    assert.equal(submitted[1].body.start, submitted[0].body.start);
+    assert.deepEqual(submitted[1].body.answers, submitted[0].body.answers);
+    assert.equal(f.visible(ids.form), true);
+    assert.equal(f.visible('stepDone'), false);
+    assert.equal(f.$(ids.error).textContent, DUPLICATE_BOOKING_MESSAGE);
+    assert.equal(f.$(ids.manage).querySelectorAll('a').length, 0);
+    assert.equal(f.requests.some(r => r.path === 'booked'), false);
+  });
+
+  test(label + ': newly created appointments keep their time and private confirmation link', async () => {
+    const f = await fixture({ pricing });
+    await (pricing ? f.pricingDetails() : f.details());
+    const manage = 'https://fixture.invalid/book/manage/new-booking-token';
+    f.responses.book.push({ ok: true, message: 'Your visit is booked.', when: 'October 1, 9 AM', manage_url: manage, appointment_id: 'new-appointment' });
+    await f.click(ids.submit);
+    assert.equal(f.visible(ids.form), false);
+    assert.equal(f.visible('stepDone'), true);
+    assert.match(f.$(ids.message).textContent, /October 1, 9 AM/);
+    const links = f.$(ids.manage).querySelectorAll('a');
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, manage);
+    const booked = f.requests.filter(r => r.path === 'booked');
+    assert.equal(booked.length, pricing ? 1 : 0);
+    if (pricing) assert.deepEqual(booked[0].body, { request_id: 'fixture-quote', appointment_id: 'new-appointment' });
+  });
+}
 
 test('builder preview disables navigation and submissions while accepting live form drafts', async () => {
   const f = await fixture({ preview: true });
