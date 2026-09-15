@@ -6,7 +6,10 @@ const { fetchMbpLive } = require('../../production/owner-mbp-live.cjs');
 const FINANCE_YEAR = /^finance:(20[2-9]\d|2100)$/;
 const DOC = /^(mbp:\d{4}|source:\d{4}|(?:source:)?finance:(?:20[2-9]\d|2100)|focus:\d{4}-\d{2}-\d{2}|review:\d{4}-\d{2}-\d{2}|plan:\d{4}-q[1-4]|problems)$/;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone','owner_mbp_live_enabled','owner_mbp_refresh_minutes'];
+const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone','owner_mbp_live_enabled','owner_mbp_refresh_minutes','owner_income_default_company','owner_income_show_empty'];
+// Request bodies above this are refused before parsing. finance:2026 is about 1.72 MB
+// compact; the database RPC separately refuses bodies over 2,000,000 bytes of jsonb text.
+const MAX_BODY_BYTES = 1800000;
 const reply = (statusCode, body) => ({ statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store, max-age=0', 'Pragma': 'no-cache', 'Vary': 'Authorization', 'X-Content-Type-Options': 'nosniff' }, body: JSON.stringify(body) });
 const error = (status, message) => Object.assign(new Error(message), { status });
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -19,13 +22,19 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
     if (!token) return reply(401, { error: 'Sign in to continue.' });
     if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return reply(503, { error: 'Owner workspace is not configured.' });
     try {
-      const call = async (path, { method = 'GET', body, user = false } = {}) => {
+      const call = async (path, { method = 'GET', body, user = false, detail = false } = {}) => {
         const response = await fetchImpl(`${env.SUPABASE_URL}${path}`, {
           method, signal: AbortSignal.timeout(10000),
           headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${user ? token : env.SUPABASE_SERVICE_ROLE_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-        if (!response.ok) throw error(503, 'The request could not be confirmed. Reload before retrying; a change may already be saved.');
+        if (!response.ok) {
+          const failure = error(503, 'The request could not be confirmed. Reload before retrying; a change may already be saved.');
+          // Only the save RPC reads the database message, and only to classify a
+          // definite rejection (nothing written) so the browser keeps the draft.
+          if (detail && typeof response.text === 'function') { try { failure.detail = String(await response.text()).slice(0, 400); } catch { failure.detail = ''; } }
+          throw failure;
+        }
         return response.status === 204 ? null : response.json();
       };
       // Validate with Auth, then the DB entitlement/live-session check under the
@@ -47,7 +56,13 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         return rows[0] ?? null;
       };
       const writeDocument = async (key, revision, requestId, body) => {
-        const result = await db('/rpc/pec_owner_save_document', { method:'POST', body:{ p_auth_user_id:user.id, p_doc_key:key, p_expected_revision:revision, p_request_id:requestId, p_body:body } });
+        let result;
+        try { result = await db('/rpc/pec_owner_save_document', { method:'POST', detail:true, body:{ p_auth_user_id:user.id, p_doc_key:key, p_expected_revision:revision, p_request_id:requestId, p_body:body } }); }
+        catch (err) {
+          if (/Invalid owner document/.test(err.detail || '')) throw error(413, 'This record is larger than the private storage limit. Nothing was saved; your edits are still on this screen. Copy any new entries before leaving and ask for the limit to be raised.');
+          if (/Request ID already used/.test(err.detail || '')) throw error(409, 'This save was already used for a different change. Reload before saving again.');
+          throw err;
+        }
         if (result.conflict) return reply(409, { error:'This record changed in another window. Reload it before saving; your draft has not overwritten it.', conflict:true });
         return reply(200,{ ok:true, document:await read(key), replayed:result.replayed });
       };
@@ -113,7 +128,8 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         throw error(400, 'Unknown owner action.');
       }
       const raw = event.isBase64Encoded ? Buffer.from(event.body || '', 'base64').toString('utf8') : event.body || '{}';
-      if (Buffer.byteLength(raw) > 1800000) throw error(413, 'This owner record is too large.');
+      const rawBytes = Buffer.byteLength(raw);
+      if (rawBytes > MAX_BODY_BYTES) throw error(413, `This record is too large to save (${Math.round(rawBytes/1024).toLocaleString('en-US')} KB; the limit is ${Math.round(MAX_BODY_BYTES/1024).toLocaleString('en-US')} KB). Nothing was saved; your edits are still on this screen. Copy any new entries before leaving and ask for the limit to be raised.`);
       let payload;
       try { payload = JSON.parse(raw); } catch { throw error(400, 'Invalid request data.'); }
       if (!object(payload)) throw error(400, 'Invalid request data.');
@@ -147,7 +163,8 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         const next = new Map(settings.map(row => [row.key, row.value]));
         for (const [key, value] of Object.entries(payload.values)) {
           if (typeof value !== 'string' || value.length > 200) throw error(400, 'Invalid setting value.');
-          if (['owner_studio_enabled','owner_mbp_live_enabled'].includes(key) && !['true','false'].includes(value)) throw error(400, 'Choose on or off.');
+          if (['owner_studio_enabled','owner_mbp_live_enabled','owner_income_show_empty'].includes(key) && !['true','false'].includes(value)) throw error(400, 'Choose on or off.');
+          if (key === 'owner_income_default_company' && !['combined','PEC','FTP'].includes(value)) throw error(400, 'Choose Combined, PEC or FTP.');
           next.set(key, value);
         }
         ownerConfig([...next].map(([key,value]) => ({ key,value })));

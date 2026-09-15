@@ -35,8 +35,13 @@ export function ownerConfig(rows = []) {
   const mbpRefresh = map.owner_mbp_refresh_minutes === undefined ? '5' : map.owner_mbp_refresh_minutes;
   const mbpRefreshMinutes = Number(mbpRefresh);
   if (!['string', 'number'].includes(typeof mbpRefresh) || !Number.isInteger(mbpRefreshMinutes) || mbpRefreshMinutes < 1 || mbpRefreshMinutes > 60) throw new Error('MBP refresh interval setting is invalid.');
+  const incomeCompany = map.owner_income_default_company === undefined ? 'combined' : map.owner_income_default_company;
+  if (!['combined', 'PEC', 'FTP'].includes(incomeCompany)) throw new Error('Income statement default company setting is invalid.');
+  const incomeEmpty = map.owner_income_show_empty === undefined ? 'false' : map.owner_income_show_empty;
+  if (incomeEmpty !== 'true' && incomeEmpty !== 'false') throw new Error('Income statement empty-slot setting is invalid.');
   return {
     enabled: map.owner_studio_enabled === 'true', timezone, morningDays: [...new Set(days)],
+    incomeDefaultCompany: incomeCompany, incomeShowEmpty: incomeEmpty === 'true',
     morningTime: time('owner_morning_time', '06:20'), morningMinutes: duration('owner_morning_target_minutes', 10),
     weeklyDay, weeklyTime: time('owner_weekly_time', '08:00'), weeklyMinutes: duration('owner_weekly_target_minutes', 30),
     mbpLiveEnabled: mbpLive === 'true', mbpRefreshMinutes,

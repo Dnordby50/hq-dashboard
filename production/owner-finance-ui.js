@@ -67,6 +67,82 @@ export function parseFinanceInput(value, cell) {
   if(!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw)||!Number.isFinite(Number(raw)))throw new Error('Enter a number, or leave the field blank.');
   return Number(raw)/(pct||cell.t==='percent'?100:1);
 }
+// Account rows carry an explicit company tag in the document (sheet.companyRows) and
+// live inside stored slot sections (sheet.accountSections). Nothing below infers
+// ownership from row numbers; a document without tags renders exactly as before.
+export const FINANCE_COMPANIES=[['combined','Combined (PEC + FTP)'],['PEC','PEC only'],['FTP','FTP only']];
+export const FINANCE_SAVE_LIMIT_BYTES=1800000;
+// Template slots keep their workbook placeholder names ("Fixed Exp 67"); those count as empty.
+const PLACEHOLDER=/^(?:variable exp line|fixed exp)\s*\d+$/i;
+export function financeIsEmptyLabel(value){const text=value==null?'':String(value).trim();return !text||PLACEHOLDER.test(text);}
+export function financeRowHasValues(sheet,row){
+  for(let c=3;c<=14;c++){const v=sheet.cells[financeColumn(c)+row]?.v;if(v===null||v===undefined||v===''||v===0)continue;return true;}
+  return false;
+}
+export function financeSectionRows(sheet){
+  const map=new Map();
+  for(const section of sheet.accountSections||[]){const [a,b]=String(section.rows).split(':').map(Number);for(let r=a;r<=(b||a);r++)map.set(r,section);}
+  return map;
+}
+// Hidden rows for an income sheet: untagged rows keep the workbook's static hiddenRows;
+// tagged rows follow the rule "shows when named or when any month has a value",
+// the company filter, and the Show empty slots toggle.
+export function financeIncomeHiddenRows(sheet,computed,{company='combined',showEmpty=false,showHidden=false}={}){
+  const hidden=new Set(showHidden?[]:sheet.hiddenRows||[]);
+  for(const [key,tag] of Object.entries(sheet.companyRows||{})){
+    const row=Number(key);hidden.delete(row);
+    if(company!=='combined'&&tag!==company){hidden.add(row);continue;}
+    if(showHidden||showEmpty)continue;
+    const label=computed?.cells?.[`B${row}`]?.v??sheet.cells[`B${row}`]?.v;
+    if(financeIsEmptyLabel(label)&&!financeRowHasValues(sheet,row))hidden.add(row);
+  }
+  return hidden;
+}
+// PEC/FTP views blank the other company's month entries (and combined-only rows) before
+// calculation, so every workbook total formula stays exactly as imported.
+export function financeCompanyView(body,company='combined'){
+  if(company==='combined')return body;
+  const view=structuredClone(body);
+  for(const sheet of view.sheets)for(const [key,tag] of Object.entries(sheet.companyRows||{})){
+    if(tag===company)continue;
+    for(let c=3;c<=14;c++){const cell=sheet.cells[financeColumn(c)+key];if(cell&&!cell.f)cell.v=null;}
+  }
+  return view;
+}
+// Income column B is a link such as ='Budget - 2'!H35. Renames write that budget cell,
+// so the Budget tab and the Income Statement share one list of account names.
+export function financeLabelTarget(body,sheet,row){
+  const match=/^=(?:'([^']+)'|([A-Za-z0-9_.]+))!\$?([A-Z]{1,3})\$?([1-9]\d*)$/i.exec(String(sheet.cells[`B${row}`]?.f||'').trim());
+  if(!match)return null;
+  const name=(match[1]||match[2]).toLowerCase(),target=body.sheets.find(s=>String(s.name).toLowerCase()===name);
+  if(!target)return null;
+  const address=match[3].toUpperCase()+match[4],[r,c]=coordinate(address);
+  if(r>target.rows||c>target.cols)return null;
+  return {sheet:target,address};
+}
+export function financeSetAccountLabel(body,sheet,row,name){
+  const target=financeLabelTarget(body,sheet,row);
+  if(!target)throw new Error(`Row ${row} is not linked to a budget account name.`);
+  const text=String(name??'').trim();
+  const cell={...target.sheet.cells[target.address]};delete cell.f;delete cell.error;cell.v=text||null;
+  target.sheet.cells[target.address]=cell;
+  return {...target,value:cell.v};
+}
+export function financeEmptySlot(sheet,computed,sectionId){
+  const section=(sheet.accountSections||[]).find(s=>s.id===sectionId);
+  if(!section)return null;
+  const [start,end]=String(section.rows).split(':').map(Number),total=end-start+1;let used=0,row=null;
+  for(let r=start;r<=end;r++){
+    const empty=financeIsEmptyLabel(computed?.cells?.[`B${r}`]?.v??sheet.cells[`B${r}`]?.v)&&!financeRowHasValues(sheet,r);
+    if(empty){row??=r;}else used++;
+  }
+  return {section,row,used,total};
+}
+export function financeSaveSizeError(bytes,limit=FINANCE_SAVE_LIMIT_BYTES){
+  if(!(bytes>limit))return null;
+  const kb=n=>new Intl.NumberFormat('en-US').format(Math.round(n/1024));
+  return `This budget year is too large to save (${kb(bytes)} KB of the ${kb(limit)} KB limit). Nothing was sent and your edits are still on this screen. Copy any new entries before leaving; the storage limit has to be raised before this year can be saved.`;
+}
 export function financeDisplay(cell) {
   if(cell.error)return cell.error;
   const v=cell.v;
@@ -75,10 +151,12 @@ export function financeDisplay(cell) {
   if(cell.t==='date') {const date=new Date(Date.UTC(1899,11,30)+v*86400000);return Number.isFinite(date.getTime())?cell.format?.includes('mmmm')?new Intl.DateTimeFormat('en-US',{month:'long',timeZone:'UTC'}).format(date):date.toISOString().slice(0,10):String(v);}
   return new Intl.NumberFormat('en-US',cell.t==='percent'?{style:'percent',maximumFractionDigits:1}:cell.t==='money'?{style:'currency',currency:'USD',maximumFractionDigits:cell.format?.includes('.00')?2:0}:{maximumFractionDigits:2}).format(v);
 }
-export function renderFinanceSheet(body,computed,sheetId,{readOnly=false,showHidden=false}={}) {
+export function renderFinanceSheet(body,computed,sheetId,{readOnly=false,showHidden=false,company='combined',showEmpty=false,adding=null}={}) {
   const sheet=body.sheets.find(s=>s.id===sheetId), result=computed.sheets.find(s=>s.id===sheetId);
   if(!sheet||!result)return '';
-  const hiddenRows=new Set(showHidden?[]:sheet.hiddenRows||[]),hiddenCols=new Set(showHidden?[]:sheet.hiddenCols||[]);
+  const tagged=!!sheet.companyRows&&typeof sheet.companyRows==='object';
+  const hiddenRows=tagged?financeIncomeHiddenRows(sheet,result,{company,showEmpty,showHidden}):new Set(showHidden?[]:sheet.hiddenRows||[]),hiddenCols=new Set(showHidden?[]:sheet.hiddenCols||[]);
+  const sectionOf=readOnly?new Map():financeSectionRows(sheet);
   const rows=Array.from({length:sheet.rows},(_,i)=>i+1).filter(i=>!hiddenRows.has(i));
   const cols=Array.from({length:sheet.cols},(_,i)=>i+1).filter(i=>!hiddenCols.has(i));
   const width=c=>{const n=sheet.colWidths?.[c]||120;return n<30?n:n<60?65:n<100?110:Math.min(280,Math.max(180,n));};
@@ -100,6 +178,7 @@ export function renderFinanceSheet(body,computed,sheetId,{readOnly=false,showHid
     const span=merges.get(address),sourceAddress=span?.source||address,range=inputs.get(sourceAddress),raw=sheet.cells[sourceAddress]||{},original={...range,...raw,editable:!raw.f&&(raw.editable===true||!!range)},style=body.styles?.[original.style??styles.get(sourceAddress)]||{};
     const cell={t:style.t||(style.format?.includes('$')?'money':style.format?.includes('%')?'percent':style.format?.includes('mmmm')?'date':'number'),format:style.format,...original,...result.cells[sourceAddress]};
     const input=!readOnly&&original.editable&&!original.f;
+    const section=c===2?sectionOf.get(r):null;
     const safeColor=v=>/^#[0-9a-f]{6}$/i.test(v||'')?v:null;
     const background=safeColor(style.background),color=safeColor(style.color);
     const pinned=c<=Math.max(2,sheet.freezeCols||0),left=38+cols.filter(n=>n<c).reduce((sum,n)=>sum+width(n),0);
@@ -107,8 +186,19 @@ export function renderFinanceSheet(body,computed,sheetId,{readOnly=false,showHid
     const title=`${sheet.name}!${sourceAddress}${cell.f?' '+cell.f:''}${cell.error?' · Source formula needs attention':''}${body.notes?.[sheet.notes?.[sourceAddress]]?' · '+body.notes[sheet.notes[sourceAddress]]:''}`;
     const label=[sheet.cells[`B${r}`]?.v,sheet.cells[`H${r}`]?.v].find(v=>typeof v==='string')||'';
     const link=sheet.links?.[sourceAddress],display=e(financeDisplay(cell)),content=typeof link==='string'&&/^https:\/\//i.test(link)?`<a href="${e(link)}" target="_blank" rel="noopener noreferrer">${display}</a>`:display;
+    if(section)return `<td data-cell="${e(sourceAddress)}" class="${pinned?'tc-finance-pinned':''} tc-finance-label tc-finance-editable tc-finance-text tc-finance-account" ${css?`style="${css}"`:''} title="${e(`${title} · ${section.label}. Renaming updates the Budget tab.`)}"><input type="text" data-finance-label="${r}" value="${e(typeof cell.v==='string'?cell.v:'')}" aria-label="${e(`Account name, row ${r}, ${section.label}`)}" maxlength="120" autocomplete="off" placeholder="Empty slot"></td>`;
     return `<td data-cell="${e(sourceAddress)}" class="${pinned?'tc-finance-pinned':''} ${c===2?'tc-finance-label':''} ${input?'tc-finance-editable':''} ${cell.error?'tc-finance-error':''} ${cell.t==='text'||typeof cell.v==='string'?'tc-finance-text':''}" ${span?`rowspan="${span.rowspan}" colspan="${span.colspan}"`:''} ${css?`style="${css}"`:''} title="${e(title)}">${input?(original.t==='text'?`<textarea rows="${Math.max(1,Math.min(4,Math.ceil(String(original.v??'').length/23)))}" data-finance-cell="${e(sourceAddress)}" aria-label="${e(sheet.name+' '+sourceAddress+' '+label)}">${e(financeInputValue(original))}</textarea>`:`<input type="text" data-finance-cell="${e(sourceAddress)}" aria-label="${e(sheet.name+' '+sourceAddress+' '+label)}" value="${e(financeInputValue(original))}" inputmode="decimal" autocomplete="off">`):content}</td>`;
   }).join('')}</tr>`;
   const frozen=sheet.freezeRows??4,header=rows.filter(r=>r<=frozen),detail=rows.filter(r=>r>frozen);
-  return `<div class="tc-finance-scroll" tabindex="0" role="region" aria-label="${e(sheet.name)}. Scroll for all rows and months."><table class="tc-finance-table"><caption class="tc-sr-only">${e(sheet.name)} ${body.year}</caption><colgroup><col style="width:38px">${cols.map(c=>`<col style="width:${width(c)}px">`).join('')}</colgroup><thead><tr><th class="tc-finance-rownum"></th>${cols.map(c=>`<th>${financeColumn(c)}</th>`).join('')}</tr>${header.map(renderRow).join('')}</thead><tbody>${detail.map(renderRow).join('')}</tbody></table></div><p class="tc-small tc-muted">${rows.length} rows · ${cols.length} columns. ${showHidden?'All template rows and columns shown.':'Collapsed template rows and columns match the source.'} ${readOnly?'Read-only view.':'Edit the highlighted fields, then save. Calculated cells follow the workbook formulas.'}</p>`;
+  // One "Add account" row per stored slot section, anchored under the section's last shown row.
+  const anchors=new Map();
+  if(!readOnly)for(const section of sheet.accountSections||[]){
+    if(company!=='combined'&&section.company!==company)continue;
+    const [start,end]=String(section.rows).split(':').map(Number);
+    const anchor=[...rows].reverse().find(r=>r>=start&&r<=end)??[...rows].reverse().find(r=>r<start);
+    if(anchor)anchors.set(anchor,[...(anchors.get(anchor)||[]),section]);
+  }
+  const renderAdd=section=>`<tr class="tc-finance-addrow" data-finance-section="${e(section.id)}"><th class="tc-finance-rownum" scope="row"></th><td class="tc-finance-pinned tc-finance-text" colspan="2" style="position:sticky;left:38px;z-index:2">${adding===section.id?`<span class="tc-finance-addform"><input type="text" name="financeAccountName" maxlength="120" placeholder="New account name" aria-label="${e(`New account name for ${section.label}`)}" autocomplete="off"><button type="button" class="tc-button tc-primary" data-action="finance-add-confirm" data-section="${e(section.id)}">Add</button><button type="button" class="tc-button" data-action="finance-add-cancel">Cancel</button></span>`:`<button type="button" class="tc-button" data-action="finance-add" data-section="${e(section.id)}">+ Add account · ${e(section.label)}</button>`}</td>${cols.length>2?`<td colspan="${cols.length-2}"></td>`:''}</tr>`;
+  const renderDetail=r=>renderRow(r)+(anchors.get(r)||[]).map(renderAdd).join('');
+  return `<div class="tc-finance-scroll" tabindex="0" role="region" aria-label="${e(sheet.name)}. Scroll for all rows and months."><table class="tc-finance-table"><caption class="tc-sr-only">${e(sheet.name)} ${body.year}</caption><colgroup><col style="width:38px">${cols.map(c=>`<col style="width:${width(c)}px">`).join('')}</colgroup><thead><tr><th class="tc-finance-rownum"></th>${cols.map(c=>`<th>${financeColumn(c)}</th>`).join('')}</tr>${header.map(renderRow).join('')}</thead><tbody>${detail.map(renderDetail).join('')}</tbody></table></div><p class="tc-small tc-muted">${rows.length} rows · ${cols.length} columns. ${showHidden?'All template rows and columns shown.':tagged?`Account rows show when they have a name or a monthly value${showEmpty?', plus empty slots':''}.${company==='combined'?'':` ${company} rows only; totals use ${company} entries.`}`:'Collapsed template rows and columns match the source.'} ${readOnly?'Read-only view.':'Edit the highlighted fields, then save. Calculated cells follow the workbook formulas.'}</p>`;
 }

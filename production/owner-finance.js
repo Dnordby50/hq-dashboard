@@ -1,6 +1,6 @@
 // Private workbook values belong in the owner document store, never in this module.
 // Deliberately limited spreadsheet interpreter: formulas are parsed as data, never JavaScript.
-export const FINANCE_VERSION = '2026-09-08.1';
+export const FINANCE_VERSION = '2026-09-15.1';
 export class FinanceInputError extends Error {
   constructor(path, message) { super(`${path}: ${message}`); this.name = 'FinanceInputError'; this.path = path; }
 }
@@ -12,6 +12,9 @@ const CELL = /^\$?([A-Z]{1,3})\$?([1-9]\d*)$/i;
 const DAY = 86400000, EPOCH = Date.UTC(1899, 11, 30);
 const TYPES = new Set(['money', 'percent', 'number', 'text', 'date']);
 const ROLES = new Set(['actual', 'plan', 'year', 'year-date', 'historical', 'selector']);
+// Explicit, stored row ownership for the income statement. COMBINED marks rows that
+// belong to neither company (Owner's Salary, Interest, Tax, Depreciation).
+const COMPANIES = new Set(['FTP', 'PEC', 'COMBINED']);
 export function financeColumnNumber(label) {
   let n = 0;
   for (const ch of label.toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64;
@@ -174,6 +177,30 @@ export function validateFinance(body) {
     }
     for (const field of ['hiddenRows', 'hiddenCols']) {
       if (sheet[field] !== undefined && (!Array.isArray(sheet[field]) || sheet[field].some(n => !Number.isInteger(n) || n < 1 || n > sheet[field === 'hiddenRows' ? 'rows' : 'cols']))) fail(`${path}.${field}`, 'invalid hidden row or column');
+    }
+    if (sheet.companyRows !== undefined) {
+      if (!plain(sheet.companyRows) || Object.keys(sheet.companyRows).length > sheet.rows) fail(`${path}.companyRows`, 'invalid company tags');
+      for (const [row, tag] of Object.entries(sheet.companyRows)) {
+        if (!/^[1-9]\d*$/.test(row) || Number(row) > sheet.rows || !COMPANIES.has(tag)) fail(`${path}.companyRows.${row}`, 'expected FTP, PEC or COMBINED on a row inside the sheet');
+      }
+    }
+    if (sheet.accountSections !== undefined) {
+      if (!Array.isArray(sheet.accountSections) || sheet.accountSections.length > 50) fail(`${path}.accountSections`, 'invalid account sections');
+      const ids = new Set(), taken = new Set();
+      for (const [index, section] of sheet.accountSections.entries()) {
+        const sp = `${path}.accountSections[${index}]`;
+        if (!plain(section) || typeof section.id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(section.id) || ids.has(section.id)) fail(sp, 'expected a unique section id');
+        if (typeof section.label !== 'string' || !section.label.trim() || section.label.length > 120) fail(sp, 'expected a section label');
+        if (!['FTP', 'PEC'].includes(section.company)) fail(sp, 'expected a FTP or PEC section');
+        const bounds = /^([1-9]\d*):([1-9]\d*)$/.exec(String(section.rows));
+        if (!bounds || Number(bounds[1]) > Number(bounds[2]) || Number(bounds[2]) > sheet.rows) fail(sp, 'expected a row range such as 30:59');
+        for (let row = Number(bounds[1]); row <= Number(bounds[2]); row++) {
+          if (taken.has(row)) fail(sp, 'sections cannot overlap');
+          if (sheet.companyRows?.[row] !== section.company) fail(sp, 'every section row needs the matching company tag');
+          taken.add(row);
+        }
+        ids.add(section.id);
+      }
     }
     if (sheet.merges !== undefined) {
       if (!Array.isArray(sheet.merges) || sheet.merges.length > 10000) fail(`${path}.merges`, 'invalid merged cells');

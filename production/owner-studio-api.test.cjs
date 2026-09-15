@@ -8,6 +8,7 @@ function fixture(overrides={}) {
   const calls=[];
   const fetchImpl=async (url,opts)=>{
     calls.push({url,opts});
+    if(overrides.respond){const forced=await overrides.respond(url,opts);if(forced)return forced;}
     let data;
     if(url.endsWith('/auth/v1/user')) data=overrides.user??{id:uid};
     else if(url.endsWith('/rpc/pec_owner_authorized')) data=overrides.allowed??true;
@@ -369,4 +370,38 @@ test('MBP source settings accept only a boolean switch and bounded refresh minut
     const invalid=fixture();assert.equal((await invalid.handler(event('settings',{values}))).statusCode,400);
     assert.ok(!invalid.calls.some(c=>c.opts.method==='PATCH'));
   }
+});
+
+test('income statement view settings are accepted, validated, and written under the owner JWT',async()=>{
+  const f=fixture();
+  const r=await f.handler(event('settings',{values:{owner_income_default_company:'PEC',owner_income_show_empty:'true'}}));
+  assert.equal(r.statusCode,200,r.body);
+  const writes=f.calls.filter(c=>c.url.includes('/settings?key=eq.')).map(c=>[new URL(c.url).searchParams.get('key'),JSON.parse(c.opts.body).value,c.opts.headers.Authorization]);
+  assert.deepEqual(writes,[['eq.owner_income_default_company','PEC','Bearer user-test-token'],['eq.owner_income_show_empty','true','Bearer user-test-token']]);
+  for(const values of [{owner_income_default_company:'pec'},{owner_income_default_company:'Both'},{owner_income_show_empty:'yes'},{owner_income_default_view:'PEC'}]) {
+    const bad=await fixture().handler(event('settings',{values}));
+    assert.equal(bad.statusCode,400,JSON.stringify(values));
+  }
+  const status=await fixture({settings:[{key:'owner_studio_enabled',value:'true'},{key:'owner_income_default_company',value:'FTP'},{key:'owner_income_show_empty',value:'true'}]}).handler(event('status'));
+  assert.equal(JSON.parse(status.body).config.incomeDefaultCompany,'FTP');assert.equal(JSON.parse(status.body).config.incomeShowEmpty,true);
+});
+
+test('oversized owner records and database size rejections return a clear 413 without touching storage',async()=>{
+  const f=fixture();
+  const big=event('save',{key:'finance:2026',revision:1,requestId,body:{year:2026,pad:'x'.repeat(1800100)}});
+  const r=await f.handler(big);
+  assert.equal(r.statusCode,413);
+  assert.match(JSON.parse(r.body).error,/too large to save \(1,758 KB; the limit is 1,758 KB\)/);
+  assert.match(JSON.parse(r.body).error,/Nothing was saved/);
+  assert.equal(f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')),false);
+  const rejected=fixture({respond:async url=>url.endsWith('/rpc/pec_owner_save_document')?{ok:false,status:400,text:async()=>'{"code":"22023","message":"Invalid owner document"}'}:null});
+  const dbReject=await rejected.handler(event('save',{key:'finance:2026',revision:1,requestId,body:financeFixture()}));
+  assert.equal(dbReject.statusCode,413);
+  assert.match(JSON.parse(dbReject.body).error,/private storage limit/);
+  assert.match(JSON.parse(dbReject.body).error,/Nothing was saved/);
+  const outage=fixture({respond:async url=>url.endsWith('/rpc/pec_owner_save_document')?{ok:false,status:500}:null});
+  const unknown=await outage.handler(event('save',{key:'finance:2026',revision:1,requestId,body:financeFixture()}));
+  assert.equal(unknown.statusCode,503);
+  assert.match(JSON.parse(unknown.body).error,/could not be confirmed/);
+  assert.doesNotMatch(JSON.parse(unknown.body).error,/22023|Invalid owner document/);
 });

@@ -6,7 +6,7 @@ test('MBP live refresh defaults do not enable or alter the existing morning rout
   assert.deepEqual(ownerConfig(), {
     enabled:false, timezone:'America/Phoenix', morningDays:[1,2,3,4,5],
     morningTime:'06:20', morningMinutes:10, weeklyDay:1, weeklyTime:'08:00', weeklyMinutes:30,
-    mbpLiveEnabled:true, mbpRefreshMinutes:5,
+    mbpLiveEnabled:true, mbpRefreshMinutes:5, incomeDefaultCompany:'combined', incomeShowEmpty:false,
   });
   const config=ownerConfig([
     {key:'owner_studio_enabled',value:'true'},
@@ -69,4 +69,15 @@ test('settings reject malformed schedules and retain explicit valid custom timin
   const config=ownerConfig([{key:'owner_morning_time',value:'07:15'}]);
   assert.equal(config.morningTime,'07:15');
   assert.equal(config.morningMinutes,10);
+});
+
+test('income statement view settings default to the combined view with empty slots hidden and accept only known values', () => {
+  const base = [{ key: 'owner_studio_enabled', value: 'true' }];
+  assert.equal(ownerConfig(base).incomeDefaultCompany, 'combined');
+  assert.equal(ownerConfig(base).incomeShowEmpty, false);
+  assert.equal(ownerConfig([...base, { key: 'owner_income_default_company', value: 'PEC' }]).incomeDefaultCompany, 'PEC');
+  assert.equal(ownerConfig([...base, { key: 'owner_income_default_company', value: 'FTP' }]).incomeDefaultCompany, 'FTP');
+  assert.equal(ownerConfig([...base, { key: 'owner_income_show_empty', value: 'true' }]).incomeShowEmpty, true);
+  assert.throws(() => ownerConfig([...base, { key: 'owner_income_default_company', value: 'pec' }]), /default company/);
+  assert.throws(() => ownerConfig([...base, { key: 'owner_income_show_empty', value: 'yes' }]), /empty-slot/);
 });

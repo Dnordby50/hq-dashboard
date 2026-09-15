@@ -169,3 +169,21 @@ test('new-year historical labels snapshot their matching stream, with formula ov
   delete input.sheets[0].inputRanges;
   assert.throws(() => newFinanceYear(input, 2027), FinanceInputError);
 });
+
+test('stored company tags and slot sections validate strictly and survive a new budget year', () => {
+  const input = fixture(), income = input.sheets[1];
+  income.companyRows = { 1: 'FTP', 2: 'PEC', 3: 'PEC', 4: 'COMBINED' };
+  income.accountSections = [{ id: 'pec-variable', label: 'PEC variable expenses', company: 'PEC', rows: '2:3' }];
+  assert.doesNotThrow(() => validateFinance(input));
+  const next = newFinanceYear(input, 2027);
+  assert.deepEqual(next.sheets[1].companyRows, income.companyRows);
+  assert.deepEqual(next.sheets[1].accountSections, income.accountSections);
+  const reject = (mutate, pattern) => { const copy = structuredClone(input); mutate(copy.sheets[1]); assert.throws(() => validateFinance(copy), pattern); };
+  reject(sheet => { sheet.companyRows[5] = 'pec'; }, /FTP, PEC or COMBINED/);
+  reject(sheet => { sheet.companyRows[999] = 'PEC'; }, /inside the sheet/);
+  reject(sheet => { sheet.accountSections[0].rows = '2:4'; }, /matching company tag/);
+  reject(sheet => { sheet.accountSections.push({ id: 'again', label: 'Overlap', company: 'PEC', rows: '3:3' }); }, /overlap/);
+  reject(sheet => { sheet.accountSections[0].rows = 'A2:A3'; }, /row range/);
+  reject(sheet => { sheet.accountSections[0].company = 'COMBINED'; }, /FTP or PEC section/);
+  reject(sheet => { sheet.accountSections[0].id = 'Bad Id'; }, /unique section id/);
+});

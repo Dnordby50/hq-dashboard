@@ -1,5 +1,18 @@
 [
   {
+    "id": "income-statement-accounts-and-company-view",
+    "date": "2026-09-15",
+    "title": "Income Statement: add or rename accounts and view one company at a time.",
+    "summary": "In Growth and Development, the Income Statement now shows only accounts that have a name or a value, lets you add and rename accounts in place, and can show PEC, FTP or both.",
+    "howto": [
+      "Open Growth and Development > Income Statement and use the Company selector for Combined, PEC only or FTP only. Totals and the bottom section follow the selected company.",
+      "Type in the account name column to rename an account. The Budget Plans tab updates to the same name after you save.",
+      "Choose + Add account under a section to fill its next empty slot; the new account belongs to that section and company. Use Show empty slots to see unused rows.",
+      "If a save cannot complete, the message explains why and your entries stay on the screen until they are saved.",
+      "The default company view and whether empty slots start visible are in Growth and Development > Settings > Income Statement."
+    ]
+  },
+  {
     "id": "invoice-zelle-number-and-recipient",
     "date": "2026-09-15",
     "title": "Updated Zelle payment instructions.",

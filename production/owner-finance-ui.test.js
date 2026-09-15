@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateFinance } from './owner-finance.js';
-import { financeColumn, financeInputCell, financeInputValue, parseFinanceInput, financeDisplay, renderFinanceSheet, financeSnapshotView } from './owner-finance-ui.js';
+import { financeColumn, financeInputCell, financeInputValue, parseFinanceInput, financeDisplay, renderFinanceSheet, financeSnapshotView, financeIncomeHiddenRows, financeCompanyView, financeIsEmptyLabel, financeRowHasValues, financeLabelTarget, financeSetAccountLabel, financeEmptySlot, financeSaveSizeError } from './owner-finance-ui.js';
 
 const fixture=()=>({schemaVersion:1,year:2026,source:{file:'Synthetic workbook'},sheets:[
   {id:'budget',name:'Budget - 2',kind:'budget',rows:8,cols:4,cells:{
@@ -129,4 +129,96 @@ test('source names, labels, formulas, input values, and errors are escaped in re
   assert.match(html,/&lt;svg onload=alert\(1\)&gt;/);assert.match(html,/color:#123456/);
   assert.equal(financeDisplay({v:0,t:'money'}),'$0');assert.equal(financeDisplay({v:null,t:'money'}),'');
   assert.equal(financeDisplay({v:100,error:'#REF!'}),'#REF!');
+});
+
+// Tagged income statement: explicit company ownership stored per row, slot sections for adding accounts.
+const taggedFixture=()=>({schemaVersion:1,year:2026,source:{file:'Synthetic tagged workbook'},sheets:[
+  {id:'budget',name:'Budget - 2',kind:'budget',rows:12,cols:8,inputRanges:[{range:'G1:H12',role:'plan',t:'text'}],cells:{
+    H1:{v:'FTP'},H2:{v:'PEC'},H3:{v:'Paint'},H4:{v:'Variable Exp Line 2'},H5:{v:'Epoxy'},H6:{f:'=H4'},H7:{v:'Rent'},H8:{v:null},H9:{v:'Fuel'},H10:{v:'Fixed Exp 2'},
+  }},
+  {id:'income',name:'Income Statement - 2',kind:'income',rows:20,cols:16,freezeRows:0,
+    companyRows:{1:'FTP',2:'PEC',4:'FTP',5:'FTP',7:'PEC',8:'PEC',10:'FTP',11:'FTP',13:'PEC',14:'PEC',16:'COMBINED',17:'FTP',18:'PEC'},
+    accountSections:[{id:'ftp-variable',label:'FTP variable expenses',company:'FTP',rows:'4:5'},{id:'pec-variable',label:'PEC variable expenses',company:'PEC',rows:'7:8'},{id:'ftp-fixed',label:'FTP fixed expenses',company:'FTP',rows:'10:11'},{id:'pec-fixed',label:'PEC fixed <b>expenses</b>',company:'PEC',rows:'13:14'}],
+    inputRanges:['C1:N2','C4:N5','C7:N8','C10:N11','C13:N14','C16:N18'].map(range=>({range,role:'actual',t:'money'})),
+    hiddenRows:[9,12,16],
+    cells:{B1:{f:"='Budget - 2'!H1"},B2:{f:"='Budget - 2'!H2"},C1:{v:1000},C2:{v:2000},
+      B4:{f:"='Budget - 2'!H3"},B5:{f:"='Budget - 2'!H4"},C4:{v:100},
+      B7:{f:"='Budget - 2'!H5"},B8:{f:"='Budget - 2'!H6"},C7:{v:300},
+      B10:{f:"='Budget - 2'!H7"},B11:{f:"='Budget - 2'!H8"},C10:{v:50},
+      B13:{f:"='Budget - 2'!H9"},B14:{f:"='Budget - 2'!H10"},C13:{v:400},C14:{v:25},D14:{v:0},
+      B16:{v:'Interest',t:'text'},B17:{v:'Other Income (FTP)',t:'text'},B18:{v:'Other Income (PEC)',t:'text'},C17:{v:5},C18:{v:7},
+      B9:{v:'template row',t:'text'},B12:{v:'TOTAL:',t:'text'},C12:{f:'=SUM(C10:C11)+SUM(C13:C14)'},
+      B19:{v:'NET',t:'text'},C19:{f:'=C1+C2-C4-C5-C7-C8-C10-C11-C13-C14-C16+C17+C18'},
+    }},
+]});
+
+test('tagged account rows show when named or valued, follow the company filter, and reveal empty slots on request',()=>{
+  const body=taggedFixture(),before=structuredClone(body),income=body.sheets[1],computed=calculateFinance(body).sheets[1];
+  const hidden=opts=>[...financeIncomeHiddenRows(income,computed,opts)].sort((a,b)=>a-b);
+  assert.deepEqual(hidden({company:'combined'}),[5,8,9,11,12]);
+  assert.deepEqual(hidden({company:'PEC'}),[1,4,5,8,9,10,11,12,16,17]);
+  assert.deepEqual(hidden({company:'FTP'}),[2,5,7,8,9,11,12,13,14,16,18]);
+  assert.deepEqual(hidden({company:'combined',showEmpty:true}),[9,12]);
+  assert.deepEqual(hidden({company:'PEC',showEmpty:true}),[1,4,5,9,10,11,12,16,17]);
+  assert.deepEqual(hidden({company:'PEC',showHidden:true}),[1,4,5,10,11,16,17]);
+  assert.ok(financeIsEmptyLabel('Fixed Exp 67')&&financeIsEmptyLabel('variable exp line 16')&&financeIsEmptyLabel('  ')&&financeIsEmptyLabel(null));
+  assert.ok(!financeIsEmptyLabel('Fixed Expenses')&&!financeIsEmptyLabel('Fuel'));
+  assert.equal(financeRowHasValues(income,14),true);assert.equal(financeRowHasValues(income,11),false);
+  assert.deepEqual(body,before);
+});
+
+test('company views blank only the other company and combined-only entries so every total formula stays as imported',()=>{
+  const body=taggedFixture(),before=structuredClone(body);
+  const net=company=>calculateFinance(financeCompanyView(body,company)).sheets[1].cells.C19.v;
+  assert.equal(net('combined'),2137);assert.equal(net('PEC'),1282);assert.equal(net('FTP'),855);
+  assert.equal(financeCompanyView(body,'combined'),body);
+  const pec=financeCompanyView(body,'PEC');
+  assert.equal(pec.sheets[1].cells.C1.v,null);assert.equal(pec.sheets[1].cells.C2.v,2000);assert.equal(pec.sheets[1].cells.C17.v,null);assert.equal(pec.sheets[1].cells.C18.v,7);
+  assert.equal(pec.sheets[1].cells.C19.f,body.sheets[1].cells.C19.f);
+  assert.deepEqual(body,before);
+});
+
+test('income statement renders editable account names, per-section add rows, and only the selected company',()=>{
+  const body=taggedFixture(),computed=calculateFinance(financeCompanyView(body,'PEC'));
+  const html=renderFinanceSheet(body,computed,'income',{company:'PEC'});
+  assert.doesNotMatch(html,/data-finance-row="1"|data-finance-row="4"|data-finance-row="16"|data-finance-row="17"/);
+  assert.match(html,/data-finance-row="2"/);assert.match(html,/data-finance-row="7"/);assert.match(html,/data-finance-row="18"/);
+  assert.match(html,/data-finance-label="7"[^>]*value="Epoxy"/);assert.match(html,/data-finance-label="13"[^>]*value="Fuel"/);
+  assert.doesNotMatch(html,/data-finance-label="2"|data-finance-label="18"/);
+  assert.match(html,/data-finance-section="pec-variable"/);assert.match(html,/data-finance-section="pec-fixed"/);
+  assert.doesNotMatch(html,/data-finance-section="ftp-variable"|data-finance-section="ftp-fixed"/);
+  assert.match(html,/PEC fixed &lt;b&gt;expenses&lt;\/b&gt;/);assert.doesNotMatch(html,/<b>expenses/);
+  assert.match(html,/PEC rows only; totals use PEC entries/);
+  const adding=renderFinanceSheet(body,computed,'income',{company:'PEC',adding:'pec-fixed'});
+  assert.match(adding,/name="financeAccountName"/);assert.match(adding,/data-action="finance-add-confirm" data-section="pec-fixed"/);
+  const combined=renderFinanceSheet(body,calculateFinance(body),'income',{company:'combined',showEmpty:true});
+  assert.match(combined,/data-finance-row="16"/);assert.match(combined,/data-finance-label="5"[^>]*value="Variable Exp Line 2"/);
+  assert.match(combined,/data-finance-label="8"[^>]*value="Variable Exp Line 2"/);
+  assert.equal((combined.match(/tc-finance-addrow/g)||[]).length,4);
+  const readOnly=renderFinanceSheet(body,calculateFinance(body),'income',{readOnly:true});
+  assert.doesNotMatch(readOnly,/data-finance-label|tc-finance-addrow|<input/);
+});
+
+test('adding and renaming accounts writes the linked budget cell, fills the next empty slot, and reports a full section',()=>{
+  const body=taggedFixture(),income=body.sheets[1],budget=body.sheets[0];
+  const computed=()=>calculateFinance(body).sheets[1];
+  assert.deepEqual(financeLabelTarget(body,income,8),{sheet:budget,address:'H6'});
+  assert.equal(financeLabelTarget(body,income,18),null);
+  assert.deepEqual({row:8,used:1,total:2},(({row,used,total})=>({row,used,total}))(financeEmptySlot(income,computed(),'pec-variable')));
+  assert.equal(financeEmptySlot(income,computed(),'missing'),null);
+  financeSetAccountLabel(body,income,8,'  Dump Fees ');
+  assert.deepEqual(budget.cells.H6,{v:'Dump Fees'});
+  assert.equal(computed().cells.B8.v,'Dump Fees');
+  assert.equal(financeEmptySlot(income,computed(),'pec-variable').row,null);
+  assert.equal(financeEmptySlot(income,computed(),'pec-variable').used,2);
+  financeSetAccountLabel(body,income,4,'');
+  assert.deepEqual(budget.cells.H3,{v:null});
+  assert.equal(financeIncomeHiddenRows(income,computed(),{}).has(4),false,'valued row stays visible after clearing its name');
+  income.cells.C4.v=null;
+  assert.equal(financeIncomeHiddenRows(income,computed(),{}).has(4),true,'cleared row hides once it has no values');
+  assert.equal(financeIncomeHiddenRows(income,computed(),{showEmpty:true}).has(4),false);
+  assert.throws(()=>financeSetAccountLabel(body,income,18,'x'),/not linked/);
+  assert.equal(financeSaveSizeError(1000),null);
+  assert.match(financeSaveSizeError(1900000),/1,855 KB of the 1,758 KB limit/);
+  assert.match(financeSaveSizeError(1900000),/Nothing was sent/);
 });

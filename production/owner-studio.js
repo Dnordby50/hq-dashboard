@@ -3,7 +3,7 @@ import { mbpInputFields, applyMbpLive, applyMbpEdits } from './owner-mbp-inputs.
 import { renderMbpInput, mbpSheetFields, parseMbpInput } from './owner-mbp-ui.js';
 import { FOCUS_FIELDS, routineStatus } from './owner-routine.js';
 import { calculateFinance } from './owner-finance.js';
-import { renderFinanceSheet, financeSnapshotView, financeInputCell, financeInputValue, parseFinanceInput } from './owner-finance-ui.js';
+import { renderFinanceSheet, financeSnapshotView, financeInputCell, financeInputValue, parseFinanceInput, financeCompanyView, financeEmptySlot, financeSetAccountLabel, financeLabelTarget, financeSaveSizeError, FINANCE_COMPANIES } from './owner-finance-ui.js';
 
 // Public application code only. Owner data lives behind the authenticated API,
 // in memory while signed in, and never in localStorage or a shared AI cache.
@@ -101,13 +101,15 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   let brand='total', period='all', week=null, editor=false, sourceView=false, insight='';
   let mbpLiveMessage='',mbpLastCheck=0,mbpSaveRequest=null;
   let financeYear=null, financeYears=[], financeSource=false, financeHidden=false, financeCreate=false, financeCreateRequest=null;
+  // Income statement view state. null means "use the owner setting" until the user changes it.
+  let financeCompany=null, financeShowEmpty=null, financeAdding=null;
   let denied=false, retryAt=0, failures=0;
   const endpoint='/.netlify/functions/pec-owner-studio';
   const detach=()=>{if(mount){mount.oninput=null;mount.onchange=null;mount.onclick=null;}};
   const reset=()=>{
     epoch++; requests.forEach(c=>c.abort()); requests.clear(); uid=null; allowed=false; status=null; docs.clear(); pending.clear(); dirty=false; busy=false; bootstrapPromise=null; insight=''; page='focus'; message='';denied=false;retryAt=0;failures=0;
     mbpLiveMessage='';mbpLastCheck=0;mbpSaveRequest=null;
-    financeYear=null;financeYears=[];financeSource=false;financeCreate=false;financeCreateRequest=null;financeHidden=false;
+    financeYear=null;financeYears=[];financeSource=false;financeCreate=false;financeCreateRequest=null;financeHidden=false;financeCompany=null;financeShowEmpty=null;financeAdding=null;
     detach(); if(mount?.isConnected) mount.replaceChildren(); mount=null; onAccess(false);
   };
   const api=async(action,body,params={})=>{
@@ -196,6 +198,11 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   const save=async(key,body)=>{
     const doc=docs.get(key), encoded=JSON.stringify(body), previous=pending.get(key);
     const request=previous?.encoded===encoded?previous:{encoded,id:crypto.randomUUID()}; pending.set(key,request);
+    if(key.startsWith('finance:')) {
+      // Refuse locally what the endpoint would refuse, so a too-large year never leaves the screen.
+      const tooLarge=financeSaveSizeError(new TextEncoder().encode(JSON.stringify({key,body,revision:doc?.revision||0,requestId:request.id})).length);
+      if(tooLarge)throw new Error(tooLarge);
+    }
     const result=await api('save',{key,body,revision:doc?.revision||0,requestId:request.id});
     docs.set(key,result.document); pending.delete(key); dirty=false; message='Saved privately. All changes are up to date.';
     if(key.startsWith('focus:')) status.focus=result.document;
@@ -207,6 +214,8 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   const planKey=()=>`plan:${year()}-q4`;
   const reviewKey=()=>`review:${status.routine.priorWeekEnding}`;
   const financeKey=()=>`${financeSource?'source:':''}finance:${financeYear}`;
+  const incomeCompany=()=>financeCompany??status?.config?.incomeDefaultCompany??'combined';
+  const incomeShowEmpty=()=>financeShowEmpty??status?.config?.incomeShowEmpty??false;
   const head=(eyebrow,title,subtitle)=>`<div class="tc-pagehead"><div><div class="tc-eyebrow">${e(eyebrow)}</div><h1>${e(title)}</h1><p class="tc-subtitle">${e(subtitle)}</p></div></div>`;
   const note=(text)=>`<div class="tc-notice">${e(text)}</div>`;
   const snapshotNotice=body=>note(body?.source ? `Imported reference: ${body.source.file||'MBP 2026'}. Original actuals stop ${body.source.lastEntry||'May 10, 2026'}. Blank weeks are not zero. ${body.status==='active'?'Active working plan.':'Draft planning assumptions; not yet your approved Q4 targets.'}` : 'This is a private working plan. Review assumptions and data coverage before drawing conclusions.');
@@ -247,10 +256,12 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   }
   function financePage() {
     const doc=docs.get(financeKey()),body=financeSource&&doc?.body.sheets?financeSnapshotView(doc.body,docs.get(`finance:${financeYear}`)?.body):doc?.body,title=page==='budget'?'Budget Plans':'Income Statement';
-    const controls=`<div class="tc-mbp-bar">${select('Budget year','financeYear',financeYear,financeYears.map(d=>[d.doc_key.slice(8),d.doc_key.slice(8)]),'data-change="finance-year"')}<div class="tc-row">${button(financeSource?'Working copy':'Original source','finance-source')}${button(financeHidden?'Use source layout':'Show all rows and columns','finance-hidden')}${financeSource?'':button('Add year','finance-new')}</div></div>`;
+    const tagged=page==='income'&&!financeSource&&!!body?.sheets?.find(s=>s.kind==='income')?.companyRows;
+    const controls=`<div class="tc-mbp-bar">${select('Budget year','financeYear',financeYear,financeYears.map(d=>[d.doc_key.slice(8),d.doc_key.slice(8)]),'data-change="finance-year"')}${tagged?select('Company','financeCompany',incomeCompany(),FINANCE_COMPANIES,'data-change="finance-company"'):''}<div class="tc-row">${tagged?button(incomeShowEmpty()?'Hide empty slots':'Show empty slots','finance-show-empty'):''}${button(financeSource?'Working copy':'Original source','finance-source')}${button(financeHidden?'Use source layout':'Show all rows and columns','finance-hidden')}${financeSource?'':button('Add year','finance-new')}</div></div>`;
     const intro=head(`GROWTH AND DEVELOPMENT · ${financeYear||year()}`,`${title}${financeYear?' · '+financeYear:''}`,page==='budget'?'Set your plan here. The income statement follows these accounts and categories.':'Accounts and categories are linked to your budget. Add and edit monthly actuals here.');
     if(!body?.sheets)return intro+controls+note(financeSource?'This year was created in TopCoat and has no imported source snapshot. Return to the working copy to edit.':'Your budget and income statement have not been imported yet.');
-    const computed=financeSource?body:calculateFinance(body),sheet=body.sheets.find(s=>s.kind===page);
+    // Company views recalculate a filtered copy; the saved document is never changed by the filter.
+    const computed=financeSource?body:calculateFinance(tagged?financeCompanyView(body,incomeCompany()):body),sheet=body.sheets.find(s=>s.kind===page);
     if(!sheet)return intro+controls+note('This year does not contain that workbook tab.');
     const warnings=body.source?.warnings||[],issues=computed.issues||[];
     return intro+controls+(financeCreate?`<form data-form="finance-create" class="tc-panel"><h2>Add a budget year</h2><p>Copies the ${financeYear} planning structure and values. New income statement actuals start blank; ${financeYear} stays in your history.</p>${field('New year','newYear',Number(financeYear)+1,'number','min="2020" max="2100" step="1"')}<div class="tc-actionbar">${button('Cancel','finance-cancel-new')}${button('Create year','finance-create',true)}</div></form>`:'')+
@@ -258,7 +269,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       (body.carryForward?note(`Last fiscal year uses recorded ${body.carryForward.fromYear} actuals. ${body.carryForward.entered} of ${body.carryForward.expected} source entries were present; incomplete rows are not confirmed full-year totals.`):'')+
       (warnings.length||issues.length?`<details class="tc-notice tc-warning"><summary>Source workbook notes${issues.length?` · ${issues.length} formula cells need attention`:''}</summary>${warnings.map(w=>`<p>${e(w)}</p>`).join('')}${issues.length?`<p>Original formula errors are shown in their cells. They are not replaced by old saved totals.</p><p>${issues.slice(0,12).map(i=>e(`${i.sheetId}!${i.address}: ${i.code}`)).join(' · ')}</p>`:''}</details>`:'')+
       `<div class="tc-finance-actions">${sheet?.sections?.length?select('Jump to section','financeSection','', [['','Choose a section'],...sheet.sections.map(s=>[s.row,s.label])],'data-change="finance-section"'):''}<div class="tc-row">${financeSource?'':button('Recalculate','finance-recalculate')}${financeSource?'':button('Save changes','finance-save',true)}</div></div>`+
-      renderFinanceSheet(body,computed,sheet.id,{readOnly:financeSource||financeCreate,showHidden:financeHidden})+
+      renderFinanceSheet(body,computed,sheet.id,{readOnly:financeSource||financeCreate,showHidden:financeHidden,company:tagged?incomeCompany():'combined',showEmpty:tagged&&incomeShowEmpty(),adding:financeAdding})+
       `<div class="tc-actionbar"><span class="tc-small tc-muted">Plans and actuals save together for this year. Other years retain their own values.</span>${financeSource?'':button('Save changes','finance-save',true)}</div>`;
   }
   function collectFinance() {
@@ -273,8 +284,33 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
         sheet.cells[address]={...sheet.cells[address],v:value};
       }
     }
+    // Account names typed on the income statement land in the linked Budget - 2 column H cell.
+    for(const input of mount.querySelectorAll('[data-finance-label]')) {
+      const row=Number(input.dataset.financeLabel),target=financeLabelTarget(body,sheet,row);
+      if(!target)throw new Error(`Row ${row} is not linked to a budget account name.`);
+      const current=target.sheet.cells[target.address]||{};
+      const currentText=current.f?String(computedLabel(row)??''):String(current.v??'');
+      if(input.value.trim()===currentText.trim())continue;
+      financeSetAccountLabel(body,sheet,row,input.value);
+    }
     calculateFinance(body);
     return body;
+  }
+  // The displayed name of an account row before this edit (formula-linked placeholders included).
+  function computedLabel(row) {
+    const cell=mount.querySelector(`[data-finance-label="${row}"]`);
+    return cell?cell.defaultValue:null;
+  }
+  function addAccount(sectionId) {
+    const body=collectFinance(),sheet=body.sheets.find(s=>s.kind===page),computed=calculateFinance(body).sheets.find(s=>s.id===sheet.id);
+    const name=String(mount.querySelector('[name="financeAccountName"]')?.value||'').trim();
+    if(!name)throw new Error('Type the new account name first.');
+    const slot=financeEmptySlot(sheet,computed,sectionId);
+    if(!slot)throw new Error('That section is not available on this income statement.');
+    if(slot.row===null)throw new Error(`${slot.section.label} is full (${slot.used} of ${slot.total} slots used). Clear an unused account in that section first; accounts never spill into another section or company.`);
+    financeSetAccountLabel(body,sheet,slot.row,name);
+    docs.get(financeKey()).body=body;dirty=true;financeAdding=null;
+    message=`Added "${name}" to ${slot.section.label} (row ${slot.row}, ${slot.section.company}). Save changes to keep it.`;
   }
   async function switchFinanceCopy(nextYear,nextSource,target) {
     const generation=epoch,release=showOwnerSaving(mount,target,'Loading year…');
@@ -284,7 +320,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(generation!==epoch)return;
       docs.clear();docs.set(key,result.document||{doc_key:key,revision:0,body:{}});
       if(working?.document)docs.set(`finance:${nextYear}`,working.document);
-      financeYear=String(nextYear);financeSource=nextSource;financeCreate=false;financeCreateRequest=null;dirty=false;message='';
+      financeYear=String(nextYear);financeSource=nextSource;financeCreate=false;financeCreateRequest=null;financeAdding=null;dirty=false;message='';
     } finally {release();}
   }
   function weeklyEditor(kind,body) {
@@ -311,7 +347,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   function insightsPage() { return head('PRIVATE · ON REQUEST','Turn numbers into decisions.','A direct, practical second look at your goals and progress.')+`<section class="tc-panel"><p>Generate sends your saved Q4 goals and MBP KPI summaries to Anthropic. Private check-in answers and problem notes are included only if selected below. No request is made until you click the button. Suggestions never change your plan or calendar.</p><label class="tc-check"><input type="checkbox" name="includeFocus"> Include today’s saved check-in answers</label><label class="tc-check"><input type="checkbox" name="includeProblems"> Include saved problem-solving notes</label>${button('Generate insights','generate-insights',true)}<p class="tc-small tc-muted">AI can make mistakes. Verify the numbers and choose the actions yourself.</p></section><section class="tc-panel tc-insight" data-insight aria-live="polite">${e(insight||'Your requested analysis will appear here. Nothing has been sent automatically.')}</section>`; }
   function settingsPage() {
     const c=status.config;
-    return head('YOUR ROUTINE','Protect the time.','Private owner settings. All schedule times use the selected timezone.')+`<form data-form="settings" class="tc-panel">${select('Morning check-in required','owner_studio_enabled',String(c.enabled),[['true','On'],['false','Off']])}${field('Morning start','owner_morning_time',c.morningTime,'time')}<fieldset><legend>PEC Sales and Revenue plans</legend>${select('Automatic PEC values','owner_mbp_live_enabled',String(c.mbpLiveEnabled??true),[['true','On'],['false','Paused']])}${field('Refresh while open (minutes)','owner_mbp_refresh_minutes',c.mbpRefreshMinutes||5,'number','min="1" max="60" step="1"')}<p class="tc-small tc-muted">FTP stays manual. Yellow manual overrides are retained during PEC refreshes.</p></fieldset><details class="tc-mbp-sources"><summary>Advanced schedule</summary><div class="tc-two-fields">${select('Weekly review day','owner_weekly_day',c.weeklyDay,DAYS.map((d,i)=>[i,d]))}${field('Weekly review start','owner_weekly_time',c.weeklyTime,'time')}${field('Morning target minutes','owner_morning_target_minutes',c.morningMinutes,'number','min="1" max="180"')}${field('Weekly target minutes','owner_weekly_target_minutes',c.weeklyMinutes,'number','min="1" max="180"')}${field('Timezone','owner_timezone',c.timezone)}</div><fieldset><legend>Morning days</legend>${DAYS.map((d,i)=>`<label class="tc-check"><input type="checkbox" name="day" value="${i}" ${c.morningDays.includes(i)?'checked':''}>${d}</label>`).join('')}</fieldset></details><div class="tc-actionbar">${button('Save routine','save-settings',true)}</div><p class="tc-small tc-muted">This controls TopCoat’s opening requirement, not a computer alarm. Calendar block creation and automated calendar adherence checks are not connected in this release.</p></form>`;
+    return head('YOUR ROUTINE','Protect the time.','Private owner settings. All schedule times use the selected timezone.')+`<form data-form="settings" class="tc-panel">${select('Morning check-in required','owner_studio_enabled',String(c.enabled),[['true','On'],['false','Off']])}${field('Morning start','owner_morning_time',c.morningTime,'time')}<fieldset><legend>PEC Sales and Revenue plans</legend>${select('Automatic PEC values','owner_mbp_live_enabled',String(c.mbpLiveEnabled??true),[['true','On'],['false','Paused']])}${field('Refresh while open (minutes)','owner_mbp_refresh_minutes',c.mbpRefreshMinutes||5,'number','min="1" max="60" step="1"')}<p class="tc-small tc-muted">FTP stays manual. Yellow manual overrides are retained during PEC refreshes.</p></fieldset><fieldset><legend>Income Statement</legend>${select('Default company view','owner_income_default_company',c.incomeDefaultCompany||'combined',FINANCE_COMPANIES)}${select('Show empty slots by default','owner_income_show_empty',String(c.incomeShowEmpty??false),[['false','Off'],['true','On']])}<p class="tc-small tc-muted">Applies when the Income Statement opens. The Company and Show empty slots controls on that page change the view for the current visit only.</p></fieldset><details class="tc-mbp-sources"><summary>Advanced schedule</summary><div class="tc-two-fields">${select('Weekly review day','owner_weekly_day',c.weeklyDay,DAYS.map((d,i)=>[i,d]))}${field('Weekly review start','owner_weekly_time',c.weeklyTime,'time')}${field('Morning target minutes','owner_morning_target_minutes',c.morningMinutes,'number','min="1" max="180"')}${field('Weekly target minutes','owner_weekly_target_minutes',c.weeklyMinutes,'number','min="1" max="180"')}${field('Timezone','owner_timezone',c.timezone)}</div><fieldset><legend>Morning days</legend>${DAYS.map((d,i)=>`<label class="tc-check"><input type="checkbox" name="day" value="${i}" ${c.morningDays.includes(i)?'checked':''}>${d}</label>`).join('')}</fieldset></details><div class="tc-actionbar">${button('Save routine','save-settings',true)}</div><p class="tc-small tc-muted">This controls TopCoat’s opening requirement, not a computer alarm. Calendar block creation and automated calendar adherence checks are not connected in this release.</p></form>`;
   }
   async function loadPage() {
     if(['budget','income'].includes(page)) {
@@ -330,12 +366,19 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     if(!mount?.isConnected||!allowed) return;
     const content=page==='focus'?focusPage():['sales','revenue'].includes(page)?workbookPage(page):['budget','income'].includes(page)?financePage():page==='assumptions'?assumptionsPage():page==='review'?reviewPage():['rocks','problems'].includes(page)?listPage(page):page==='insights'?insightsPage():settingsPage();
     mount.innerHTML=`<div id="topcoat-owner-studio"><div class="tc-shell">${renderOwnerHeader(page,status.routine.day)}<main class="tc-main"><div class="tc-content"><div class="tc-save-status" role="status">${e(message)}</div>${content}</div></main></div></div>`;
+    const adding=mount.querySelector('[name="financeAccountName"]');
+    if(adding){adding.focus();adding.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();mount.querySelector('[data-action="finance-add-confirm"]')?.click();}});}
     const nav=mount.querySelector('.tc-nav'), current=nav.querySelector('[aria-current="page"]');
     // Keep the active tab visible on narrow screens, without scrolling the page.
     if(current) nav.scrollLeft=Math.max(0,current.offsetLeft-(nav.clientWidth-current.offsetWidth)/2);
     mount.oninput=event=>{if(!mount||event.target.dataset.change||page==='insights')return;if(event.target.dataset.mbpKey){const entry=event.target.closest('.tc-mbp-entry');entry.classList.toggle('is-manual',entry.dataset.savedManual==='true'||event.target.value!==event.target.defaultValue);entry.querySelector('.tc-mbp-input-source').textContent=event.target.value!==event.target.defaultValue?'Edited · unsaved':entry.dataset.savedManual==='true'?'Manually edited':'Unchanged';}dirty=true; mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent='Unsaved changes. Save before leaving.');};
     mount.onchange=async event=>{if(event.target.hasAttribute('data-milestone-toggle'))updateMilestoneProgress(event.target.closest('.tc-milestones'));if(event.target.hasAttribute('data-focus-milestone'))updateMilestoneProgress(event.target.closest('.tc-weekly-rocks'),true);const change=event.target.dataset.change; if(change){
       if(change==='finance-section'){const scroll=mount.querySelector('.tc-finance-scroll'),row=mount.querySelector(`[data-finance-row="${event.target.value}"]`);if(row)scroll.scrollTop=row.offsetTop-scroll.querySelector('thead').offsetHeight;return;}
+      if(change==='finance-company'){
+        // Keep unsaved entries: fold them into the working copy before re-rendering the other view.
+        try{if(!financeSource&&dirty)docs.get(financeKey()).body=collectFinance();}catch(err){event.target.value=incomeCompany();message=err.message;mount.querySelector('.tc-save-status').textContent=message;return;}
+        financeCompany=event.target.value;financeAdding=null;draw();return;
+      }
       if(dirty&&!confirm('Discard unsaved edits and change this view?')) {event.target.value=change==='finance-year'?financeYear:change==='week'?week:period;return;}
       if(change==='finance-year'){const generation=epoch;if(busy){event.target.value=financeYear;return;}busy=true;try{await switchFinanceCopy(event.target.value,financeSource,event.target);if(generation===epoch)draw();}catch(err){if(generation===epoch&&mount?.isConnected){event.target.value=financeYear;message=err.message;mount.querySelector('.tc-save-status').textContent=message;}}finally{if(generation===epoch)busy=false;}return;}
       dirty=false; if(change==='period')period=event.target.value; if(change==='week')week=event.target.value; draw(); }};
@@ -376,11 +419,23 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
         if(action==='finance-save'||action==='finance-recalculate') {
           if(financeSource)throw new Error('Return to the working copy to edit.');
           const body=collectFinance(),scroll=mount.querySelector('.tc-finance-scroll'),position={top:scroll.scrollTop,left:scroll.scrollLeft};
-          if(action==='finance-save') {const release=showOwnerSaving(mount,target,'Saving changes…');try{await save(financeKey(),body);}finally{release();}}
+          if(action==='finance-save') {
+            const release=showOwnerSaving(mount,target,'Saving changes…');
+            try{await save(financeKey(),body);financeAdding=null;}
+            catch(err){
+              // A failed save keeps the screen and its typed values; nothing is redrawn.
+              throw new Error(err.status===409?err.message:`Save failed: ${err.message} Your edits are still on this screen and were not saved. Fix the problem and choose Save changes again; do not reload or leave until it saves.`);
+            }
+            finally{release();}
+          }
           else{docs.get(financeKey()).body=body;dirty=true;message='Recalculated. Save changes to keep these edits.';}
           if(generation===epoch){draw();const next=mount.querySelector('.tc-finance-scroll');next.scrollTop=position.top;next.scrollLeft=position.left;}return;
         }
         if(action==='finance-hidden') {if(!financeSource&&dirty)docs.get(financeKey()).body=collectFinance();financeHidden=!financeHidden;}
+        if(action==='finance-show-empty') {if(!financeSource&&dirty)docs.get(financeKey()).body=collectFinance();financeShowEmpty=!incomeShowEmpty();}
+        if(action==='finance-add') {if(financeSource)throw new Error('Return to the working copy to add accounts.');if(dirty)docs.get(financeKey()).body=collectFinance();financeAdding=target.dataset.section;}
+        if(action==='finance-add-cancel') {if(dirty)docs.get(financeKey()).body=collectFinance();financeAdding=null;}
+        if(action==='finance-add-confirm') {if(financeSource)throw new Error('Return to the working copy to add accounts.');addAccount(target.dataset.section);}
         if(action==='finance-source') {if(dirty&&!confirm('Discard unsaved edits and switch copies?'))return;await switchFinanceCopy(financeYear,!financeSource,target);}
         if(action==='finance-new') {if(dirty)throw new Error('Save your current changes before adding a year.');financeCreate=true;}
         if(action==='finance-cancel-new'){financeCreate=false;dirty=false;}
