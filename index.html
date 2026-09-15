@@ -2573,7 +2573,7 @@ async function sendSOPChat(view) {
   $(msgsId).scrollTop = $(msgsId).scrollHeight;
   try {
     const staff = window.pecState.adminUser;
-    const system = buildSOPSystemPrompt(staff.role === 'admin' ? null : { ...staff, company: staff.company || 'both' }, sopChatHistory);
+    const system = buildSOPSystemPrompt(window.pecSopProfileForStaff(staff), sopChatHistory);
     const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
       method: 'POST', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${window.pecState?.session?.access_token || ''}` },
@@ -5874,6 +5874,8 @@ function deriveAuthShell(u) {
     sopProfile: isOwner ? null : { name: u.name, role: u.role, company: u.company || 'both' },
   };
 }
+// Classic Help/SOP scripts use the same role/company mapping as the app shell.
+window.pecSopProfileForStaff = staff => deriveAuthShell(staff).sopProfile;
 
 function setAuthGateState(stateName) {
   const gate = document.getElementById('authGate');
@@ -47158,10 +47160,10 @@ function _mergeAcrossAreas(areaPlans) {
   }
   function selectedSops(messages){
     const staff = window.pecState?.adminUser;
-    if (!staff || typeof getAccessibleSOPs !== 'function') return [];
-    // Null means owner in the legacy library; ordinary staff always pass their
-    // current verified role/company instead of the old employee-screen cache.
-    const list = getAccessibleSOPs(staff.role === 'admin' ? null : { ...staff, company: staff.company || 'both' });
+    if (!staff || typeof getAccessibleSOPs !== 'function' || typeof window.pecSopProfileForStaff !== 'function') return [];
+    // Preserve the app shell's owner-role and company fallback rules while
+    // deriving scope from the current staff member on every request.
+    const list = getAccessibleSOPs(window.pecSopProfileForStaff(staff));
     if (!Array.isArray(list)) return [];
     const query = messages.filter(m => m.role === 'user').slice(-3).map(m => m.content).join(' ').toLowerCase();
     const words = [...new Set(query.match(/[a-z0-9-]{3,}/g) || [])].filter(w => !['the','and','how','what','this','that','with','for','can','you','help'].includes(w)).slice(0, 60);

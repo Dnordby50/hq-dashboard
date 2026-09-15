@@ -1,3 +1,14 @@
+## [2026-09-14 21:00 MST] help: preserve existing staff SOP access
+By: Codex
+
+Changed: Both Help and SOP chat now derive reference access through the same role/company mapping as the existing app shell. Admin, office and project-manager access remains intact; sales and crew retain their company/role filtering and existing missing-company fallback. Every request still uses the current verified staff member.
+
+Verified: Full npm run build passed, including all 101 security tests, required application regressions, server/JSON and six dashboard script parses, TypeScript/Vite/PWA and the 21-file publication allowlist. Seven new behavior cases exercise both chat paths with the real SOP filter. Existing desktop/360px browser validation remains applicable because this compatibility correction changes no layout. Estimator asset remains index-CClHItKj.js. git diff --check passed.
+
+Next steps: Verify this final commit's hosted checks, published deployment and live assets. GitHub organization name and sign-in remain requested; no organization, paid subscription or visibility change has been made.
+Handoff to Cowork: None.
+Handoff to Dylan: Provide the requested organization name and sign in to the TopCoat security GitHub tab. Do not send credentials in chat.
+
 ## [2026-09-14 20:51 MST] security: approved frontend account and booking privacy
 By: Codex
 

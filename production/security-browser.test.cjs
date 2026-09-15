@@ -7,6 +7,8 @@ const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const section = (start, end) => html.slice(html.indexOf(start), html.indexOf(end, html.indexOf(start)));
 const authSource = section('function wireAuthListener()', '\nconst portalBase') + section('let _pecAuthEpoch =', '\n// ============================================================\n// Two-factor authentication') + section('async function pecReadMfaState()', '\nfunction renderAuthUI()');
 const helpSource = html.slice(html.indexOf('<script>', html.indexOf('HELP WIDGET LOGIC')) + 8, html.indexOf('</script>', html.indexOf('HELP WIDGET LOGIC')));
+const sopProfileSource = section('const OWNER_ROLES =', '\nfunction setAuthGateState');
+const sopAccessSource = section('function getAccessibleSOPs(employee)', '\nfunction renderSOPMarkdown');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function settle() { await new Promise(resolve => setTimeout(resolve, 5)); for (let i = 0; i < 8; i++) await tick(); }
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
@@ -57,14 +59,14 @@ function authFixture(options = {}) {
   vm.runInContext(authSource, ctx, { filename: 'dashboard-auth-fixture.js' });
   return { ctx, state, reads, gates, audits, ...dom, auth, get modal() { return modal; }, setSession(s) { current = s; }, setAal(a) { aal = a; }, emit: (ev, s) => callback(ev, s), evaluate: code => vm.runInContext(code, ctx) };
 }
-function helpFixture({ loadSOPs = async () => {}, fetch: sendRequest, sops = [] } = {}) {
+function helpFixture({ loadSOPs = async () => {}, fetch: sendRequest, sops = [], realAccess = false } = {}) {
   const dom = baseDom(); const requests = []; const scope = [];
   dom.get('authGate').style.display = 'none'; dom.window.pecState = { session: session(), adminUser: { id: 'staff-row-a', role: 'staff', company: null }, view: 'dashboard', openJobId: 'PRIVATE-JOB-ID' };
   const ctx = vm.createContext({ ...dom, AbortController, MutationObserver: class { observe() {} }, setTimeout, CONFIG: { SOP_CHAT_ENDPOINT: '/synthetic-help' }, loadSOPs,
-    getAccessibleSOPs: staff => { scope.push(staff); return sops; },
+    getAccessibleSOPs: staff => { scope.push(staff); return realAccess ? vm.runInNewContext('(' + sopAccessSource + ')(profile)', { sopData: sops, profile: staff }) : sops; },
     fetch: async (url, args) => { requests.push({ ...args, body: JSON.parse(args.body) }); return sendRequest ? sendRequest(url, args) : { ok: true, text: async () => JSON.stringify({ content: [{ type: 'text', text: 'Synthetic reply.' }] }) }; },
   });
-  vm.runInContext(helpSource, ctx, { filename: 'dashboard-help-fixture.js' });
+  vm.runInContext(sopProfileSource + '\n' + helpSource, ctx, { filename: 'dashboard-help-fixture.js' });
   return { ...dom, requests, scope, ctx, async send(text) { dom.get('pecHelpInput').value = text; return dom.get('pecHelpSend').click(); }, changeAccount(uid) { dom.window.pecState.session = uid ? session(uid, 'session-' + uid) : null; dom.window.pecState.adminUser = uid ? { id: 'staff-row-' + uid, role: 'staff', company: 'PEC' } : null; dom.window.dispatchEvent({ type: 'pec-auth-changed' }); } };
 }
 
@@ -173,7 +175,7 @@ test('legacy SOP chat resets identity, uses current permissions and ignores old 
     getAccessibleSOPs(profile) { profiles.push(profile); return profile ? [{ id: 'PEC-001', title: 'Grinding', content: 'Use grinder', company: 'PEC' }] : [{ id: 'OWNER-001', title: 'Owner grinder', content: 'Owner grinder reference' }]; },
     fetch: async (url, args) => { requests.push({ ...args, body: JSON.parse(args.body) }); return requests.length === 1 ? wait.promise : { ok: true, text: async () => JSON.stringify({ content: [{ type: 'text', text: 'New staff reply' }] }) }; },
   });
-  vm.runInContext('let sopChatHistory = [], sopSystemPrompt = "";\n' + section('let sopChatIdentity =', '\nfunction renderSOPChatWelcome'), ctx);
+  vm.runInContext(sopProfileSource + '\nlet sopChatHistory = [], sopSystemPrompt = "";\n' + section('let sopChatIdentity =', '\nfunction renderSOPChatWelcome'), ctx);
   dom.window.dispatchEvent({ type: 'pec-auth-changed' });
   dom.get('sopChatInputOwner').value = 'Old account grinder question'; const old = ctx.sendSOPChat('owner'); await settle();
   dom.window.pecState = { session: session('staff-b', 'session-b'), adminUser: { role: 'staff', company: null } }; dom.window.dispatchEvent({ type: 'pec-auth-changed' });
@@ -183,4 +185,35 @@ test('legacy SOP chat resets identity, uses current permissions and ignores old 
   assert.match(requests[1].body.system, /=== AVAILABLE SOPs ===/); assert.match(requests[1].body.system, /PEC-001/); assert.doesNotMatch(requests[1].body.system, /OWNER-001/);
   wait.resolve({ ok: true, text: async () => JSON.stringify({ content: [{ type: 'text', text: 'Old private reply' }] }) }); await old;
   assert.doesNotMatch(dom.get('sopChatMessagesOwner').children.map(x => x.textContent).join(' '), /Old private reply/);
+});
+
+const roleSops = [
+  ['ADMIN-CONTROL', 'PEC', ['admin']], ['OFFICE-CONTROL', 'FTP', ['office']],
+  ['PEC-SALES', 'PEC', ['sales']], ['FTP-SALES', 'FTP', ['sales']],
+  ['PEC-CREW', 'PEC', ['crew']], ['FTP-CREW', 'FTP', ['crew']],
+  ['SHARED', 'Shared', ['all']],
+].map(([id, company, roles]) => ({ id, company, roles, title: 'Grinding procedure', department: 'Operations', content: 'Synthetic grinder procedure.' }));
+for (const { role, company, expected } of [
+  ...['admin', 'office', 'pm'].map(role => ({ role, company: 'PEC', expected: roleSops.map(s => s.id) })),
+  { role: 'sales', company: 'PEC', expected: ['PEC-SALES', 'SHARED'] },
+  { role: 'crew', company: 'FTP', expected: ['FTP-CREW', 'SHARED'] },
+  { role: 'sales', company: null, expected: ['PEC-SALES', 'FTP-SALES', 'SHARED'] },
+  { role: 'crew', company: null, expected: ['PEC-CREW', 'FTP-CREW', 'SHARED'] },
+]) test(`Help and SOP chat retain existing ${role}/${company || 'missing-company'} reference access`, async () => {
+  const help = helpFixture({ sops: roleSops, realAccess: true });
+  help.window.pecState.adminUser = { id: 'synthetic-staff', name: 'Synthetic staff', role, company };
+  await help.send('How do I use the grinder?');
+  assert.deepEqual(help.requests[0].body.sops.map(s => s.id), expected);
+
+  const dom = baseDom(), requests = [];
+  dom.window.pecState = { session: session(), adminUser: { role, company } };
+  const ctx = vm.createContext({ ...dom, AbortController, $: dom.get, sopData: roleSops, CONFIG: { SOP_CHAT_ENDPOINT: '/synthetic-help' },
+    fetch: async (url, args) => { requests.push(JSON.parse(args.body)); return { ok: true, text: async () => JSON.stringify({ content: [{ type: 'text', text: 'Synthetic reply.' }] }) }; },
+  });
+  vm.runInContext(sopProfileSource + '\n' + sopAccessSource + '\nlet sopChatHistory = [], sopSystemPrompt = "";\n' + section('let sopChatIdentity =', '\nfunction renderSOPChatWelcome'), ctx);
+  dom.window.dispatchEvent({ type: 'pec-auth-changed' });
+  // A stale owner-screen target must not broaden the current role's access.
+  dom.get('sopChatInputOwner').value = 'How do I use the grinder?';
+  await ctx.sendSOPChat('owner');
+  assert.deepEqual([...requests[0].system.matchAll(/=== SOP: ([^ ]+)/g)].map(m => m[1]), expected);
 });
