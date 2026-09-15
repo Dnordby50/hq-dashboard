@@ -1,3 +1,16 @@
+## [2026-09-15 06:34 MST] security: approved frontend release verified live
+By: Codex
+
+Verified: Netlify reports Published for application commit 7294c596090e5e3b26b9850418b1b011bc90f632 (deploy 6aa8c2cbe6876f0008318415). GitHub TopCoat checks run 34927111490 completed successfully. All 21 hosted public files match the production-environment build byte-for-byte. Reproducing Netlify's checked-in public browser-key setting yields estimator index-B4VYVSv5.js and matching entry HTML/service worker; the default local build hash differs because that environment setting is absent. No source changes were needed.
+
+Live behavior: Dashboard sign-in passed actual Chromium desktop and 360px checks: private app hidden, shared SOP bridge ready, no horizontal overflow or uncaught JavaScript exceptions. Booking serves the new generic duplicate branch. Pricing retains its configured coming-soon page; its enabled form passed the isolated desktop/phone fixtures. Internal rules/schema/source/tests/log paths return 404. Anonymous Help and staff estimate preview return 401; retired registration/authorization return 403. MCP remains 503 pending V2 credentials. No production customer action or outgoing message was used as a fixture.
+
+Limits: The estimator permits previously verified offline access for the same session/assurance; online MFA errors fail closed. Dashboard offers retry/cancel; standalone directs back to dashboard. Known access denials persist when localStorage works, with a current-page in-memory fallback if storage is unavailable. The earlier local-transaction, legacy-recovery and server-replacement limits still apply.
+
+Next steps: GitHub organization name and GitHub sign-in remain needed. Repository is verified public; no organization, paid subscription, transfer or privacy change has occurred. Exact paid checkout remains for review before purchase. Private status/evidence: /Users/dylannordby/Documents/Codex/TopCoat-Audit-2026-09-14/REMEDIATION-STATUS.md. This receipt changes only the excluded internal log and skips redundant application checks/deployment.
+Handoff to Cowork: None.
+Handoff to Dylan: Refresh TopCoat online. Preserve browser data if an older-draft notice appears. Supply the requested organization name and complete GitHub sign-in; never send credentials in chat.
+
 ## [2026-09-14 21:00 MST] help: preserve existing staff SOP access
 By: Codex
 
