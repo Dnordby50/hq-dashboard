@@ -1,3 +1,18 @@
+## [2026-09-14 20:01 MST] security: backend release verified live
+
+By: Codex
+
+Verified: Netlify reports Published deploy for abbf630 (deploy6aa8b2c4e8737c0008956c32),90 functions and all31 redirects/7 header rules processed successfully. Hosted build used Node24.21.0, completed the required test/build pipeline and reported0 dependency vulnerabilities. GitHub TopCoat checks run34922797930 passed. The final local build and66 security regressions passed. Dashboard HTML served at the production root matches the unchanged source byte-for-byte; estimator, booking and pricing return200.
+
+Live boundaries: AGENTS, SCHEMA, feature catalog, project log, workflow, product charter, backend source, tests and netlify.toml return404 through the public site. Netlify internally records its config in the deploy browser but does not serve it. Registration/authorization return403 without credentials; MCP returns503 while V2 replacements are missing; anonymous Help and staff estimate previews return401. CompanyCam retains its intentional200-error contract and returns Not authorized with no projects/photos. Netlify Production visibility is Public and Deploy Preview visibility is Private; an old deployment permalink's schema path returns401 anonymously.
+
+Measurement clarification: using the browser's flattened release format, the representative Help fixture went from190587 to11848 system-context characters (94% reduction, excluding SOP/history), rather than the raw-JSON95% comparison in the preceding entry. Neither measurement represents billed usage. Fixed shared startup context is about2317 estimated tokens,60% below the previous AGENTS+CLAUDE pair before task-specific context.
+
+Next steps: V2 credential entry/reconnection, the existing frontend approval questions, and GitHub organization/paid-coverage choice remain pending. No frontend source, GitHub visibility or paid plan was changed. Detailed remediation status and safe evidence are in the private Codex audit folder. This receipt only changes an excluded internal log; its commit skips redundant CI/deployment and leaves verified application release abbf630 live.
+Files touched: PROJECT-LOG.md.
+Handoff to Cowork: None.
+Handoff to Dylan: See the preceding entry for the exact V2 names and remaining decisions; never send credential values in chat.
+
 ## [2026-09-14 19:49 MST] security: enforce server boundaries and reduce recurring context
 
 By: Codex
