@@ -1,3 +1,15 @@
+## [2026-09-15 12:53 MST] invoices: update PEC Zelle number and recipient instructions
+By: Codex
+
+Changed: Updated the existing prescott-epoxy brand settings in production: zelle_email is 928-800-8154, and offline_payment_details_text says our Zelle number is 928-800-8154 and the recipient should appear as "Prescott Epoxy Company". Preserved check/cash options, contact number and the separate payment-instructions card. The write matched the prior timestamp/values and returned exactly one row. Re-read confirms persistence and the finishing-touch brand is unchanged. This is a settings-only change; no application code or schema migration is needed. The shared handle also updates the signed-estimate chooser's number. Invoice wording remains editable under Settings > Brand.
+
+Verified: Opened an existing live PEC invoice and expanded Pay by check, cash, or Zelle. The exact number/name appear immediately; the old email is absent from the invoice instructions. Desktop and actual 360px viewport are readable with no horizontal overflow. Only GET and the local expand button were used; no payment intent, payment, customer message, or fixture record was submitted. Full npm test including posttest passed; npm run check:source passed all server source, JSON and six dashboard scripts. Dashboard source is unchanged from HEAD. git diff --check passed. Updated the hosted-invoice feature reference and What's New.
+
+Files touched: features.json, help/whats-new.json, PROJECT-LOG.md; production pec_brand_identity row prescott-epoxy.
+Next steps: Publish the documentation/What's New update. The requested payment instructions are already verified live.
+Handoff to Cowork: None.
+Handoff to Dylan: Refresh an open invoice to see the updated wording.
+
 ## [2026-09-15 06:34 MST] security: approved frontend release verified live
 By: Codex
 

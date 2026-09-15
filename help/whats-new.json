@@ -1,5 +1,15 @@
 [
   {
+    "id": "invoice-zelle-number-and-recipient",
+    "date": "2026-09-15",
+    "title": "Updated Zelle payment instructions.",
+    "summary": "PEC invoices now show 928-800-8154 as our Zelle number and tell customers to look for \"Prescott Epoxy Company\".",
+    "howto": [
+      "Open the customer invoice and choose Pay by check, cash, or Zelle to see the details.",
+      "The wording remains editable in Settings > Brand > Check / cash / Zelle details."
+    ]
+  },
+  {
     "id": "account-privacy-and-current-help",
     "date": "2026-09-14",
     "title": "Safer shared-device work and more relevant Help.",

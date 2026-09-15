@@ -1600,7 +1600,7 @@
     {
       "name": "Hosted invoice and pay page",
       "area": "portal",
-      "description": "A public, branded invoice page at a private /pay/<token> link where customers view line items and pay online. Redesigned to a premium look with the amount due front and center, it hides pay buttons and shows a PENDING state while a bank transfer clears so no one pays twice. With a payment schedule (prompt 45) the page shows the current amount due as the hero, the full installment plan with paid/upcoming states, and project total/paid/remaining; without one it renders exactly the legacy full-balance page. Invoice terms (2026-08-17): the hero and the bill-to band state the terms and due date at the top (mirroring DripJobs); informational only, the schedule/ask still owns every amount and the due box, and a paid invoice shows the terms label with no date. print=1 (2026-08-13): appending ?print=1 to /pay/<token> auto-opens the browser print dialog on load (used by the dashboard's Print / Save as PDF menu item); the render is otherwise identical and the status/ACH banners stay noprint. Customer payment-intent office notifications reserve an atomic per-invoice cooldown before sending, shared across payment methods; database uncertainty fails closed. Public HTML adds protective no-store/nosniff/no-referrer headers.",
+      "description": "A public, branded invoice page at a private /pay/<token> link where customers view line items and pay online. Redesigned to a premium look with the amount due front and center, it hides pay buttons and shows a PENDING state while a bank transfer clears so no one pays twice. With a payment schedule (prompt 45) the page shows the current amount due as the hero, the full installment plan with paid/upcoming states, and project total/paid/remaining; without one it renders exactly the legacy full-balance page. Invoice terms (2026-08-17): the hero and the bill-to band state the terms and due date at the top (mirroring DripJobs); informational only, the schedule/ask still owns every amount and the due box, and a paid invoice shows the terms label with no date. print=1 (2026-08-13): appending ?print=1 to /pay/<token> auto-opens the browser print dialog on load (used by the dashboard's Print / Save as PDF menu item); the render is otherwise identical and the status/ACH banners stay noprint. Customer payment-intent office notifications reserve an atomic per-invoice cooldown before sending, shared across payment methods; database uncertainty fails closed. Public HTML adds protective no-store/nosniff/no-referrer headers. September 15, 2026: PEC invoice offline instructions identify 928-800-8154 as the Zelle number and tell customers the recipient should appear as \"Prescott Epoxy Company\". This is saved in the existing per-brand offline_payment_details_text setting; the shared zelle_email handle also holds the phone number.",
       "code": {
         "netlifyFunctions": [
           "_pec-installments.cjs",
@@ -1611,7 +1611,8 @@
       },
       "tables": [
         "pec_invoice_installments",
-        "pec_payments"
+        "pec_payments",
+        "pec_brand_identity"
       ],
       "since": "2026-05"
     },
