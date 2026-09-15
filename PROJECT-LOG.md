@@ -1,3 +1,11 @@
+## [2026-09-15 12:55 MST] invoices: Zelle instructions and release note verified live
+By: Codex
+
+Verified: Requested brand setting is live, with the exact number and recipient name checked in the expanded invoice panel on desktop and a 360px viewport. Commit 444614c is pushed to origin/main; GitHub verify completed successfully. Hosted help/whats-new.json matches the committed file byte-for-byte. features.json returns 404 as intended by the current publication allowlist. No application source changed.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: Refresh any invoice already open to load the updated text.
+
 ## [2026-09-15 12:53 MST] invoices: update PEC Zelle number and recipient instructions
 By: Codex
 
