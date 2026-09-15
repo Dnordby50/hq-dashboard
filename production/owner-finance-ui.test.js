@@ -206,8 +206,10 @@ test('adding and renaming accounts writes the linked budget cell, fills the next
   assert.equal(financeLabelTarget(body,income,18),null);
   assert.deepEqual({row:8,used:1,total:2},(({row,used,total})=>({row,used,total}))(financeEmptySlot(income,computed(),'pec-variable')));
   assert.equal(financeEmptySlot(income,computed(),'missing'),null);
+  budget.hiddenRows=[6,10];
   financeSetAccountLabel(body,income,8,'  Dump Fees ');
   assert.deepEqual(budget.cells.H6,{v:'Dump Fees'});
+  assert.deepEqual(budget.hiddenRows,[10],'naming a slot reveals its budget row');
   assert.equal(computed().cells.B8.v,'Dump Fees');
   assert.equal(financeEmptySlot(income,computed(),'pec-variable').row,null);
   assert.equal(financeEmptySlot(income,computed(),'pec-variable').used,2);

@@ -126,6 +126,9 @@ export function financeSetAccountLabel(body,sheet,row,name){
   const text=String(name??'').trim();
   const cell={...target.sheet.cells[target.address]};delete cell.f;delete cell.error;cell.v=text||null;
   target.sheet.cells[target.address]=cell;
+  // A named account must be visible on the Budget tab too; template slots there are
+  // statically hidden, so un-hide the budget row the label lives in.
+  if(text&&Array.isArray(target.sheet.hiddenRows)){const [row]=coordinate(target.address);target.sheet.hiddenRows=target.sheet.hiddenRows.filter(r=>r!==row);}
   return {...target,value:cell.v};
 }
 export function financeEmptySlot(sheet,computed,sectionId){

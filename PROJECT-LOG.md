@@ -1,3 +1,15 @@
+## [2026-09-15 16:21 MST] owner: naming an income statement slot also reveals its Budget tab row
+By: Claude Code
+
+Changed: financeSetAccountLabel (production/owner-finance-ui.js) now removes the linked Budget - 2 row from that sheet's static hiddenRows whenever a non-empty name is written. Found during live verification of prompt 104: adding "ZZ Test Account" landed in Budget - 2 H861 (revision 4) and renaming it to "ZZ Test Renamed" persisted (revision 5), but budget rows 861-894 are workbook template rows hidden on the Budget tab, so the new name was only visible there after Show all rows and columns. Clearing a name leaves the budget row as it is. One new assertion in production/owner-finance-ui.test.js.
+
+Verified: node --test production/owner-finance-ui.test.js 12 passed. Live verification of the remaining acceptance items continues in the next entry.
+
+Files touched: production/owner-finance-ui.js, production/owner-finance-ui.test.js, PROJECT-LOG.md.
+Next steps: Deploy and finish the live checks (clear test account, Show empty slots, simulated 413, Settings).
+Handoff to Cowork: None beyond the pending settings seed migration.
+Handoff to Dylan: None.
+
 ## [2026-09-15 16:15 MST] owner: prompt 104, Income Statement add/rename accounts, auto-shown rows, company filter
 By: Claude Code
 
