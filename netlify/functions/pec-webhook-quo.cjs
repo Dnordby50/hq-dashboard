@@ -52,41 +52,33 @@ const safeEqual = (a, b) => {
   return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
 };
 
-// Verify the request is from Quo. Two accepted mechanisms, both keyed on
-// QUO_WEBHOOK_SECRET, so whichever Quo's webhook config offers will work:
-//   (a) HMAC signature (OpenPhone style): the `openphone-signature` header holds
-//       `hmac;<version>;<timestamp>;<base64sig>`, where sig = HMAC-SHA256 over
-//       `${timestamp}.${rawBody}` with the base64-decoded signing key.
-//   (b) Shared secret: an `x-quo-secret` / `x-webhook-secret` header equal to
-//       QUO_WEBHOOK_SECRET (used if the workspace is set up with a plain secret).
-// Confirm the exact scheme against https://www.quo.com/docs and keep whichever
-// one Quo actually sends.
+// Quo's documented hmac;1;timestamp;signature scheme, over the unchanged
+// request bytes with the base64-decoded signing key. The documented timestamp
+// example is milliseconds; seconds are also accepted explicitly. Retries get
+// fresh timestamps. https://support.quo.com/core-concepts/integrations/webhooks
 function verifyQuo(headers, rawBody) {
   if (!WEBHOOK_SECRET) return false;
 
-  // (b) plain shared-secret header.
+  // Legacy integrations must be explicitly opted into; a shared-secret
+  // header cannot provide signed timestamp freshness. Default is signed-only.
   const plain = headers['x-quo-secret'] || headers['x-webhook-secret'] || headers['X-Quo-Secret'] || headers['X-Webhook-Secret'];
-  if (plain && safeEqual(plain, WEBHOOK_SECRET)) return true;
+  if (process.env.QUO_ALLOW_SHARED_SECRET_WEBHOOK === 'true' && plain && safeEqual(plain, WEBHOOK_SECRET)) return true;
 
-  // (a) HMAC signature header.
   const sigHeader = headers['openphone-signature'] || headers['OpenPhone-Signature'] || headers['quo-signature'] || headers['x-quo-signature'];
-  if (sigHeader) {
-    const parts = String(sigHeader).split(';');
-    // Tolerate either `hmac;ver;ts;sig` or a bare `ts;sig` / `sig`.
-    const sig = parts[parts.length - 1];
-    const ts = parts.length >= 3 ? parts[parts.length - 2] : '';
-    if (!sig) return false;
+  if (!sigHeader) return false;
+  return String(sigHeader).split(',').some(entry => {
+    const [scheme, version, ts, sig, extra] = entry.trim().split(';');
+    if (scheme !== 'hmac' || version !== '1' || extra !== undefined || !sig) return false;
+    if (!/^(?:\d{10}|\d{13})$/.test(ts || '')) return false;
+    const at = Number(ts) * (ts.length === 10 ? 1000 : 1);
+    if (!Number.isSafeInteger(at) || Math.abs(Date.now() - at) > 300000) return false;
     let key;
     try { key = Buffer.from(WEBHOOK_SECRET, 'base64'); }
-    catch (_) { key = Buffer.from(WEBHOOK_SECRET); }
-    const signedData = ts ? `${ts}.${rawBody}` : rawBody;
-    const expected = crypto.createHmac('sha256', key).update(signedData).digest('base64');
-    if (safeEqual(sig, expected)) return true;
-    // Also try the raw (non-base64) secret, in case Quo signs with the literal key.
-    const expectedRaw = crypto.createHmac('sha256', Buffer.from(WEBHOOK_SECRET)).update(signedData).digest('base64');
-    if (safeEqual(sig, expectedRaw)) return true;
-  }
-  return false;
+    catch (_) { return false; }
+    if (!key.length) return false;
+    const expected = crypto.createHmac('sha256', key).update(`${ts}.${rawBody}`).digest('base64');
+    return safeEqual(sig, expected);
+  });
 }
 
 // Pull the inbound message fields out of Quo's payload, tolerant of nesting.

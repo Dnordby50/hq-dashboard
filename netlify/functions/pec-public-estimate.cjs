@@ -35,7 +35,7 @@
 // status flip itself is a compare-and-swap (PATCH filtered on the current
 // status), so exactly one request wins the transition.
 
-const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
+const { sb, json, randomToken, tokenFromEvent, epoxyStages, requireStaff } = require('./_pec-supabase.cjs');
 const { estimatePricingSendError } = require('./_pec-estimate-send.cjs');
 const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 const { prepareDepositInstallment, resolveCurrentAsk, round2 } = require('./_pec-installments.cjs');
@@ -73,21 +73,6 @@ const SLACK_OFFICE_WEBHOOK = process.env.SLACK_OFFICE_WEBHOOK;
 const OFFICE_NOTIFY_EMAIL = process.env.OFFICE_NOTIFY_EMAIL || '';
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-// Validate a staff access token for the authenticated PREVIEW route (the
-// public estimate routes are token-based and unauthenticated; preview is not).
-// Same pattern as pec-estimate-ai.cjs.
-async function getUser(token) {
-  if (!token || !SUPABASE_URL || !SERVICE_KEY) return null;
-  try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (_) { return null; }
-}
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const usd = (n) => (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -176,6 +161,8 @@ function htmlResponse(statusCode, html) {
       'Content-Type': 'text/html; charset=utf-8',
       'X-Robots-Tag': 'noindex, nofollow',
       'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
     },
     body: html,
   };
@@ -2332,9 +2319,8 @@ exports.handler = async (event) => {
   // fetches this with the user's Bearer token and drops the HTML into an
   // iframe, so it never navigates the browser (which would drop the header).
   if (qs.preview) {
-    const auth = event.headers.authorization || event.headers.Authorization || '';
-    const user = await getUser(auth.replace(/^Bearer\s+/i, ''));
-    if (!user || !user.id) return htmlResponse(401, '<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:40px">Not authorized to preview this estimate.</body>');
+    const auth = await requireStaff(event);
+    if (!auth.ok) return htmlResponse(auth.status, '<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:40px">Not authorized to preview this estimate.</body>');
     if (!UUID_RE.test(String(qs.preview))) return notFoundPage();
     try {
       const est = await loadEstimateById(qs.preview);

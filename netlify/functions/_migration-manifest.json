@@ -3560,6 +3560,65 @@
           "name": "google_booking_max_sync_age_minutes"
         }
       ]
+    },
+    {
+      "file": "20260914225819_estimate_line_description_templates.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_estimate_line_templates"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_line_templates_enabled"
+        }
+      ]
+    },
+    {
+      "file": "20260914230817_estimate_line_template_creator_index.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "index",
+          "name": "pec_estimate_line_templates_created_by_idx"
+        }
+      ]
+    },
+    {
+      "file": "20260915022840_security_staff_boundaries.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_security_rate_limits"
+        },
+        {
+          "kind": "index",
+          "name": "pec_security_rate_limits_expiry_idx"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_slots_rate_limit_per_hour"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_routes_rate_limit_per_day"
+        }
+      ]
+    },
+    {
+      "file": "20260915023131_security_portal_bounds.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": "portal function isolation, explicit customer projection and validation",
+      "artifacts": []
     }
   ],
   "knownTables": [
@@ -3601,6 +3660,7 @@
     "pec_email_log",
     "pec_email_senders",
     "pec_email_templates",
+    "pec_estimate_line_templates",
     "pec_estimate_views",
     "pec_followup_ranks",
     "pec_heartbeats",
@@ -3649,6 +3709,7 @@
     "pec_sales_member_google_tokens",
     "pec_sales_team_members",
     "pec_salesask_recordings",
+    "pec_security_rate_limits",
     "pec_sms_log",
     "pec_sms_senders",
     "pec_status_descriptions",

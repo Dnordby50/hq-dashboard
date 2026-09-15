@@ -1,3 +1,24 @@
+## [2026-09-14 19:49 MST] security: enforce server boundaries and reduce recurring context
+
+By: Codex
+
+Changed: Completed the authorized non-frontend security remediation. Staff-only endpoints now check current staff membership and live sessions; calendar changes require self/admin/Settings permission. MCP anonymous issuance and retired grant flows are closed, and only the new V2 credential namespace is accepted so previously configured credentials cannot remain usable. Public contact filters treat input as literals; persistent quotas protect booking discovery, pricing, paid Routes calls, invoice notifications and Help. Quo/Resend enforce signed timestamp freshness; BusyBusy credentials stay on the approved HTTPS host without redirects. Customer-page responses add protective headers. Dashboard/estimator source and embedded public-page HTML/CSS/JS remain unchanged.
+
+Database: Rehearsed both complete migrations in rollback-only production transactions, then applied security_staff_boundaries (live20260915023346, source20260915022840) and security_portal_bounds (live20260915023732, source20260915023131). Verified all25 active staff sessions remain valid, revoked/missing sessions deny, nonadmin settings deletion denies, payment mutations audit transactionally, calendar metadata denies nonstaff, quota locking/grants work, portal payload limits/private implementation isolation hold, and no rehearsal fixtures remain. All104 public tables have RLS. Photo MIME/20MiB bounds added; existing public URLs retained. No real customer signing, booking, payment or messaging fixture was created.
+
+Efficiency/release: Server Help selects relevant guide/update/SOP sections, bounds input/history/output, controls its model and records count-only usage. A representative local estimate-help fixture shrank from223043 to11848 system-context characters (95%; not billed-token measurement). Added one canonical agent contract, product charter, scoped read-only context command, on-demand engineering reference and archived handover. Removed the unsafe active instruction to delete jobs with missing DripJobs IDs. Netlify now builds a dedicated21-file public artifact instead of publishing the repository, using Node24 and the updated estimator toolchain. Added required test/syntax/publication checks, GitHub checks and Dependabot configuration. Full dependency audit reports0 vulnerabilities. The adjacent SOP checkout now uses verified SSH instead of an embedded HTTPS credential; its old token's revocation remains an account action.
+
+Validation: Full npm run build (all existing npm test/posttest checks, security regressions, source/JSON parsing, TypeScript/Vite build and publication) passed before final docs. Focused security suite66/66 passed after the V2 containment and timeout changes. Independent review verified asset coverage and invoked an actual Netlify Help bundle with mocked outbound services from an unrelated directory successfully. Final release checks and live receipt follow in a separate entry.
+
+Next steps: Verify production deploy and anonymous denials after push. Keep frontend findings pending until Dylan answers the existing approval questions. GitHub privacy is conditional on keeping native security coverage; paid organization eligibility/transfer decision remains pending. Supabase leaked-password protection requires Pro+ on the verified Free plan. CSP enforcement, private customer storage URLs, MFA enrollment/recovery and offline account partitioning require their product/frontend decisions. Account permissions, historical access/secret review, provider restrictions and backup restoration still need dedicated verification; this release is not a security certification.
+
+## Handoff to Dylan
+
+Enter fresh MCP_BEARER_TOKEN_V2, MCP_OAUTH_CLIENT_ID_V2 and MCP_OAUTH_CLIENT_SECRET_V2 values in Netlify, mark token/secret as secret values and include Functions/Production, then reconnect the authorized MCP client. Old MCP environment names are intentionally ignored. The browser tool requires the user to enter replacement credentials. Do not enable QUO_ALLOW_SHARED_SECRET_WEBHOOK unless an explicitly reviewed legacy integration needs it; signed Quo deliveries are the default. Approve frontend changes separately and choose a GitHub organization/paid security plan before changing repository visibility. No purchase or privacy downgrade was made.
+
+Files touched: server functions/helpers; security tests and migration rehearsals; two Supabase migrations and SCHEMA; deployment/package/dependency files; agent/product/engineering context docs; feature and migration manifests; PROJECT-LOG. No dashboard/estimator frontend source changes.
+Handoff to Cowork: None; remaining inputs are identified above.
+
 ## [2026-09-14 16:38 MST] estimates: description editor and custom drafts verified live
 
 By: Codex

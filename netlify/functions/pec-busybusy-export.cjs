@@ -102,12 +102,23 @@ function fmtPunch(ts) {
 }
 
 async function fetchExport(baseUrl, startDate, endDate) {
-  const url = `${baseUrl.replace(/\/+$/, '')}/?start=${encodeURIComponent(startDate + ' 00:00:00')}&end=${encodeURIComponent(endDate + ' 23:59:59')}`;
+  // Settings may choose the provider path, never who receives our credential.
+  // Reject userinfo, custom ports and preexisting query/fragment components.
+  let target;
+  try { target = new URL(String(baseUrl)); } catch (_) { /* rejected below */ }
+  if (!target || target.protocol !== 'https:' || target.hostname !== 'export.busybusy.io'
+      || target.port || target.username || target.password || target.search || target.hash) {
+    return { ok: false, hard: true, error: 'BusyBusy export URL must use https://export.busybusy.io/ without credentials, a custom port, query or fragment. Nothing was changed.' };
+  }
+  target.pathname = target.pathname.replace(/\/+$/, '') + '/';
+  target.searchParams.set('start', startDate + ' 00:00:00');
+  target.searchParams.set('end', endDate + ' 23:59:59');
+  const url = target.toString();
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 8000);
   let res;
   try {
-    res = await fetch(url, { headers: { 'Key-Authorization': BUSYBUSY_EXPORT_TOKEN }, signal: ctrl.signal });
+    res = await fetch(url, { headers: { 'Key-Authorization': BUSYBUSY_EXPORT_TOKEN }, signal: ctrl.signal, redirect: 'error' });
   } catch (err) {
     clearTimeout(t);
     return { ok: false, hard: true, error: `Could not reach the BusyBusy export endpoint (${err && err.name === 'AbortError' ? 'timed out after 8s' : (err && err.message) || 'network error'}). Nothing was changed.` };

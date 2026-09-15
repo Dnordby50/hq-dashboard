@@ -14,7 +14,7 @@
 // be toggled: it is the push target, not a pull source.
 
 const { sb, json } = require('./_pec-supabase.cjs');
-const { googleConfigured, getFreshAccessToken, gcalFetch, getStaffUser } = require('./_pec-google.cjs');
+const { googleConfigured, getFreshAccessToken, gcalFetch, getStaffUser, authorizeCalendarMember } = require('./_pec-google.cjs');
 
 function cors() {
   return {
@@ -24,11 +24,6 @@ function cors() {
   };
 }
 const jc = (statusCode, body) => ({ statusCode, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-
-async function getMember(memberId) {
-  const rows = await sb('GET', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}&select=id,google_connected,google_calendar_id&limit=1`);
-  return (Array.isArray(rows) && rows[0]) || null;
-}
 
 async function getCalRow(memberId, calendarId) {
   const rows = await sb('GET', `/pec_sales_member_google_calendars?member_id=eq.${encodeURIComponent(memberId)}&calendar_id=eq.${encodeURIComponent(calendarId)}&select=*&limit=1`);
@@ -78,8 +73,9 @@ exports.handler = async (event) => {
   if (!input.member_id) return jc(400, { ok: false, error: 'member_id is required' });
 
   try {
-    const member = await getMember(String(input.member_id));
-    if (!member) return jc(404, { ok: false, error: 'Unknown sales team member' });
+    const access = await authorizeCalendarMember(sb, user, String(input.member_id));
+    if (!access.ok) return jc(access.status, { ok: false, error: access.error });
+    const member = access.member;
     if (!member.google_connected) return jc(200, { ok: false, error: 'This member is not connected to Google.' });
 
     if (input.refresh) {

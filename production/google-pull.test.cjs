@@ -265,7 +265,9 @@ const MEMBER = { id: 'sm1', name: 'Dylan N', google_calendar_id: 'cal_topcoat_1'
     check(true, 'optional database timeout aborts a stalled body read');
     const denied = await sbHelpers.requireStaff({ headers: { authorization: 'Bearer fixture-user' } }, { timeoutMs: 10 });
     check(!denied.ok && denied.status === 401, 'manual-run staff auth deadline aborts a stalled auth body');
-    const googleHelpers = load('../netlify/functions/_pec-google.cjs', hangingBody);
+    const googleHelpers = load('../netlify/functions/_pec-google.cjs', hangingBody, {
+      require: name => name === './_pec-supabase.cjs' ? sbHelpers : require(name),
+    });
     await assert.rejects(googleHelpers.gcalFetch('fixture', 'GET', '/test', null, 10), /aborted body/);
     check(true, 'Google request timeout includes response body reads');
     let called = false;

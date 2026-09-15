@@ -36,7 +36,22 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
+const ROUTES_BUDGET_KEY = crypto.createHash('sha256').update('topcoat:google-routes:all-booking-requests').digest('hex');
+
+// A database counter, not a warm-function counter: concurrent requests and
+// separate Netlify instances consume the same atomic budget. Never infer
+// permission from a missing or malformed result.
+async function takeBookingRateLimit(db, scope, key, limit, windowSeconds) {
+  const result = await db('POST', '/rpc/pec_take_rate_limit', {
+    p_scope: scope, p_key: key,
+    p_limit: limit, p_window_seconds: windowSeconds,
+  });
+  if (!result || typeof result.allowed !== 'boolean' || !Number.isFinite(result.retry_after)
+      || !Number.isFinite(result.remaining)) throw new Error('Invalid booking rate-limit result');
+  return result;
+}
 
 function parseDurationSeconds(v) {
   const m = String(v == null ? '' : v).match(/^([\d.]+)s$/);
@@ -94,7 +109,7 @@ async function driveMinutesFor(db, origins, dest, cfg = {}) {
   const resolved = await readCache(db, list.map(o => o.key), dest.key, ttlDays);
 
   let missing = list.filter(o => resolved[o.key] == null);
-  const maxOrigins = Math.max(1, Number(cfg.maxOrigins) || 25);
+  const maxOrigins = Math.min(100, Math.max(1, Math.floor(Number(cfg.maxOrigins) || 25)));
   if (missing.length > maxOrigins) {
     console.warn(`booking-drive: ${missing.length} uncached origins exceeds budget ${maxOrigins}; the excess uses the flat buffer`);
     missing = missing.slice(0, maxOrigins);
@@ -103,7 +118,18 @@ async function driveMinutesFor(db, origins, dest, cfg = {}) {
   if (!missing.length) return resolved;
   if (!apiKey) return resolved; // unset key: cache hits still help, the rest flat-buffers
 
-  const timeoutMs = Math.max(500, Number(cfg.timeoutMs) || 4000);
+  // Spending requires a verified shared budget. Exhaustion or a database
+  // outage preserves cache hits and the existing flat-buffer fallback.
+  try {
+    const dailyLimit = Math.min(1000000, Math.max(1, Math.floor(Number(cfg.rateLimitPerDay) || 200)));
+    const budget = await takeBookingRateLimit(db, 'booking_routes', ROUTES_BUDGET_KEY, dailyLimit, 86400);
+    if (!budget.allowed) return resolved;
+  } catch (e) {
+    console.warn('booking-drive: Routes budget unavailable; unresolved pairs use the flat buffer');
+    return resolved;
+  }
+
+  const timeoutMs = Math.min(10000, Math.max(500, Number(cfg.timeoutMs) || 4000));
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -146,4 +172,4 @@ async function driveMinutesFor(db, origins, dest, cfg = {}) {
   }
 }
 
-module.exports = { driveMinutesFor, parseDurationSeconds };
+module.exports = { driveMinutesFor, parseDurationSeconds, takeBookingRateLimit };

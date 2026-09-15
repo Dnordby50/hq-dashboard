@@ -15,9 +15,16 @@ function makeDb(tables) {
   const db = JSON.parse(JSON.stringify(tables));
   let idSeq = 1000;
   const calls = { patch: [], post: [] };
+  const rateWindows = new Map();
+
+  function literal(value) {
+    if (!value.startsWith('"')) return value;
+    if (!value.endsWith('"')) throw new Error('stub: unterminated quoted filter value');
+    return value.slice(1, -1).replace(/\\(["\\])/g, '$1');
+  }
 
   function matches(row, key, val) {
-    if (val.startsWith('eq.')) return String(row[key]) === val.slice(3);
+    if (val.startsWith('eq.')) return String(row[key]) === literal(val.slice(3));
     if (val.startsWith('lte.')) return row[key] != null && String(row[key]) <= decodeURIComponent(val.slice(4));
     if (val.startsWith('gte.')) return row[key] != null && String(row[key]) >= decodeURIComponent(val.slice(4));
     if (val.startsWith('gt.')) return row[key] != null && String(row[key]) > decodeURIComponent(val.slice(3));
@@ -35,8 +42,20 @@ function makeDb(tables) {
     throw new Error(`stub: unsupported op ${key}=${val}`);
   }
   function matchesOr(row, orExpr) {
-    // (a.eq.b,c.ilike.*d)
-    const parts = decodeURIComponent(orExpr).slice(1, -1).split(',');
+    // Commas inside a PostgREST quoted literal belong to the value, not the
+    // OR expression. Decode once, respecting escaped quotes/backslashes.
+    const expression = decodeURIComponent(orExpr).slice(1, -1);
+    const parts = [];
+    let quoted = false, escaped = false, start = 0;
+    for (let i = 0; i < expression.length; i++) {
+      const c = expression[i];
+      if (escaped) { escaped = false; continue; }
+      if (quoted && c === '\\') { escaped = true; continue; }
+      if (c === '"') { quoted = !quoted; continue; }
+      if (c === ',' && !quoted) { parts.push(expression.slice(start, i)); start = i + 1; }
+    }
+    if (quoted) throw new Error('stub: unterminated quoted OR value');
+    parts.push(expression.slice(start));
     return parts.some(p => {
       const i1 = p.indexOf('.');
       const key = p.slice(0, i1);
@@ -65,6 +84,19 @@ function makeDb(tables) {
   async function sb(method, path, payload, returnRow) {
     const [p, qs = ''] = path.split('?');
     const table = p.replace(/^\//, '');
+    if (method === 'POST' && table === 'rpc/pec_take_rate_limit') {
+      const key = `${payload.p_scope}|${payload.p_key}`;
+      const now = Date.now();
+      let window = rateWindows.get(key);
+      if (!window || window.until <= now) {
+        window = { count: 0, until: now + payload.p_window_seconds * 1000 };
+        rateWindows.set(key, window);
+      }
+      const allowed = window.count < payload.p_limit;
+      if (allowed) window.count++;
+      return { allowed, remaining: Math.max(0, payload.p_limit - window.count),
+        retry_after: allowed ? 0 : Math.ceil((window.until - now) / 1000) };
+    }
     const params = qs ? qs.split('&').map(kv => {
       const i = kv.indexOf('=');
       return [kv.slice(0, i), kv.slice(i + 1)];

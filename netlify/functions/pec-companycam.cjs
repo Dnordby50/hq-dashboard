@@ -14,6 +14,7 @@
 // .js file here would be treated as ESM and `exports.handler` would fail.
 
 const CC_BASE = 'https://api.companycam.com/v2';
+const { requireStaff } = require('./_pec-supabase.cjs');
 
 // Flatten a CompanyCam address object into a one-line string.
 function fmtAddress(a) {
@@ -32,28 +33,6 @@ function photoUrls(uris) {
   return { url, thumb };
 }
 
-// Verify the caller's Supabase session token. The dashboard sends its signed-in
-// user's access token as Authorization: Bearer; GoTrue's /auth/v1/user endpoint
-// validates it (signature, expiry, revocation) in one cheap GET. Without this
-// gate the proxy leaked project names, addresses, and photo URLs to anyone on
-// the internet.
-async function callerIsStaff(event) {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) return false;
-  const auth = event.headers.authorization || event.headers.Authorization || '';
-  const userToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if (!userToken) return false;
-  try {
-    const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
-      headers: { apikey: serviceKey, Authorization: `Bearer ${userToken}` },
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 exports.handler = async (event) => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
@@ -70,7 +49,8 @@ exports.handler = async (event) => {
   // no benefit.
   const fail = (error, extra = {}) => ({ statusCode: 200, headers: cors, body: JSON.stringify({ error, projects: [], photos: [], ...extra }) });
 
-  if (!(await callerIsStaff(event))) {
+  const auth = await requireStaff(event);
+  if (!auth.ok) {
     return fail('Not authorized');
   }
 

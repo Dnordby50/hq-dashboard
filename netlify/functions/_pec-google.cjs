@@ -16,6 +16,7 @@
 // personal events on their primary calendar.
 
 const crypto = require('crypto');
+const { requireStaff } = require('./_pec-supabase.cjs');
 
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
 const CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
@@ -264,30 +265,35 @@ async function revokeToken(token) {
 // Staff gate for the JWT-authenticated endpoints: a valid Supabase user that
 // exists in admin_users (same boundary the dashboard RLS uses).
 async function getStaffUser(event) {
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  if (!token || !SUPABASE_URL || !SERVICE_KEY) return null;
+  const auth = await requireStaff(event, { timeoutMs: 3000 });
+  return auth.ok ? { ...auth.user, staffRole: auth.staff.role, staffId: auth.staff.id } : null;
+}
+
+// A rep can manage their own connection. Managing somebody else's calendar
+// requires the admin role or an explicitly granted Settings permission.
+// Missing permission data denies access, including legacy unmapped accounts.
+async function authorizeCalendarMember(db, user, memberId) {
+  if (!user || !user.id) return { ok: false, status: 401, error: 'Not authenticated' };
+  if (!memberId) return { ok: false, status: 400, error: 'Sales team member is required' };
   try {
-    const res = await timedFetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return null;
-    const user = await res.json();
-    if (!user || !user.id) return null;
-    const staff = await timedFetch(
-      `${SUPABASE_URL}/rest/v1/admin_users?auth_user_id=eq.${encodeURIComponent(user.id)}&select=id,role&limit=1`,
-      { headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` } });
-    const rows = staff.ok ? await staff.json() : [];
-    return Array.isArray(rows) && rows[0] ? { ...user, staffRole: rows[0].role } : null;
-  } catch (_) { return null; }
+    const rows = await db('GET', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}&select=id,name,auth_user_id,google_connected,google_calendar_id&limit=1`);
+    const member = Array.isArray(rows) && rows[0];
+    if (!member) return { ok: false, status: 404, error: 'Sales team member not found' };
+    if (member.auth_user_id === user.id || user.staffRole === 'admin') return { ok: true, member };
+    if (user.staffId) {
+      const permissions = await db('GET', `/user_permissions?admin_user_id=eq.${encodeURIComponent(user.staffId)}&select=can_manage_settings&limit=1`);
+      if (Array.isArray(permissions) && permissions[0]?.can_manage_settings === true) return { ok: true, member };
+    }
+    return { ok: false, status: 403, error: 'You can only manage your own calendar without the Settings permission.' };
+  } catch (_) {
+    return { ok: false, status: 503, error: 'Calendar permission could not be verified. Try again.' };
+  }
 }
 
 module.exports = {
   googleConfigured, redirectUri, consentUrl, signState, verifyState,
   exchangeCode, emailFromIdToken, getTokenRow, saveTokenRow,
   getFreshAccessToken, gcalFetch, ensureTopcoatCalendar, revokeToken,
-  getStaffUser, timedFetch, TOPCOAT_CAL_NAME, SITE_URL,
+  getStaffUser, authorizeCalendarMember, timedFetch, TOPCOAT_CAL_NAME, SITE_URL,
   GCAL_DESC_SEPARATOR, composeGcalDescription, stripGcalDescription,
 };

@@ -1,5 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
+Refreshed 2026-09-14 (Codex, backend security): live migrations `20260915023346_security_staff_boundaries` and `20260915023732_security_portal_bounds` applied after successful rollback-only auth/money/portal rehearsals on the verified Free project. Public table count is now 104, all with RLS. Staff helper predicates validate current membership, revocation, ban, confirmation and JWT session_id; settings have explicit admin-only write policies; the calendar metadata view is an invoker over a private staff-checked projection; payments receive atomic audit events; portal mutations have payload/state/replay bounds and an explicit customer projection; service-only fixed-window quotas use `pec_security_rate_limits`. No customer/job/payment records were modified during verification and all synthetic rate/settings/audit fixtures rolled back. MFA enrollment and bucket visibility are unchanged. Only the relevant sections below were refreshed from live catalogs.
+
 Refreshed 2026-09-14 (Codex, estimate description templates): applied 20260914230646_estimate_line_description_templates after a successful rollback-only role/persistence rehearsal. Verified table, constraints, RLS/grants, empty template library and enabled setting; no customer records changed. Other sections remain unchanged.
 
 Refreshed 2026-09-07 (Codex, owner workspace private storage): applied `20260907185049_owner_workspace_private.sql` after a rolled-back production rehearsal. Three owner tables verified live with RLS and one owner-only SELECT policy each, eight protected `owner_*` settings, private membership/session helper, and service-role-only revision-save RPC. One verified owner entitlement; documents and revisions empty. Owner Studio remains disabled. Other sections are unchanged, including Claude's separately pending appointment migration.
@@ -108,6 +110,7 @@ RLS: enabled · rows: 6
 
 PK: id
 FK: auth_user_id → auth.users.id; login_revoked_by → admin_users.id (on delete set null)
+Security update (2026-09-14, verified live): `is_admin_staff()`, `is_admin_role()` and `has_permission(text)` require `topcoat_security_private.staff_session_valid()`. That private helper requires auth.uid(), a non-revoked staff row, confirmed/non-banned auth user, and the JWT session_id matching a current, unexpired auth.sessions row. Existing active sessions passed the rehearsal. `pec_staff_session()` is a narrow authenticated-only RPC returning the current staff id/auth_user_id/email/name/role/company or null; `_pec-supabase.requireStaff` calls it with the caller's JWT after Auth validates the user. No new MFA requirement.
 Note: login_revoked_at null = active login (2026-08-21_revoke_login.sql). Set = the auth user is permanently banned (ban_duration 876000h) and their auth.sessions were deleted via pec_admin_kill_sessions (service_role-only SECURITY DEFINER); pec-revoke-login.cjs is the only writer. Restore unbans and nulls both columns. Revoke never touches people/sales/crew rows (the people_mirror_forward trigger would propagate active=false to the role tables).
 
 ### audit_log
@@ -127,6 +130,7 @@ RLS: enabled · rows: 754
 
 PK: id
 Note (2026-09-21): entity_type 'pec_appointments' rows are written by the trigger trg_pec_appointments_audit (see pec_appointments); admin_email holds the ACTOR LABEL for those rows (a staff name, or 'Customer (online booking)', 'Customer via manage link', 'Routemize booking', 'Google Calendar sync', 'System'), auth_user_id the staff uid when there was one, after_json the changed tracked fields plus actor_label / source / title. Partial index idx_audit_log_appointments (entity_id, created_at desc) where entity_type = 'pec_appointments'.
+Security update (2026-09-14): `pec_payment_audit` writes payment_insert/payment_update/payment_delete events with entity_type='pec_payments', payment id, complete before/after payment snapshots, and JWT actor attribution when present. The payment and audit event share a transaction; audit failure rolls back the payment. No-op updates do not add events. Browser audit UPDATE/DELETE remain revoked.
 
 ### colors
 RLS: enabled · rows: 21
@@ -1319,6 +1323,8 @@ Owner functions: `topcoat_owner_private.allowed()` is SECURITY DEFINER, fixed em
 ### pec_payments
 RLS: enabled · rows: 123
 
+Security update (2026-09-14): existing staff payment correction/CRUD permission is preserved, now requiring a current staff session through the shared helper. Every INSERT/UPDATE/DELETE has the mandatory `pec_payment_audit` AFTER ROW trigger backed by private `audit_payment_mutation()`. This covers the correction RPC, raw client mutations and service-role payment events without a separate best-effort client audit call. No-op updates are ignored by the audit trigger.
+
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
@@ -2108,7 +2114,7 @@ FK: job_id → jobs.id (cascade); prod_job_id → pec_prod_jobs.id; customer_id 
 Note: added 2026-07-31 (prompt 60). One row per review ask; token is the /r/&lt;token&gt; tracking-link key (UNIQUE). status CHECK in ('asked','clicked','reviewed','skipped','stopped'). crew_lead/crew_id are SNAPSHOTS taken at ask time from pec_prod_jobs and never re-derived (schedule edits must not rewrite attribution history). job_completed_date preserves the real completion date for backfilled asks (asked_at is stamped at enrollment). PARTIAL UNIQUE idx_pec_review_req_one_open on (job_id) WHERE status in ('asked','clicked'): a job never holds two open asks. Index idx_pec_review_req_status_asked on (status, asked_at). RLS staff-only, no anon policy (the public redirect uses the service key).
 
 ### pec_sales_member_google_calendars
-RLS: enabled (NO policies — default-deny, service-role only; browser reads go through the `pec_member_google_calendars_v` definer view, which excludes private tokens, continuation state and leases and grants SELECT to authenticated) · rows: 11 (verified September 9, 2026; 8 enabled)
+RLS: enabled (NO policies, default-deny, service-role only; browser reads go through `pec_member_google_calendars_v`, now SECURITY INVOKER over the private, current-staff-checked `google_calendar_metadata()` function. It excludes private tokens, continuation state and leases. Nonstaff authenticated accounts receive no rows.) · rows: 11 (verified September 9, 2026; 8 enabled)
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -2219,6 +2225,20 @@ RLS: enabled · rows: 0
 PK: id
 FK: appointment_id → pec_appointments.id (on delete set null); customer_id → customers.id (on delete set null); sales_member_id → pec_sales_team_members.id (on delete set null)
 Unique: salesask_recording_id. lead_id deliberately has NO FK (matches pec_appointments.lead_id, survives lead soft-delete). Indexes: idx_pec_salesask_recordings_customer (customer_id, occurred_at desc), idx_pec_salesask_recordings_appt, idx_pec_salesask_recordings_lead (lead_id, occurred_at desc). Same trust model as pec_call_log: staff READ, service-role write only (pec-webhook-salesask.cjs + pec-salesask-sync.cjs). status: 'processing' | 'processed' | 'processing-failed'. transcript = SalesAsk utterances {speaker,text,start,end} verbatim; raw = last full API/webhook document. match_method: 'event_id' | 'rep_time_window' | 'name_fuzzy' | 'unmatched'.
+
+### pec_security_rate_limits
+RLS: enabled, zero policies (service role only). Verified live 2026-09-14.
+
+| column | type | nullable | default |
+|---|---|---|---|
+| scope | text | no | |
+| key_hash | text | no | |
+| hits | integer | no | |
+| window_started_at | timestamptz | no | |
+| expires_at | timestamptz | no | |
+
+PK: (scope, key_hash). CHECKs: scope length 1-80; key_hash is lowercase 64-character SHA-256 hex; hits > 0. Index: pec_security_rate_limits_expiry_idx(expires_at). No raw IPs, customer tokens, or request bodies are stored.
+RPC: `pec_take_rate_limit(p_scope text,p_key text,p_limit integer,p_window_seconds integer)` returns `{allowed,remaining,retry_after}`. SECURITY INVOKER, fixed empty search_path, EXECUTE service_role only. Atomic insert/conflict update grants at most the configured limit in a fixed window; rejected attempts do not extend the window. Window 1-86400 seconds; limit 1-1000000. Expired entries are cleaned opportunistically in batches of 100 after a one-day retention grace. Callers fail closed before paid API calls or side effects. Portal wrappers invoke this through their bounded private implementation.
 
 ### pec_sms_log
 RLS: enabled · rows: 68
@@ -2463,6 +2483,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
+Security update (2026-09-14): settings_staff_select permits current staff reads. settings_admin_insert/update/delete enforce current admin role on every write; UPDATE has both USING and WITH CHECK and DELETE has an admin USING predicate. Existing restrictive owner_settings_boundary remains. New backend-only safeguards: booking_slots_rate_limit_per_hour='60' and booking_routes_rate_limit_per_day='200', seeded insert-only; no new UI controls were added.
 Estimate description templates (2026-09-14): estimate_line_templates_enabled ('true'), Settings > Estimates > Line editor > Advanced. Hides/shows template controls only; saved line text is unchanged. Templates are stored in pec_estimate_line_templates, not in settings.
 
 Google calendar booking protection (2026-09-09, verified live): google_booking_max_sync_age_minutes ('45', clamped 15–1440), under Settings > Appointments > Google Advanced. Public availability and the service-role-only five-argument book_appointment_slot RPC both require every selected rep's enabled source calendars and dedicated calendar to have completed recovery (pull_version >= 2), no error, a completion after reconnect, and a completion within this freshness limit. Disconnected dependencies fail closed; never-connected reps without source dependencies remain bookable. Ordinary in-progress work can coexist with a fresh completed baseline. The RPC checks health after acquiring its existing per-rep/day advisory lock, before overlap checks and writes, and returns calendar_unavailable when unverified.
@@ -2555,3 +2576,13 @@ RLS: enabled · rows: 6
 
 PK: id
 FK: admin_user_id → admin_users.id
+
+## Public portal security boundaries (verified 2026-09-14)
+
+`get_portal_data(text)` retains its token-scoped job projection and now explicitly returns only customer identity/contact/company/billing fields: id, name, first_name, last_name, email, phone, company, company_name, billing_address_line1/2, billing_city/state/zip. Tokens, tags, lead source, Stripe and legacy integration identifiers are excluded, and future customer columns are not automatically public.
+
+Public RPC names and argument lists are unchanged. `portal_confirm_job`, `portal_set_area_colors`, `portal_submit_review`, `portal_submit_referral` and `portal_log_view` call original implementations moved into `topcoat_security_private`, inaccessible to browser roles. Public wrappers use fixed empty search paths and validate customer tokens plus active/non-voided job ownership where applicable. Confirmed signatures cannot be overwritten; identical signature retries return success. Color choices are editable before confirmation, matching the existing portal UI. Reviews are one per customer/job with identical retries returning the original id. Identical referral payloads are deduplicated for 24 hours. View logging is coalesced to one per customer/minute. Locks serialize changes/replays for the same job or customer.
+
+Payload bounds: tokens 16-128 characters (all existing tokens verified at 64); PNG signature data URLs at most 2 MiB; color arrays at most 100 items/64 KiB; review feedback 10,000 bytes; friend name 300 bytes, phone 80, email 320, interest 1,000; user agent 2,048. Per-token hourly safety quotas are 30 confirmations/color changes, 10 reviews, 20 referrals and 120 view attempts, enforced through the service-only quota store from private functions. Public token lifetime and sign-in requirements are unchanged.
+
+`pec-photos` stays public with existing URLs; uploads now have a 20 MiB limit and JPEG/PNG/WebP/GIF/HEIC/HEIF MIME allowlist. Public-schema TRUNCATE/REFERENCES/TRIGGER privileges were revoked from anon/authenticated. For future postgres-owned objects, automatic anon/authenticated table/sequence/function privileges and default PUBLIC function execution were removed; migrations must grant intended browser access explicitly. Existing application CRUD grants were preserved.

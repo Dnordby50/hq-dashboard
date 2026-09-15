@@ -13,6 +13,7 @@
 // attempted independently; the response reports which ones fired.
 
 const { sb } = require('./_pec-supabase.cjs');
+const crypto = require('crypto');
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const SLACK_OFFICE_WEBHOOK = process.env.SLACK_OFFICE_WEBHOOK;
@@ -59,6 +60,26 @@ exports.handler = async (event) => {
     return jc(502, { ok: false, error: 'Could not look up the invoice' });
   }
   if (!row) return jc(404, { ok: false, error: 'Invoice not found' });
+
+  // One persistent, atomic allowance per invoice, across every payment method
+  // and server instance. Reserve before sending; uncertainty keeps the cooldown
+  // rather than risking duplicate office notifications on a retry.
+  const cooldown = Math.min(86400, Math.max(60, Number(process.env.INVOICE_INTENT_COOLDOWN_SECONDS) || 300));
+  try {
+    const limit = await sb('POST', '/rpc/pec_take_rate_limit', {
+      p_scope: 'invoice_intent',
+      p_key: crypto.createHash('sha256').update(String(row.id || token)).digest('hex'),
+      p_limit: 1, p_window_seconds: Math.floor(cooldown),
+    });
+    if (!limit || typeof limit.allowed !== 'boolean') throw new Error('Invalid rate limit response');
+    if (!limit.allowed) {
+      const res = jc(429, { ok: false, error: 'Please wait a few minutes before notifying the office again.' });
+      res.headers['Retry-After'] = String(Math.max(1, Math.ceil(Number(limit.retry_after) || cooldown)));
+      return res;
+    }
+  } catch (_) {
+    return jc(503, { ok: false, error: 'Could not notify the office right now. Please try again shortly.' });
+  }
 
   const brandKey = row.customer_company || 'prescott-epoxy';
   const customer = row.customer_name || 'Customer';

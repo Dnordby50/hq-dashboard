@@ -52,7 +52,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { sb, withActor, json, randomToken, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
+const { sb, withActor, json: rawJson, randomToken, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
 const { pushApptById } = require('./_pec-appt-push.cjs');
 const {
   runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects,
@@ -64,7 +64,7 @@ const {
   quietHours, sendQuoSmsReal, sendResendEmailReal,
   getSmsSender, getEmailSender, dripEmailHtml, getBrandAccent,
 } = require('./_pec-drip.cjs');
-const { driveMinutesFor } = require('./_pec-booking-drive.cjs');
+const { driveMinutesFor, takeBookingRateLimit } = require('./_pec-booking-drive.cjs');
 const { computeSlots, addrKey, HOME_KEY } = require('../../production/booking-availability.cjs');
 const { repsWithVerifiedGoogleCalendars } = require('./_pec-booking-google-health.cjs');
 
@@ -81,6 +81,29 @@ const TYPE_LABELS = {
 const STOP_LINE = ' Reply STOP to opt out.';
 const CALENDAR_UNAVAILABLE_COPY = 'We cannot confirm open times right now. Please call us and we will get you scheduled.';
 const calendarUnavailable = () => ({ status: 503, body: { ok: false, calendar_unavailable: true, error: CALENDAR_UNAVAILABLE_COPY, days: [] } });
+const PUBLIC_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  // Keep Maps' referrer-restricted browser key working while excluding path
+  // tokens from cross-origin referrers. Embedded forms remain permitted.
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Cache-Control': 'no-store',
+};
+const json = (status, body, headers = {}) => {
+  const out = rawJson(status, body);
+  out.headers = { ...out.headers, ...PUBLIC_HEADERS, ...headers };
+  return out;
+};
+
+function validPublicBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const limits = { form: 80, name: 200, phone: 80, email: 254, address1: 512, city: 120,
+    state: 80, zip: 32, place_id: 512, start: 80, token: 256, project: 4000, website: 1024 };
+  for (const [key, max] of Object.entries(limits)) {
+    if (body[key] == null) continue;
+    if (typeof body[key] !== 'string' || body[key].length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(body[key])) return false;
+  }
+  return body.answers == null || (typeof body.answers === 'object' && !Array.isArray(body.answers));
+}
 
 const cleanStr = (s) => { const v = String(s == null ? '' : s).trim(); return v || null; };
 const esc = (s) => String(s == null ? '' : s)
@@ -102,6 +125,7 @@ const SETTING_KEYS = [
   'booking_min_fill_seconds', 'booking_duplicate_window_hours',
   'booking_sms_disclosure', 'booking_manage_link_text',
   'booking_block_crew_holidays', 'google_booking_max_sync_age_minutes',
+  'booking_slots_rate_limit_per_hour', 'booking_routes_rate_limit_per_day',
 ];
 
 // Audit-trail actor labels (2026-09-21). The customer never has a staff
@@ -145,6 +169,19 @@ const numSetting = (s, key, dflt) => {
   const n = Number(s[key]);
   return isFinite(n) && s[key] != null && String(s[key]).trim() !== '' ? n : dflt;
 };
+
+async function guardSlotRequest(deps, settings, meta = {}) {
+  const limit = Math.min(1000000, Math.max(1, Math.floor(numSetting(settings, 'booking_slots_rate_limit_per_hour', 60))));
+  const key = meta.ipHash || crypto.createHash('sha256').update('booking:unknown-connection').digest('hex');
+  try {
+    const result = await takeBookingRateLimit(deps.sb, 'booking_slots', key, limit, 3600);
+    if (result.allowed) return null;
+    return { status: 429, headers: { 'Retry-After': String(Math.max(1, Math.ceil(result.retry_after))) },
+      body: { ok: false, error: 'We have received several requests from this connection. Please wait a little or call us to schedule.' } };
+  } catch (_) {
+    return { status: 503, body: { ok: false, error: 'Could not load open times. Please call us.' } };
+  }
+}
 
 function workingHoursFrom(s) {
   try {
@@ -291,6 +328,7 @@ async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId,
       maxOrigins: numSetting(settings, 'booking_routes_max_origins_per_request', 25),
       timeoutMs: numSetting(settings, 'booking_routes_timeout_ms', 4000),
       cacheTtlDays: numSetting(settings, 'booking_drive_cache_ttl_days', 30),
+      rateLimitPerDay: numSetting(settings, 'booking_routes_rate_limit_per_day', 200),
     });
   }
 
@@ -619,8 +657,8 @@ async function processBook(deps, body, meta = {}) {
     const routed = routeAnswers(form.questions, body.answers);
     const missing = [];
     if (!name) missing.push('name');
-    if (!phone10) missing.push('phone');
-    if (!email) missing.push('email');
+    if (!phone10 || phone10.length !== 10) missing.push('phone');
+    if (!email || email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) missing.push('email');
     if (!addr.address || !addr.city || !addr.zip) missing.push('address');
     if (!start || isNaN(new Date(start))) missing.push('time');
     missing.push(...routed.missingRequired);
@@ -650,6 +688,12 @@ async function processBook(deps, body, meta = {}) {
         return { status: 429, body: { ok: false, error: 'We have received several bookings from this connection. Please call us to schedule.' } };
       }
     }
+
+    // Count all valid attempts before contact/duplicate lookup as well as
+    // availability work. The prior booked-row limit alone cannot bound
+    // repeated rejected submissions or duplicate probes.
+    const slotLimit = await guardSlotRequest(deps, settings, meta);
+    if (slotLimit) return slotLimit;
 
     // -- Duplicate guard: same phone + type inside the window returns the
     //    existing appointment, never a second row -----------------------------
@@ -842,13 +886,21 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
   const disclosure = cleanStr(settings.booking_sms_disclosure);
 
   try {
+    if (!form || form.active === false || String(settings.booking_enabled || 'false') !== 'true') {
+      return { status: 503, body: { ok: false, closed: true, error: 'Online booking is not open yet. Give us a call and we will get you scheduled.' } };
+    }
     if (cleanStr(body.website)) {
       await writeRequestRow(db, { form_id: form && form.id, status: 'rejected', name, phone: phone10, email, in_area: false, error_text: 'honeypot', ip_hash: meta.ipHash, user_agent: meta.userAgent });
       return { status: 200, body: { ok: true } };
     }
-    if (!name || !phone10) {
+    if (!name || !phone10 || phone10.length !== 10) {
       return { status: 400, body: { ok: false, error: 'Please give us your name and phone number so we can call you.' } };
     }
+    if (email && (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))) {
+      return { status: 400, body: { ok: false, error: 'Please check your email address.' } };
+    }
+    const requestLimit = await guardSlotRequest(deps, settings, meta);
+    if (requestLimit) return requestLimit;
     const routed = routeAnswers(form ? form.questions : [], body.answers);
     const source = await resolveLeadSourceName(db, routed.leadSourceAnswer || 'topcoat_booking');
     const sp = name.indexOf(' ');
@@ -938,6 +990,10 @@ async function processManage(deps, body, meta = {}) {
   if (error === 'expired') return { status: 410, body: { ok: false, error: 'This appointment has already happened, so this link no longer works. Book a new time any time.' } };
 
   try {
+    if (action === 'slots' || action === 'reschedule') {
+      const slotLimit = await guardSlotRequest(deps, settings, meta);
+      if (slotLimit) return slotLimit;
+    }
     if (action === 'cancel') {
       if (appt.status === 'canceled') return { status: 200, body: { ok: true, message: 'This appointment is already canceled.' } };
       // The customer is the actor here; the header labels the audit row.
@@ -1043,11 +1099,13 @@ async function processManage(deps, body, meta = {}) {
 // Slots API (POST /api/booking/slots)
 // ---------------------------------------------------------------------------
 
-async function processSlots(deps, body) {
+async function processSlots(deps, body, meta = {}) {
   const db = deps.sb;
   const settings = await getBookingSettings(db);
   deps.settings = settings;
   try {
+    const slotLimit = await guardSlotRequest(deps, settings, meta);
+    if (slotLimit) return slotLimit;
     const form = await loadForm(db, cleanStr(body.form) || 'pec');
     if (!form || form.active === false || String(settings.booking_enabled || 'false') !== 'true') {
       return { status: 200, body: { ok: true, open: false } };
@@ -1099,6 +1157,7 @@ function htmlResponse(statusCode, html, robots = 'noindex, nofollow') {
   return {
     statusCode,
     headers: {
+      ...PUBLIC_HEADERS,
       'Content-Type': 'text/html; charset=utf-8',
       'X-Robots-Tag': statusCode === 200 ? robots : 'noindex, nofollow',
       'Cache-Control': 'no-store',
@@ -1625,18 +1684,20 @@ exports.handler = async (event) => {
       return json(200, { ok: true, disclosure: cleanStr(settings.booking_sms_disclosure) || '' });
     }
 
+    if (Buffer.byteLength(event.body || '', 'utf8') > 65536) return json(413, { ok: false, error: 'Request is too large' });
     let body;
     try { body = JSON.parse(event.body || '{}'); }
     catch { return json(400, { ok: false, error: 'Invalid request' }); }
+    if (!validPublicBody(body)) return json(400, { ok: false, error: 'Invalid request' });
     const meta = { ipHash: ipHashFrom(event), userAgent: cleanStr(event.headers && event.headers['user-agent']) };
 
     let out;
-    if (action === 'slots') out = await processSlots(deps, body);
+    if (action === 'slots') out = await processSlots(deps, body, meta);
     else if (action === 'book') out = await processBook(deps, body, meta);
     else if (action === 'lead') out = await processOutOfAreaLead(deps, body, meta);
     else if (action === 'manage') out = await processManage(deps, body, meta);
     else out = { status: 404, body: { ok: false, error: 'Unknown action' } };
-    return json(out.status, out.body);
+    return json(out.status, out.body, out.headers);
   }
 
   // HTML pages.
@@ -1688,6 +1749,8 @@ exports.checkArea = checkArea;
 exports.routeAnswers = routeAnswers;
 exports.groupSlotsByDay = groupSlotsByDay;
 exports.engineConfig = engineConfig;
+exports.validPublicBody = validPublicBody;
+exports.htmlResponse = htmlResponse;
 
 exports.pageShell = pageShell;
 exports.bookingPageInner = bookingPageInner;

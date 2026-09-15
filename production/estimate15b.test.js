@@ -101,7 +101,15 @@ function loadFn(file, sbImpl, extra = {}) {
   // badSecret false = the webhook-secret auth path passes, so the handler skips
   // the getUser() fetch (our fetch stub answers the model, not /auth/v1/user).
   require.cache[supPath] = {
-    id: supPath, filename: supPath, loaded: true, exports: { ...real, sb: sbImpl, badSecret: () => false, ...extra },
+    id: supPath, filename: supPath, loaded: true, exports: {
+      ...real, sb: sbImpl, badSecret: () => false,
+      // Preview now shares the staff-membership gate. Feature fixtures use a
+      // known authorized identity; security-backend tests cover gate denials.
+      requireStaff: async (event) => /^Bearer good(?:-token)?$/.test(event.headers?.authorization || '')
+        ? { ok: true, user: { id: 'staff-1' }, staff: { id: 'admin-fixture', role: 'office' } }
+        : { ok: false, status: 401, error: 'Not authenticated' },
+      ...extra,
+    },
   };
   const fnPath = require.resolve(path.join(FN_DIR, file));
   delete require.cache[fnPath];
@@ -762,8 +770,8 @@ await section('preview: identical body to the public route, no send, no token', 
   const pubMod = loadFn('pec-public-estimate.cjs', makeMockSb(pubDb));
   const pubRes = await pubMod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
 
-  // Staff preview: getUser() must pass. It calls fetch(/auth/v1/user); return a
-  // user with an id. The mock sb is the SAME, so the data is identical.
+  // Staff preview uses loadFn's authorized staff fixture. The mock sb is the
+  // SAME, so the data is identical.
   global.fetch = async (url) => {
     if (String(url).includes('/auth/v1/user')) return { ok: true, json: async () => ({ id: 'staff-1' }) };
     return { ok: true, text: async () => '', json: async () => ({}) };

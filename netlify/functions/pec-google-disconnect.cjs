@@ -7,7 +7,7 @@
 // until a re-connect.
 
 const { sb } = require('./_pec-supabase.cjs');
-const { getTokenRow, revokeToken, getStaffUser } = require('./_pec-google.cjs');
+const { getTokenRow, revokeToken, getStaffUser, authorizeCalendarMember } = require('./_pec-google.cjs');
 
 function cors() {
   return {
@@ -30,6 +30,8 @@ exports.handler = async (event) => {
   catch { return jc(400, { ok: false, error: 'Invalid JSON' }); }
   const memberId = input.sales_member_id;
   if (!memberId) return jc(400, { ok: false, error: 'sales_member_id is required' });
+  const access = await authorizeCalendarMember(sb, user, memberId);
+  if (!access.ok) return jc(access.status, { ok: false, error: access.error });
 
   try {
     const row = await getTokenRow(sb, memberId);

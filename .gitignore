@@ -18,3 +18,6 @@ build/
 
 # TypeScript incremental build state (local artifact)
 apps/estimator/tsconfig.tsbuildinfo
+
+# Supabase CLI local project metadata
+/supabase/.temp/

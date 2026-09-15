@@ -1,57 +1,37 @@
-# AGENTS.md: TopCoat / HQ-Dashboard
+# TopCoat: shared agent contract
 
-This file is the entry point for GPT Codex (and any non-Claude coding agent) working in this repo. It carries the same standing rules as `CLAUDE.md`, which remains the canonical wording. If the two ever disagree, `CLAUDE.md` wins and the disagreement is a bug to report to Dylan.
+Canonical rules for Codex, Claude Code, and Cowork. Dylan's current instructions and accepted decisions take precedence. `CLAUDE.md` imports this file; keep one contract, not parallel copies. Updated 2026-09-14 under the authorized security/context cleanup.
 
-The full operating picture (who the other agents are, infrastructure, the session loop, the Obsidian vault, the multi-agent contract, and the list of traps that have already cost time) is in **`CODEX-HANDOVER.md`** at the repo root. Read it once in full. Then use this file as the per-session checklist.
+## Start narrowly
 
-## Startup, every session
+1. Read this contract and `docs/product-charter.md` once per task. Run `node scripts/context-packet.mjs --feature "<feature>"` for current git state, locks, three recent log summaries, and relevant feature anchors. Read a full relevant log entry when the summary omits a needed fact. Do not load the historical CODEX handover routinely.
+2. Report the current state and latest work briefly. Inspect uncommitted changes, ahead/behind status, untracked files, and `.git/*.lock`. Preserve work owned by another session. Coordinate ownership or use an isolated worktree before overlapping edits; read-only investigation can continue.
+3. Consult the relevant `features.json` entry before searching `index.html`, and the relevant `SCHEMA.md` section before any SQL or supabase-js select. Verify live evidence when migration/deployment state matters. Check what already exists before building.
+4. Do the authorized task. Ask only for material missing decisions; do not use a quota of questions. Keep the outcome, acceptance criteria, must-preserve behavior, and next step in the current task, using the packet format in `docs/agent-context.md`. Do not write task state into that shared guide.
 
-1. Read this file and `CLAUDE.md`.
-2. Read the top 3 entries of `PROJECT-LOG.md` (`awk '/^## /{n++} n<=3' PROJECT-LOG.md`). Never read the file end to end.
-3. `git status -sb`. Report `[ahead N]`, untracked files, and any `.git/*.lock` in your first reply.
-4. Confirm in one sentence what the most recent log entry was and the project's current state.
-5. Open the relevant `features.json` entry before grepping `index.html`, and the relevant `SCHEMA.md` section before writing any SQL or supabase-js select.
-6. Do exactly the task. No scope expansion. If the task is unclear or conflicts with `CLAUDE.md` or a recent log entry, stop and ask.
+## Build boundaries
 
-## Standing rules (summary; full text in CLAUDE.md)
+- Serve PEC/FTP operations and owner independence. Preserve essential visible summaries and existing workflows. A substantial redesign needs a concrete preview and approval before production implementation.
+- Every major feature has human-tunable settings for its operating parameters. At most two frequently used controls sit front-of-card; others go under Advanced. App state, caches, and secrets are not settings.
+- Enforce permissions, record ownership, status transitions, financial rules, and booking availability on the server/database write path. Do not rely on hidden controls. Preserve drafts even when sending is blocked.
+- Never blind-retry a non-idempotent write. Verify whether the first payment/change order landed before retrying. Preserve manual financial inputs, original owner source documents, separate yearly records, and revision conflicts.
+- Never delete records based only on a missing external integration ID. Cleanup requires verified provenance, a reviewed dry-run affected-record list, and authorization. One-off backfills are idempotent and support `--dry-run`; obtain explicit authorization before the live run.
+- Edit estimator source in `apps/estimator`, then rebuild; never hand-edit `estimator/` output. Use the module invariants in `docs/engineering-workflow.md` when touching auth, jobs, modals, money, calendars, or estimates.
+- No em dashes in customer-facing estimates, invoices, scopes, portals, email, SMS, help, or What's New.
 
-1. Commit after every meaningful change: `<area>: <what changed>`. Stage specific files, never `git add .`. Never commit secrets or `.env` files.
-2. Append a PROJECT-LOG.md entry at the TOP after every meaningful change, using the template at the bottom of that file. `By: Codex`.
-3. Never delete or edit past log entries. Corrections are new entries.
-4. Read CLAUDE.md and the last 3 log entries before any task.
-5. Flag handoffs explicitly: `## Handoff to Cowork` / `## Handoff to Dylan` in the log entry, plus a self-contained Cowork prompt printed in chat (format in CLAUDE.md and `.claude/skills/handoff/SKILL.md`).
-6. No em dashes in anything customer-facing (estimates, invoices, scope text, portal pages, emails, SMS, What's New, help content).
-7. Secrets stay in Netlify env vars. Placeholder in code plus a Handoff to Dylan. Exception: referrer-restricted client-side Google keys, which must also be in `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` in `netlify.toml`.
-8. Default to a Cowork handoff for inputs and verifications, not direct questions to Dylan. Ask Dylan directly only when the session is blocked on a binary architectural choice.
-9. `features.json` before grepping; `SCHEMA.md` before any SQL. Refresh SCHEMA.md after migrations; update features.json when a feature changes.
-10. Token discipline: never read `index.html`, `PROJECT-LOG.md`, or `PROJECT-LOG-ARCHIVE.md` wholesale.
-11. Every user-facing change gets a `help/whats-new.json` entry in the same session.
-12. Every major feature gets a settings surface in the `settings` table: at most two controls front-of-card, the rest behind Advanced; state and caches are never settings.
-13. Every migration starts with an `@artifacts` header (`table:`, `column:`, `index:`, `setting:`, or `none: <reason>`).
-14. Migrations touching money tables, auth, or `estimates.status` rehearse on a branch (or a rolled-back prod transaction, stated in the log) before prod.
+## Data, secrets, and authority
 
-## Multi-agent contract (Codex alongside Claude Code)
+- Keep credentials in deployment environment variables, never source, logs, prompts, or `.env` commits. The existing browser Google-key exception requires referrer/API restrictions and the matching secret-scan omit entry; server calls need a separate server credential. Do not expand omit lists to suppress real secrets.
+- Do not edit this contract, the CLAUDE adapter, `.claude/settings*.json`, or the Netlify secret-scan omit list without Dylan's explicit instruction. Existing authorization persists; do not ask again for actions already authorized.
+- The Obsidian HQ vault is read-only reference from this project. Do not modify protected Google Sheets, send external messages, make payments/purchases, or perform destructive actions without explicit authorization for that action. Use available tools directly for authorized work; hand off only an actual access/input blocker.
+- Every migration starts with an `@artifacts` header. Rehearse money, auth/RLS/SECURITY DEFINER, and `estimates.status` changes before production. Prefer an isolated database; document a rolled-back production rehearsal if that is the available approved fallback. Apply and verify migrations before dependent code ships; never claim an unapplied migration is live. Refresh the relevant schema sections from verified evidence.
 
-- One agent per task. Uncommitted changes you did not make mean another session may be live: stop and ask.
-- Number build prompts from `git log` and the current listing at write time, and re-check before committing. Highest at HEAD on 2026-09-07: 102.
-- Dylan authorizes agents to commit and push tested, user-requested changes to `origin/main` without per-push confirmation, then verify the live deployment (updated 2026-09-09). Honor any explicit request to hold publication. Keep shared history intact and use revert commits for rollback. `git pull --ff-only` only; on failure, stop and tell Dylan.
-- Stale `.git/index.lock` or `.git/HEAD.lock` with no git process running is Cowork's sandbox debris: delete it and say so.
-- Do not edit `CLAUDE.md`, `AGENTS.md`, `.claude/settings*.json`, or the `netlify.toml` omit list without Dylan's explicit instruction.
-- If you cannot apply a migration (no Supabase access), the session ends on that block with a printed Cowork prompt. Never log a migration as applied that you did not apply.
-- "The fix didn't work" means check `[ahead N]` and the live estimator bundle before re-diagnosing.
+## Verify and release
 
-## Verification bar
+- Run `npm test` including posttest; `node --check` every touched `.cjs`; compare dashboard script parse results with HEAD; parse changed manifests; run `git diff --check`. Build the estimator when its source changes. Validate affected UI behavior using synthetic fixtures, including 360px mobile when relevant. Log the exact checks, not assumed results.
+- Commit meaningful changes as `<area>: <what changed>`, staging specific files. Prepend a new `PROJECT-LOG.md` entry with the correct `By:` identity; never edit/delete past entries. Update affected feature/schema references. Every user-facing change gets a plain-language `help/whats-new.json` entry; internal-only work does not.
+- Dylan authorizes tested, requested changes to be committed and pushed to `origin/main` without per-push confirmation, then verified live. Honor a publication hold. Keep shared history intact; rollback through a revert. Pull fast-forward only; stop integration and report divergence.
+- One integration/release owner per task. Delegate bounded independent work with explicit files. Recheck git/prompt numbering immediately before naming a numbered build spec and before committing. Remove a stale git lock only after confirming no live git process owns it; report removal.
+- A release needs code, required migrations, tests, and live deployment verification. If access blocks completion, record the blocker and print a self-contained Cowork/Dylan handoff using `.claude/skills/handoff/SKILL.md`. Do not strand dependent production code behind a buried handoff.
 
-`npm test` green; `node --check` on every touched `.cjs`; per-script-block parse check on `index.html` matching HEAD's failure set; `features.json` and `help/whats-new.json` reload through `JSON.parse`. Log the exact checks you ran.
-
-## Do not touch
-
-`estimator/` (build output), the Obsidian vault at `/Users/dylannordby/Desktop/HQ` (read-only reference), Google Sheets listed in CLAUDE.md (Dylan confirms first), any non-idempotent write wrapped in a blind retry.
-
-## Key resource IDs
-
-- Supabase project `zdfpzmmrgotynrwkeakd`; site `https://prescottepoxy.netlify.app`
-- Booked Jobs Sheet `1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4`
-- Dashboard Data Sheet `1445T0CPavFCWEj2soegc599nCZrbWLgDsCnjQGChI74`
-- MBP 2026 Sheet `1vlumbi2mh_mjtmO1ZiTxMy0BTXbtNCNV-FOM-LVZ_s0`
-- Slack `#epoxysales` `C09AZE8CU0Z`
+Detailed migration syntax, test commands, pitfalls, and handoff format: `docs/engineering-workflow.md`. Historical reference: `CODEX-HANDOVER.md`. Internal rules, logs, schemas, migrations, task packets, and audits must never be included in public site assets.

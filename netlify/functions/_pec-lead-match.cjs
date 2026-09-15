@@ -24,10 +24,17 @@ function normPhone(s) {
 // PostgREST or=() clause for "same human": last-10 phone suffix OR exact
 // email. Returns the ENCODED clause (ready to embed in a query string) or
 // null when there is nothing to match on.
+// URL encoding alone does not escape PostgREST's filter grammar. Quote the
+// value first, including embedded quotes/backslashes, then encode the clause.
+function postgrestLiteral(value) {
+  return '"' + String(value == null ? '' : value).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
 function sameHumanOr(phone10, email) {
   const parts = [];
-  if (phone10) parts.push(`phone.ilike.*${phone10}`);
-  if (email) parts.push(`email.eq.${email}`);
+  const digits = normPhone(phone10);
+  if (digits && digits.length === 10) parts.push(`phone.ilike.*${digits}`);
+  if (email) parts.push(`email.eq.${postgrestLiteral(email)}`);
   return parts.length ? encodeURIComponent(parts.join(',')) : null;
 }
 
@@ -82,4 +89,4 @@ async function resolveOrCreateCustomer(db, f = {}) {
   return { customer_id: row.id, created: true };
 }
 
-module.exports = { DEDUPE_WINDOW_DAYS, normPhone, sameHumanOr, findRecentLiveLead, resolveOrCreateCustomer };
+module.exports = { DEDUPE_WINDOW_DAYS, normPhone, postgrestLiteral, sameHumanOr, findRecentLiveLead, resolveOrCreateCustomer };

@@ -1,0 +1,17 @@
+{
+  "files": [
+    "index.html",
+    "assets/pec-logo.png",
+    "vendor/supabase-js-2.106.2.umd.js",
+    "help/crm-help.md",
+    "help/whats-new.json",
+    "production/owner-studio.css",
+    "production/owner-studio.js",
+    "production/owner-mbp.js",
+    "production/owner-mbp-inputs.js",
+    "production/owner-mbp-ui.js",
+    "production/owner-routine.js",
+    "production/owner-finance.js",
+    "production/owner-finance-ui.js"
+  ]
+}

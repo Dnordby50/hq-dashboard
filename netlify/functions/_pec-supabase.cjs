@@ -50,7 +50,8 @@ function badSecret(event) {
 // is not enough: any Supabase auth user (including one created outside the staff
 // flow, or via self-signup if that is ever enabled) would otherwise be able to
 // send SMS/email on the company accounts, run blasts, read metrics, etc. This
-// verifies the caller has a row in admin_users, mirroring pec-reset-password.cjs.
+// verifies current staff membership, revocation/ban state, and the JWT's live
+// session through a narrow database RPC. A valid JWT can outlive logout/revoke.
 // Returns { ok:true, user, staff } or { ok:false, status, error } so callers can
 // do: `const a = await requireStaff(event); if(!a.ok) return jc(a.status,{error:a.error});`
 // Pass { adminOnly:true } to additionally require role='admin'.
@@ -63,8 +64,9 @@ async function requireStaff(event, opts) {
   if (!token) return { ok: false, status: 401, error: 'Not authenticated' };
 
   let user;
-  const authController = opts && Number(opts.timeoutMs) > 0 ? new AbortController() : null;
-  const authTimer = authController ? setTimeout(() => authController.abort(), Number(opts.timeoutMs)) : null;
+  const timeoutMs = opts && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 8000;
+  const authController = new AbortController();
+  const authTimer = setTimeout(() => authController.abort(), timeoutMs);
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` },
@@ -75,16 +77,22 @@ async function requireStaff(event, opts) {
   } catch (_) {
     return { ok: false, status: 401, error: 'Invalid session' };
   } finally { if (authTimer) clearTimeout(authTimer); }
-  if (!user || !user.id) return { ok: false, status: 401, error: 'Invalid session' };
+  if (!user || !user.id || user.is_anonymous === true) return { ok: false, status: 401, error: 'Invalid session' };
 
   let staff;
   try {
-    const rows = await sb('GET', `/admin_users?auth_user_id=eq.${encodeURIComponent(user.id)}&select=id,email,name,role&limit=1`, null, opts && opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : undefined);
-    staff = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    // The API verifies the caller JWT; auth.uid()/auth.jwt() inside the RPC
+    // derive identity. Never pass a user/session id chosen by the request.
+    staff = await sb('POST', '/rpc/pec_staff_session', {}, {
+      timeoutMs,
+      headers: { Authorization: `Bearer ${token}` },
+    });
   } catch (_) {
     return { ok: false, status: 500, error: 'Authorization check failed' };
   }
-  if (!staff) return { ok: false, status: 403, error: 'Staff only' };
+  if (!staff || !staff.id || staff.auth_user_id !== user.id) {
+    return { ok: false, status: 403, error: 'Current staff session required' };
+  }
   if (opts && opts.adminOnly && staff.role !== 'admin') {
     return { ok: false, status: 403, error: 'Admins only' };
   }

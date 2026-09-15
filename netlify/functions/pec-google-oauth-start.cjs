@@ -6,7 +6,7 @@
 // what the callback later trusts.
 
 const { sb } = require('./_pec-supabase.cjs');
-const { googleConfigured, consentUrl, getStaffUser } = require('./_pec-google.cjs');
+const { googleConfigured, consentUrl, getStaffUser, authorizeCalendarMember } = require('./_pec-google.cjs');
 
 function cors() {
   return {
@@ -34,10 +34,8 @@ exports.handler = async (event) => {
   const memberId = input.sales_member_id;
   if (!memberId) return jc(400, { ok: false, error: 'sales_member_id is required' });
 
-  // The member must exist on the roster; a bad id would otherwise mint a
-  // consent URL that stores tokens against nothing.
-  const rows = await sb('GET', `/pec_sales_team_members?id=eq.${encodeURIComponent(memberId)}&select=id,name&limit=1`);
-  if (!Array.isArray(rows) || !rows[0]) return jc(404, { ok: false, error: 'Sales team member not found' });
+  const access = await authorizeCalendarMember(sb, user, memberId);
+  if (!access.ok) return jc(access.status, { ok: false, error: access.error });
 
   return jc(200, { ok: true, url: consentUrl(memberId) });
 };

@@ -11,19 +11,25 @@ const { sb, json } = require('./_pec-supabase.cjs');
 
 const WEBHOOK_SECRET = process.env.RESEND_WEBHOOK_SECRET;
 
-function verifySvix(headers, rawBody) {
+function verifySvix(headers = {}, rawBody) {
   const id = headers['svix-id'];
   const ts = headers['svix-timestamp'];
   const sigHeader = headers['svix-signature'];
   if (!WEBHOOK_SECRET || !id || !ts || !sigHeader) return false;
+  // Svix signs the timestamp of this delivery attempt, in seconds. Retries
+  // receive a fresh signed timestamp; old event created_at values stay valid.
+  // https://docs.svix.com/receiving/verifying-payloads/how-manual
+  if (!/^\d+$/.test(String(ts)) || !Number.isSafeInteger(Number(ts))
+      || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
   let key;
   try { key = Buffer.from(WEBHOOK_SECRET.replace(/^whsec_/, ''), 'base64'); }
   catch (_) { return false; }
   const expected = crypto.createHmac('sha256', key).update(`${id}.${ts}.${rawBody}`).digest('base64');
   const expBuf = Buffer.from(expected);
   // The header is a space-delimited list of `v1,<signature>` entries.
-  return String(sigHeader).split(' ').some(part => {
-    const sig = part.includes(',') ? part.split(',')[1] : part;
+  return String(sigHeader).split(/\s+/).some(part => {
+    const [version, sig, extra] = part.split(',');
+    if (version !== 'v1' || extra !== undefined) return false;
     if (!sig) return false;
     const sigBuf = Buffer.from(sig);
     return sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);

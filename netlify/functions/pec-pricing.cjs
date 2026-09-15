@@ -46,8 +46,8 @@
 'use strict';
 
 const crypto = require('crypto');
-const { sb, json, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
-const { normPhone, findRecentLiveLead, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
+const { sb, json: rawJson, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
+const { normPhone, postgrestLiteral, findRecentLiveLead, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 const { enrollLead, sendInstantTouch } = require('./_pec-drip.cjs');
 const { notifyLeadSlack, notifyLeadBell } = require('./_pec-lead-notify.cjs');
@@ -55,12 +55,19 @@ const { notifyLeadSlack, notifyLeadBell } = require('./_pec-lead-notify.cjs');
 // keeps the pricing page's in-area verdict identical to /book's by
 // construction. (If pec-booking ever grows require-time side effects, extract
 // checkArea to production/ instead.)
-const { checkArea } = require('./pec-booking.cjs');
+const { checkArea, validPublicBody } = require('./pec-booking.cjs');
+const { takeBookingRateLimit } = require('./_pec-booking-drive.cjs');
 const { computePriceRange, normTiers, fmtMoney, renderRevealCopy } = require('../../production/pricing-range.cjs');
 
 const ENDPOINT = 'pricing';
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
 const SUPABASE_URL = process.env.SUPABASE_URL;
+const json = (status, body, headers = {}) => {
+  const out = rawJson(status, body);
+  out.headers = { ...out.headers, 'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin', ...headers };
+  return out;
+};
 
 const cleanStr = (s) => { const v = String(s == null ? '' : s).trim(); return v || null; };
 const esc = (s) => String(s == null ? '' : s)
@@ -282,7 +289,7 @@ async function writeRequestRow(db, row) {
 // POST /api/pricing/quote
 // ---------------------------------------------------------------------------
 
-async function processQuote(deps, body, meta) {
+async function processQuote(deps, body, meta = {}) {
   const db = deps.sb;
   const log = deps.logIngest || logIngest;
   const settings = await getPricingSettings(db);
@@ -406,16 +413,17 @@ async function processQuote(deps, body, meta) {
   // continuation needs them anyway, and the whole point is a real lead.
   const missing = [];
   if (!name) missing.push('name');
-  if (!phone10) missing.push('mobile phone');
-  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) missing.push('email');
+  if (!phone10 || phone10.length !== 10) missing.push('mobile phone');
+  if (!email || email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) missing.push('email');
   if (!address1 || (!zip && !city)) missing.push('project address');
   if (type.priceable !== false && sqftNum == null) missing.push('square footage');
   if (missing.length) {
     return { status: 400, body: { ok: false, error: `Please fill in: ${missing.join(', ')}.` } };
   }
 
-  // Per-ip rate limit over the last hour, counting answered quotes.
-  const rateLimit = numSetting(settings, 'pricing_rate_limit_per_hour', 10);
+  // Preserve the answered-quote history limit and atomically count new
+  // attempts, so concurrent or rejected submissions cannot bypass it.
+  const rateLimit = Math.min(1000000, Math.max(1, Math.floor(numSetting(settings, 'pricing_rate_limit_per_hour', 10))));
   try {
     const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
     const recent = await db('GET',
@@ -425,8 +433,15 @@ async function processQuote(deps, body, meta) {
       await log({ endpoint: ENDPOINT, customer_name: name, outcome: 'rejected', status_code: 429, message: 'rate limit', payload: body });
       return { status: 429, body: { ok: false, error: 'Too many pricing requests from this connection. Please call us instead.' } };
     }
+    const key = meta.ipHash || crypto.createHash('sha256').update('pricing:unknown-connection').digest('hex');
+    const budget = await takeBookingRateLimit(db, 'pricing_quote', key, rateLimit, 3600);
+    if (!budget.allowed) {
+      return { status: 429, headers: { 'Retry-After': String(Math.max(1, Math.ceil(budget.retry_after))) },
+        body: { ok: false, error: 'Too many pricing requests from this connection. Please call us instead.' } };
+    }
   } catch (e) {
-    console.warn('pec-pricing: rate-limit read failed (allowing):', e && e.message);
+    console.warn('pec-pricing: rate limit could not be verified; quote capture stopped');
+    return { status: 503, body: { ok: false, error: 'Instant pricing is not available right now. Please call us.' } };
   }
 
   // Duplicate window: the same person re-asking inside the window gets the
@@ -436,7 +451,7 @@ async function processQuote(deps, body, meta) {
   try {
     const ors = [];
     if (phone10) ors.push(`phone.eq.${phone10}`);
-    if (email) ors.push(`email.eq.${email}`);
+    if (email) ors.push(`email.eq.${postgrestLiteral(email)}`);
     if (ors.length && dupWindowH > 0) {
       const since = new Date(Date.now() - dupWindowH * 3600 * 1000).toISOString();
       // The whole or-expression is percent-encoded as one unit, the
@@ -586,6 +601,8 @@ function htmlResponse(statusCode, html) {
   return {
     statusCode,
     headers: {
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
       'Content-Type': 'text/html; charset=utf-8',
       'X-Robots-Tag': statusCode === 200 ? 'index, follow' : 'noindex, nofollow',
       'Cache-Control': 'no-store',
@@ -1102,16 +1119,18 @@ exports.handler = async (event) => {
       return json(out.status, out.body);
     }
     if (event.httpMethod !== 'POST') return json(405, { ok: false, error: 'Method not allowed' });
+    if (Buffer.byteLength(event.body || '', 'utf8') > 65536) return json(413, { ok: false, error: 'Request is too large' });
     let body;
     try { body = JSON.parse(event.body || '{}'); }
     catch { return json(400, { ok: false, error: 'Invalid request' }); }
+    if (!validPublicBody(body)) return json(400, { ok: false, error: 'Invalid request' });
     const meta = { ipHash: ipHashFrom(event), userAgent: cleanStr(event.headers && event.headers['user-agent']) };
 
     let out;
     if (action === 'quote') out = await processQuote(deps, body, meta);
     else if (action === 'booked') out = await processBookedCallback(deps, body);
     else out = { status: 404, body: { ok: false, error: 'Unknown action' } };
-    return json(out.status, out.body);
+    return json(out.status, out.body, out.headers);
   }
 
   // HTML page.
@@ -1147,4 +1166,4 @@ exports.processQuote = processQuote;
 exports.processBookedCallback = processBookedCallback;
 exports.processConfig = processConfig;
 exports.captureLead = captureLead;
-exports._internals = { getPricingSettings, loadProjectTypes, loadBookingContext, typeImageUrl };
+exports._internals = { getPricingSettings, loadProjectTypes, loadBookingContext, typeImageUrl, htmlResponse };

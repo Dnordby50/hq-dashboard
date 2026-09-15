@@ -1,18 +1,12 @@
 [build]
   functions = "netlify/functions"
-  publish = "."
-  # The dashboard (index.html) is static and needs no build. This command exists
-  # only to build the estimator PWA into repo-root /estimator (Vite base
-  # '/estimator/'), which `publish = "."` then serves as static files. The root
-  # app is untouched.
-  # The migration manifest is regenerated first so the deployed
-  # pec-migration-drift function always probes against the migrations in THIS
-  # deploy's commit (functions have no repo tree at runtime).
-  command = "node scripts/build-migration-manifest.mjs && npm --prefix apps/estimator ci && npm --prefix apps/estimator run build"
+  publish = "dist"
+  # Publish only approved browser assets after regression and syntax checks.
+  command = "npm run build"
 
 [build.environment]
-  # Pin Node so the estimator build is reproducible on Netlify (Vite 5 needs 18+).
-  NODE_VERSION = "20"
+  # Use the supported Node 24 LTS release for builds and the default function runtime.
+  NODE_VERSION = "24"
   # Build-time key for the estimator PWA's Google Places address autocomplete
   # (apps/estimator/src/lib/places.ts reads import.meta.env.VITE_GOOGLE_MAPS_KEY).
   # Same referrer- and API-restricted browser key the dashboard uses; Vite inlines
@@ -38,6 +32,9 @@
 
 [functions]
   node_bundler = "esbuild"
+
+[functions."sop-chat"]
+  included_files = ["help/crm-help.md", "help/whats-new.json"]
 
 # Daily auto-status sweep: flips public.jobs.status from 'scheduled' to
 # 'in_progress' for jobs whose pec_prod_jobs.install_date is today.
