@@ -15,11 +15,13 @@ const round2 = (n) => Math.round(n * 100) / 100;
 
 // The three totals of a mixed estimate (decisions 6 and 7). They are three
 // DIFFERENT numbers on purpose:
-//   requiredOnly: the guaranteed floor (what estimates.price stores pre-accept)
-//   allIn:        every line at full value (estimates.price_all_options)
+//   requiredOnly: required lines (what estimates.price stores pre-accept)
+//   allIn:        every line, including discounts (estimates.price_all_options)
 //   opening:      required + currently-selected optional lines (what the
 //                 customer sees when the page opens; never stored, always
 //                 computed live from the rows)
+// Optional discounts can reduce the price, so requiredOnly/allIn are not
+// necessarily the minimum/maximum customer selections.
 function splitLineTotals(items) {
   let requiredOnly = 0;
   let allIn = 0;
@@ -66,7 +68,15 @@ function emptySendError(items) {
   const list = (Array.isArray(items) ? items : []).filter(Boolean);
   if (!list.length) return EMPTY_SEND_MESSAGE;
   const { opening } = splitLineTotals(list);
-  return opening > 0 ? null : EMPTY_SEND_MESSAGE;
+  if (!(opening > 0)) return EMPTY_SEND_MESSAGE;
+  // Every discount must fit the required work even if the customer declines
+  // all positive optional lines and selects every optional discount. Keep
+  // draft saves possible; this rule is used only on customer-facing paths.
+  if (list.some(li => lineTotal(li) < 0)) {
+    const minimum = round2(list.reduce((sum, li) => sum + (!isOptionalLine(li) || lineTotal(li) < 0 ? lineTotal(li) : 0), 0));
+    if (!(minimum > 0)) return 'Discounts must leave the required work above $0 for every customer selection. Reduce the discount or make more work required before sending.';
+  }
+  return null;
 }
 
 // The accept guard (decision 4): the rep gate makes a zero-selection accept
@@ -105,7 +115,7 @@ function filterAreasForJob(areas, declinedIds) {
 // The crew-facing note line for what was offered and not sold, so nobody
 // coats a patio out of muscle memory. Customer-adjacent internal text: no em
 // dashes (rule 6).
-const usdWhole = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+const usdWhole = (n) => (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Math.round(Number(n) || 0)).toLocaleString('en-US');
 function declinedNoteLine(declinedLines) {
   const list = (Array.isArray(declinedLines) ? declinedLines : []).filter(Boolean);
   if (!list.length) return null;

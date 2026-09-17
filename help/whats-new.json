@@ -1,5 +1,17 @@
 [
   {
+    "id": "proposal-discount-line-items",
+    "date": "2026-09-17",
+    "title": "Add discounts as proposal line items.",
+    "summary": "Discounts now have their own editable line on the proposal. The old whole-proposal sell-price and percentage-discount boxes are removed.",
+    "howto": [
+      "Under Line items, choose + Discount, give it a name, and type the amount as a negative number such as -500. Typing a minus sign on a one-off line price turns that line into a discount too. The proposal shows it as a deduction.",
+      "Turn on Optional if the customer should choose it, and use Start selected to decide whether it is included when they first open the proposal.",
+      "Edit or remove the discount like any other line. The selected discount carries through to the signed total, payment schedule and invoice.",
+      "Previously saved proposal discounts retain their saved pricing when reopened."
+    ]
+  },
+  {
     "id": "income-statement-accounts-and-company-view",
     "date": "2026-09-15",
     "title": "Income Statement: add or rename accounts and view one company at a time.",

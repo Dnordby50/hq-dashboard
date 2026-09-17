@@ -100,7 +100,7 @@ async function harness(options = {}) {
     setTimeout, clearTimeout, addEventListener, removeEventListener,
     location: { origin: 'https://fixture.invalid', href: '' },
     history: { length: 1 }, parent: { postMessage(message) { messages.push(JSON.parse(JSON.stringify(message))); } },
-    confirm(message) { confirms.push(message); return false; },
+    confirm(message) { confirms.push(message); return options.confirm === true; },
   };
   const queryFor = table => {
     const query = new Proxy({}, {
@@ -229,6 +229,13 @@ async function harness(options = {}) {
       const control = labels[0].find(node => ['input', 'select', 'textarea'].includes(node.type));
       await act(async () => { control.props.onChange({ target: { value } }); });
     },
+    async check(label, checked) {
+      const labels = renderer.root.findAll(node => node.type === 'label' && textOf(node).startsWith(label));
+      assert.equal(labels.length, 1, `Find one ${label} checkbox`);
+      const control = labels[0].findByType('input');
+      assert.equal(control.props.type, 'checkbox');
+      await act(async () => { control.props.onChange({ target: { checked } }); });
+    },
     async clickLabel(label) {
       const button = renderer.root.findAll(node => node.type === 'button' && textOf(node) === label);
       assert.equal(button.length, 1, `Find one ${label} button`);
@@ -322,6 +329,207 @@ async function saveNow(h) {
 
 const fullSaves = h => h.saves.filter(save => save.totals.price != null);
 const lineButtons = h => h.root.findAll(node => node.type === 'button' && node.props.className === 'line-row');
+const discountLines = save => save.lineItems.filter(line => line.areaIndex == null && line.addonId == null && line.total < 0);
+
+function checkbox(h, label) {
+  const labels = h.root.findAll(node => node.type === 'label' && textOf(node).startsWith(label));
+  assert.equal(labels.length, 1, `Find one ${label} checkbox`);
+  return labels[0].findByType('input');
+}
+
+function headline(h) {
+  return textOf(h.root.find(node => node.props.className === 'price'));
+}
+
+async function setLineDescription(h, value) {
+  const editor = h.root.find(node => node.type === 'scope-editor' && node.props.sheetDescription === true);
+  await act(async () => { editor.props.onChange(value); });
+}
+
+test('discounts are normal editable estimate lines with cents, descriptions, autosave and removal', async t => {
+  const h = await harness({ persistRows: true, confirm: true });
+  t.after(() => h.dispose());
+  const formerFields = h.root.findAll(node => node.type === 'label' && /^(Sell price \$ \(system\)|Discount %)/.test(textOf(node)));
+  assert.equal(formerFields.length, 0, 'The two former proposal-wide adjustment boxes are gone');
+  const add = h.root.find(node => node.type === 'button' && textOf(node) === '+ Discount');
+  for (let parent = add.parent; parent; parent = parent.parent) {
+    assert.notEqual(parent.type, 'details', 'Adding a discount is directly visible alongside Add item');
+  }
+  await h.clickLabel('+ Discount');
+  assert.equal(lineButtons(h).length, 2, 'The discount joins the existing estimate lines');
+  assert.equal(checkbox(h, 'Optional (customer picks)').props.checked, false, 'New discounts apply to the proposal by default');
+  await h.change('Discount amount $', '125.37');
+  await h.advance(2500);
+  const first = fullSaves(h).at(-1);
+  assert.ok(first, 'Typing the discount amount triggers a full autosave');
+  const discount = discountLines(first)[0];
+  assert.equal(discount.label, 'Discount');
+  assert.equal(discount.qty, 1);
+  assert.equal(discount.unitPrice, -125.37);
+  assert.equal(discount.total, -125.37);
+  assert.equal(discount.unitCost, 0);
+  assert.equal(discount.estHours, null);
+  assert.equal(discount.sqft, null);
+  assert.equal(discount.isOptional, false);
+  assert.equal(first.areas[0].priceOverride, 1000, 'The entered system price remains intact');
+  assert.equal(first.lineItems.find(line => line.areaIndex === 0).total, 1000);
+  assert.equal(first.totals.price, 874.63);
+  assert.equal(first.totals.gpDollars, 744.63, 'The discount reduces profit without inventing cost or crew hours');
+
+  const description = '**Neighbor discount**\n\n- Applies to the quoted work only.\n- Thank you for choosing us.';
+  await h.change('Discount name', 'Neighbor savings');
+  await setLineDescription(h, description);
+  await h.change('Discount amount $', '140.05');
+  await h.advance(2500);
+  const edited = fullSaves(h).at(-1);
+  assert.equal(discountLines(edited)[0].label, 'Neighbor savings');
+  assert.equal(discountLines(edited)[0].description, description);
+  assert.equal(edited.totals.price, 859.95);
+  const editedLoaded = await h.loadStoredEstimate(edited.estimateId);
+  assert.equal(editedLoaded.addonLines[0].label, 'Neighbor savings');
+  assert.equal(editedLoaded.addonLines[0].description, description, 'Formatted customer-facing wording survives storage');
+  await h.clickLabel('Done');
+  await openLine(h, 'Neighbor savings');
+  await h.clickLabel('Remove line');
+  assert.equal(h.confirms.length, 1, 'Removing a discount uses the existing line-removal confirmation');
+  await h.advance(2500);
+  const removed = fullSaves(h).at(-1);
+  assert.equal(discountLines(removed).length, 0);
+  assert.equal(removed.totals.price, 1000);
+  assert.equal(lineButtons(h).length, 1);
+  assert.equal(h.storedOps().filter(op => op.table === 'estimate_line_items' && op.row.total < 0).length, 0,
+    'The actual stored discount row is removed, not merely hidden');
+});
+
+test('optional discounts use the normal opening selection and preserve an unticked choice through reload', async t => {
+  const h = await harness({ persistRows: true });
+  t.after(() => h.dispose());
+  await h.clickLabel('+ Discount');
+  await h.change('Discount name', 'Flexible timing discount');
+  await h.change('Discount amount $', '200');
+  await h.check('Optional (customer picks)', true);
+  assert.equal(checkbox(h, 'Start selected').props.checked, true, 'Optional discounts honor the normal selected-by-default setting');
+  assert.equal(headline(h), '$800', 'The starting proposal total includes the selected optional discount');
+  await h.advance(2500);
+  const selected = fullSaves(h).at(-1);
+  assert.equal(discountLines(selected)[0].isOptional, true);
+  assert.equal(discountLines(selected)[0].selectedByCustomer, true);
+  assert.equal(selected.totals.price, 1000, 'The required-only saved total excludes optional discounts');
+  assert.equal(selected.priceAllOptions, 800);
+  const selectedLoaded = await h.loadStoredEstimate(selected.estimateId);
+  assert.equal(selectedLoaded.addonLines[0].selectedByCustomer, true, 'The storage loader preserves the selected option');
+  const selectedReopened = await harness({ props: { editing: selectedLoaded } });
+  t.after(() => selectedReopened.dispose());
+  await selectedReopened.advance(3500);
+  assert.equal(selectedReopened.saves.length, 0);
+  assert.equal(headline(selectedReopened), '$800', 'A cold reload retains the selected discount in the opening total');
+  await openLine(selectedReopened, 'Flexible timing discount');
+  assert.equal(checkbox(selectedReopened, 'Start selected').props.checked, true);
+
+  await h.check('Start selected', false);
+  assert.equal(headline(h), '$1,000');
+  await h.advance(2500);
+  const unticked = fullSaves(h).at(-1);
+  assert.equal(discountLines(unticked)[0].selectedByCustomer, false);
+  const loaded = await h.loadStoredEstimate(unticked.estimateId);
+  assert.equal(loaded.savedAreaSellTotal, 1000, 'Discount money never becomes a legacy area-price override');
+  assert.equal(loaded.addonLines[0].selectedByCustomer, false);
+  assert.equal(loaded.addonLines[0].unitPrice, -200);
+  const reopened = await harness({ props: { editing: loaded } });
+  t.after(() => reopened.dispose());
+  await reopened.advance(3500);
+  assert.equal(reopened.saves.length, 0, 'Loading the discount and its selection does not trigger an edit');
+  assert.equal(headline(reopened), '$1,000');
+  await openLine(reopened, 'Flexible timing discount');
+  assert.equal(checkbox(reopened, 'Optional (customer picks)').props.checked, true);
+  assert.equal(checkbox(reopened, 'Start selected').props.checked, false);
+  await reopened.change('Discount amount $', '250.75');
+  await reopened.advance(2500);
+  assert.equal(discountLines(fullSaves(reopened).at(-1))[0].selectedByCustomer, false,
+    'Changing the amount preserves the deliberate opening selection');
+  assert.equal(fullSaves(reopened).at(-1).priceAllOptions, 749.25);
+  await reopened.check('Start selected', true);
+  assert.equal(headline(reopened), '$749');
+});
+
+test('optional discounts honor the configured unticked default and still support required discounts', async t => {
+  const c = catalog();
+  c.config.optionalLinesPreselectDefault = false;
+  const h = await harness({ props: { catalog: c } });
+  t.after(() => h.dispose());
+  await h.clickLabel('+ Discount');
+  await h.change('Discount amount $', '75.25');
+  await h.check('Optional (customer picks)', true);
+  assert.equal(checkbox(h, 'Start selected').props.checked, false);
+  assert.equal(headline(h), '$1,000');
+  await h.advance(2500);
+  assert.equal(discountLines(fullSaves(h).at(-1))[0].selectedByCustomer, false);
+  await h.check('Optional (customer picks)', false);
+  assert.equal(headline(h), '$925');
+  await h.advance(2500);
+  const saved = fullSaves(h).at(-1);
+  assert.equal(discountLines(saved)[0].isOptional, false);
+  assert.equal(saved.totals.price, 924.75);
+});
+
+test('incomplete discount edits preserve the last saved draft until a name and positive amount are entered', async t => {
+  const h = await harness({ persistRows: true });
+  t.after(() => h.dispose());
+  await saveNow(h);
+  await h.clickLabel('+ Discount');
+  assert.equal(saveButton(h).props.disabled, true, 'A blank amount is not silently stored as a zero discount');
+  await h.advance(3500);
+  assert.equal(fullSaves(h).length, 1);
+  await h.change('Discount amount $', '0');
+  await h.advance(3500);
+  assert.equal(fullSaves(h).length, 1);
+  await h.change('Discount amount $', '99.99');
+  await h.change('Discount name', '   ');
+  await h.advance(3500);
+  assert.equal(saveButton(h).props.disabled, true);
+  assert.equal(fullSaves(h).length, 1, 'Removing the name does not overwrite the good saved proposal');
+  await h.change('Discount name', '  Referral thank-you  ');
+  await h.advance(2500);
+  assert.equal(fullSaves(h).length, 2);
+  const discount = discountLines(fullSaves(h).at(-1))[0];
+  assert.equal(discount.label, 'Referral thank-you');
+  assert.equal(discount.description, null, 'A discount does not require invented work scope');
+  assert.equal(discount.total, -99.99);
+  assert.equal(fullSaves(h).at(-1).totals.price, 900.01);
+});
+
+test('a full discount line saves a zero draft without changing area prices and remains unsendable after reload', async t => {
+  const { emptySendError } = require('./optional-lines.cjs');
+  const editing = catalogEstimate('fixture-custom-system', '');
+  const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
+  t.after(() => h.dispose());
+  await h.clickLabel('+ Discount');
+  await h.change('Discount amount $', '1500');
+  await h.advance(2500);
+  const saved = fullSaves(h).at(-1);
+  assert.ok(saved, 'A fully discounted draft remains saveable');
+  assert.equal(saved.totals.price, 0);
+  assert.equal(saved.areas[0].priceOverride, 1500);
+  assert.equal(saved.areas[0].sqft, null);
+  assert.equal(saved.lineItems.find(line => line.areaIndex === 0).total, 1500);
+  assert.equal(discountLines(saved)[0].total, -1500);
+  const items = h.storedOps().filter(op => op.table === 'estimate_line_items').map(op => op.row);
+  assert.ok(emptySendError(items), 'A discount cannot bypass the zero-opening-total send gate');
+  const loaded = await h.loadStoredEstimate(saved.estimateId);
+  assert.equal(loaded.savedAreaSellTotal, 1500, 'Only actual area lines hydrate the legacy sold total');
+  const reopened = await harness({ props: { catalog: pricedCatalog(), editing: loaded } });
+  t.after(() => reopened.dispose());
+  await reopened.advance(3500);
+  assert.equal(reopened.saves.length, 0);
+  await saveNow(reopened);
+  assert.equal(fullSaves(reopened).at(-1).totals.price, 0);
+  assert.equal(discountLines(fullSaves(reopened).at(-1))[0].unitPrice, -1500);
+  await openLine(reopened, 'Legacy custom work');
+  await reopened.change('Line price $', '1600');
+  await reopened.advance(2500);
+  assert.equal(fullSaves(reopened).at(-1).totals.price, 100, 'Editing work prices retains the explicit discount line');
+  assert.equal(discountLines(fullSaves(reopened).at(-1))[0].total, -1500);
+});
 
 test('clearing legacy Custom System square footage preserves its sold price and cost-based GP', async t => {
   const h = await harness({ props: { catalog: pricedCatalog(), editing: catalogEstimate() } });
@@ -509,11 +717,13 @@ test('a blank-footage Custom System still needs an explicit price choice', async
   assert.equal(fullSaves(h).at(-1).areas[0].sqft, null);
 });
 
-test('a job-level sold price survives clearing custom footage and a complete storage reload', async t => {
-  const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing: catalogEstimate() } });
+test('a legacy job-level sold price survives clearing custom footage and a complete storage reload', async t => {
+  const editing = { ...catalogEstimate(), savedAreaSellTotal: 1200 };
+  const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
   t.after(() => h.dispose());
-  await h.change('Sell price $ (system)', '1200');
-  await h.advance(2500);
+  await h.advance(3500);
+  assert.equal(h.saves.length, 0, 'Opening an older saved discount does not rewrite it');
+  await saveNow(h);
   const before = fullSaves(h).at(-1);
   assert.equal(before.totals.price, 1200);
   assert.equal(before.areas[0].priceOverride, 1500, 'Fixture has a distinct global sell override to preserve');
@@ -537,6 +747,7 @@ test('a job-level sold price survives clearing custom footage and a complete sto
 
 test('sold-price hydration includes all area lines and quantities while excluding add-ons', async t => {
   const editing = catalogEstimate();
+  editing.savedAreaSellTotal = 2400;
   editing.areas.push({ ...editing.areas[0], name: 'Optional custom work',
     slotValues: { ...editing.areas[0].slotValues }, isOptional: true, preselected: false });
   editing.addonLines = [{ addonId: 'fixture-addon', label: 'Separate add-on', description: 'Add-on work',
@@ -544,8 +755,7 @@ test('sold-price hydration includes all area lines and quantities while excludin
     isOptional: false, selectedByCustomer: true }];
   const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
   t.after(() => h.dispose());
-  await h.change('Sell price $ (system)', '2400');
-  await h.advance(2500);
+  await saveNow(h);
   const saved = fullSaves(h).at(-1);
   assert.equal(saved.totals.price, 1400, 'Required area1200 plus add-on200');
   assert.equal(saved.priceAllOptions, 2600);
@@ -567,13 +777,13 @@ test('sold-price hydration includes all area lines and quantities while excludin
   assert.equal(incomplete.savedAreaSellTotal ?? null, null, 'An incomplete area-line set never invents a sold total');
 });
 
-test('a global-only Custom System price survives blank footage and cold reopening', async t => {
+test('a legacy global-only Custom System price survives blank footage and cold reopening', async t => {
   const editing = catalogEstimate();
   editing.areas[0].priceOverride = '';
+  editing.savedAreaSellTotal = 1800;
   const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
   t.after(() => h.dispose());
-  await h.change('Sell price $ (system)', '1800');
-  await h.advance(2500);
+  await saveNow(h);
   const before = fullSaves(h).at(-1);
   assert.equal(before.totals.price, 1800);
   assert.equal(before.areas[0].priceOverride, null);
@@ -636,14 +846,16 @@ test('blank custom footage is ready for send preparation while scope safeguards 
   assert.equal(reopened.flushReplies()[0].ok, true, 'The parent can complete send preparation for the saved blank-footage line');
 });
 
-test('a 100 percent discount saves and reopens at zero without accidental autosave or sending', async t => {
+test('a legacy 100 percent discount saves and reopens at zero without accidental autosave or sending', async t => {
   const { emptySendError } = require('./optional-lines.cjs');
   const editing = existingEstimate();
   editing.areas[0].priceOverride = '1500';
+  editing.savedAreaSellTotal = 0;
   const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
   t.after(() => h.dispose());
-  await h.change('Discount %', '100');
-  await h.advance(2500);
+  await h.advance(3500);
+  assert.equal(h.saves.length, 0, 'Opening the legacy zero discount is hydration, not an edit');
+  await saveNow(h);
   const saved = fullSaves(h).at(-1);
   assert.ok(saved, 'Zero is a saved draft price, not a missing value');
   assert.equal(saved.totals.price, 0);
@@ -666,14 +878,13 @@ test('a 100 percent discount saves and reopens at zero without accidental autosa
   assert.equal(fullSaves(reopened).at(-1).totals.price, 1600, 'An actual line-price change still resets the previous global discount');
 });
 
-test('a manually priced blank-footage Custom System can retain a zero discounted draft through reload', async t => {
+test('a manually priced blank-footage Custom System retains its legacy zero discount through reload', async t => {
   const { emptySendError } = require('./optional-lines.cjs');
   const h = await harness({ persistRows: true, props: {
-    catalog: pricedCatalog(), editing: catalogEstimate('fixture-custom-system', ''),
+    catalog: pricedCatalog(), editing: { ...catalogEstimate('fixture-custom-system', ''), savedAreaSellTotal: 0 },
   } });
   t.after(() => h.dispose());
-  await h.change('Discount %', '100');
-  await h.advance(2500);
+  await saveNow(h);
   const saved = fullSaves(h).at(-1);
   assert.ok(saved, 'A positive typed baseline permits saving its zero discounted draft');
   assert.equal(saved.totals.price, 0);
@@ -695,14 +906,14 @@ test('zero area sell hydration excludes a paid add-on and retains optional area 
   const { estimatePricingSendBlockers } = require('./estimate-send-readiness.cjs');
   const editing = existingEstimate();
   editing.areas[0].priceOverride = '1500';
+  editing.savedAreaSellTotal = 0;
   editing.areas.push({ ...editing.areas[0], name: 'Optional custom line', isOptional: true, preselected: false });
   editing.addonLines = [{ addonId: 'fixture-addon', label: 'Separate paid add-on', description: 'Add-on work',
     qty: 2, unitPrice: 100, unitCost: 10, estHours: null, sqft: null,
     isOptional: false, selectedByCustomer: true }];
   const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
   t.after(() => h.dispose());
-  await h.change('Discount %', '100');
-  await h.advance(2500);
+  await saveNow(h);
   const saved = fullSaves(h).at(-1);
   assert.equal(saved.totals.price, 200);
   assert.equal(saved.priceAllOptions, 200);
@@ -727,17 +938,18 @@ test('zero area sell hydration excludes a paid add-on and retains optional area 
   assert.deepEqual(resaved.lineItems.filter(line => line.areaIndex != null).map(line => line.total), [0, 0]);
 });
 
-test('an explicit global zero on an otherwise unpriced Custom System survives storage and reopening', async t => {
+test('a legacy explicit global zero on an otherwise unpriced Custom System survives storage and reopening', async t => {
   const { estimatePricingSendBlockers } = require('./estimate-send-readiness.cjs');
   const editing = catalogEstimate('fixture-custom-system', '');
   editing.areas[0].priceOverride = '';
+  editing.savedAreaSellTotal = 0;
   const h = await harness({ persistRows: true, props: { catalog: pricedCatalog(), editing } });
   t.after(() => h.dispose());
-  assert.equal(saveButton(h).props.disabled, true, 'Untouched missing price is still incomplete');
-  await h.change('Sell price $ (system)', '0');
-  await h.advance(2500);
+  await h.advance(3500);
+  assert.equal(h.saves.length, 0, 'Hydrating an explicit zero is not an edit');
+  await saveNow(h);
   const saved = fullSaves(h).at(-1);
-  assert.ok(saved, 'Explicitly entering zero is different from leaving the price untouched');
+  assert.ok(saved, 'A saved explicit zero is different from an untouched missing price');
   assert.equal(saved.totals.price, 0);
   assert.equal(saved.calcPrice, 0, 'The saved zero equals the zero engine baseline in this case');
   assert.equal(saved.areas[0].priceOverride, null);
@@ -757,8 +969,9 @@ test('an explicit global zero on an otherwise unpriced Custom System survives st
   assert.equal(resaved.totals.price, 0);
   assert.equal(resaved.areas[0].priceOverride, null);
   assert.equal(resaved.areas[0].sqft, null);
-  await reopened.change('Sell price $ (system)', '');
-  assert.equal(saveButton(reopened).props.disabled, true, 'Clearing the explicit zero returns to an unpriced draft');
+  await openLine(reopened, 'Legacy custom work');
+  await reopened.change('Line price $', '900');
   await reopened.advance(3500);
-  assert.equal(fullSaves(reopened).length, 1, 'An empty price input is never silently resaved as another zero');
+  assert.equal(fullSaves(reopened).at(-1).totals.price, 900,
+    'A deliberate line-price edit replaces the legacy global zero');
 });

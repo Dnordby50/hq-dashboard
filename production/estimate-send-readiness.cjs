@@ -12,6 +12,8 @@ function estimatePricingSendBlockers(est, settings = {}) {
   const saved = snapshot && snapshot.version === 1 ? snapshot : null;
   if (est.is_custom === true || (saved && saved.isCustom === true)) return [];
   const areaItems = items.filter(li => li && li.estimate_area_id);
+  const discountItems = items.filter(li => li && !li.estimate_area_id && !li.addon_id && finite(li.total) < 0);
+  const discountTotal = round(discountItems.reduce((sum, li) => sum + Number(li.total), 0));
   const calculated = saved ? finite(saved.calcTotal) : finite(est.calc_price);
   const sell = saved ? finite(saved.finalSell) : (areaItems.length ? round(areaItems.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0)) : finite(est.price));
   const blockers = [];
@@ -21,7 +23,14 @@ function estimatePricingSendBlockers(est, settings = {}) {
     blockers.push({ msg: 'Set a price above $0 before sending. Your estimate changes are saved.' });
   }
   const threshold = Math.max((calculated ?? 0) * configured('line_pricing_reason_threshold_pct', 2) / 100, configured('line_pricing_reason_threshold_dollars', 100));
-  if (calculated != null && sell != null && round(calculated - sell) > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
+  // finalSell is the system portion, so standalone discounts are not in it.
+  // Count every offered discount, including an optional line left unticked.
+  // Legacy no-area totals already contain their required discount lines.
+  const reasonSell = !saved && !areaItems.length && discountItems.length
+    ? round(items.filter(li => li && !discountItems.includes(li)).reduce((sum, li) => sum + (finite(li.total) ?? 0), 0))
+    : sell;
+  const shortfall = round((calculated != null && reasonSell != null ? calculated - reasonSell : 0) - discountTotal);
+  if ((discountItems.length || (calculated != null && reasonSell != null)) && shortfall > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
     blockers.push({ msg: 'Add a reason for the price change before sending. Your estimate changes are saved.' });
   }
   let gpPct = saved ? finite(saved.combinedGpPct) : null;
@@ -41,6 +50,25 @@ function estimatePricingSendBlockers(est, settings = {}) {
     lines = areaItems.filter(li => finite(li.total) > 0 && finite(li.unit_cost) != null).map(li => ({
       label: li.label || 'Line', gpPct: (Number(li.total) - (finite(li.qty) ?? 1) * Number(li.unit_cost)) / Number(li.total),
     }));
+  }
+  if (discountItems.length) {
+    // A customer may decline every optional upsell and take every discount.
+    // Recompute that selection from rows, rather than subtracting a discount
+    // from combinedGpPct, which already includes selected discount lines.
+    const minimum = items.filter(li => li && (!li.is_optional || finite(li.total) < 0));
+    const total = round(minimum.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0));
+    const commission = finite(est.commission_pct);
+    if (total <= 0) {
+      if (!(sell != null && sell <= 0)) blockers.push({ msg: 'Set a price above $0 for every allowed selection before sending. Your estimate changes are saved.' });
+      gpPct = null;
+    } else if (minimum.every(li => finite(li.total) != null && finite(li.unit_cost) != null && (li.estimate_area_id || commission != null))) {
+      const gp = round(minimum.reduce((sum, li) => sum + Number(li.total) - (finite(li.qty) ?? 1) * Number(li.unit_cost) - (li.estimate_area_id ? 0 : Number(li.total) * commission / 100), 0));
+      const minimumGpPct = gp / total;
+      gpPct = gpPct == null ? minimumGpPct : Math.min(gpPct, minimumGpPct);
+    } else {
+      gpPct = null;
+      blockers.push({ msg: 'Finish pricing every line before sending. Your estimate changes are saved.' });
+    }
   }
   const floor = configured('estimator_floor_gp_pct', 40);
   if (gpPct != null && gpPct * 100 < floor - 0.05) {

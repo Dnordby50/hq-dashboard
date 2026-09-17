@@ -133,6 +133,8 @@ type AddonForm = {
   estHours: string;
   sqft: string;
   optional: boolean;
+  preselected: boolean;
+  isDiscount: boolean;
 };
 
 // One payment-schedule row in form state (prompt 74). valueInput is the
@@ -516,6 +518,8 @@ export default function EstimatorScreen({
       estHours: li.estHours != null ? String(li.estHours) : '',
       sqft: li.sqft != null ? String(li.sqft) : '',
       optional: li.isOptional,
+      preselected: li.selectedByCustomer,
+      isDiscount: li.addonId == null && li.unitPrice < 0,
     })),
   );
   // Rep's answers to the templates' BLANK placeholders, keyed by the context
@@ -1072,11 +1076,13 @@ export default function EstimatorScreen({
   // The CALCULATED system total, the reason rule's baseline: each calc line's
   // solved price (ignoring per-line edits) plus each custom line's typed
   // price. A rep must not route around the audit trail by editing lines
-  // instead of using the discount box, so the shortfall compares against
+  // or adding a discount line, so the shortfall compares against
   // THIS, not against basePrice.
   const calcTotal = linesReady ? r2(lineRows.reduce((s, r) => s + (r.kind === 'calc' ? (r.calcPrice ?? 0) : (r.current ?? 0)), 0)) : null;
 
-  // ---- Sell price / discount (decision 9: nothing is blocked, GP goes red) --
+  // Legacy whole-estimate discounts still hydrate at their saved amounts.
+  // New discounts are explicit negative line items below; there are no
+  // whole-proposal price/discount inputs.
   const initialSavedSellInput = () => {
     const saved = editing?.savedAreaSellTotal;
     return saved != null && Number.isFinite(saved) && saved >= 0
@@ -1085,8 +1091,7 @@ export default function EstimatorScreen({
   // Hydrate before the first autosave fingerprint. Opening a saved override
   // must not itself look like an edit or trigger a write.
   const [sellInput, setSellInput] = useState(initialSavedSellInput);
-  const [discInput, setDiscInput] = useState('');
-  const [priceOverride, setPriceOverride] = useState<null | 'sell' | 'disc'>(() => initialSavedSellInput() ? 'sell' : null);
+  const [priceOverride, setPriceOverride] = useState<null | 'sell'>(() => initialSavedSellInput() ? 'sell' : null);
   const lastReadyBasePriceRef = useRef(basePrice);
   // Build 17: overriding the total sell price requires a reason (the paper
   // trail for who is discounting and why). Prefilled from a reopened override.
@@ -1104,7 +1109,6 @@ export default function EstimatorScreen({
     if (basePrice != null) lastReadyBasePriceRef.current = basePrice;
     setPriceOverride(null);
     setSellInput('');
-    setDiscInput('');
   }, [basePrice]);
 
   // The system portion's sell price. Add-on lines price separately on top.
@@ -1114,13 +1118,8 @@ export default function EstimatorScreen({
       const n = Number(sellInput);
       return sellInput.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : basePrice;
     }
-    if (priceOverride === 'disc') {
-      const d = Number(discInput);
-      if (!Number.isFinite(d)) return basePrice;
-      return Math.max(0, Math.round(basePrice * (1 - d / 100)));
-    }
     return basePrice;
-  }, [basePrice, priceOverride, sellInput, discInput]);
+  }, [basePrice, priceOverride, sellInput]);
 
   // Each line's FINAL amount: the current prices as-is, or, when the rep set
   // a job-level sell/discount, the typed total allocated across the lines
@@ -1187,14 +1186,17 @@ export default function EstimatorScreen({
   // calcTotal). The threshold keeps a rounding nudge from nagging: a reason
   // is demanded only when the shortfall exceeds the GREATER of the pct and
   // dollar thresholds, measured on the WHOLE estimate.
-  const shortfall = calcTotal != null && finalSell != null ? r2(calcTotal - finalSell) : 0;
+  // Offered discounts count toward the existing reason rule even when an
+  // optional discount starts unticked. Other add-ons cannot offset them.
+  const offeredDiscountTotal = r2(addonForms.reduce((sum, f) => sum + (f.isDiscount ? Math.abs(Number(f.unitPrice) || 0) : 0), 0));
+  const shortfall = calcTotal != null && finalSell != null ? r2(calcTotal - finalSell + offeredDiscountTotal) : 0;
   const reasonThreshold = Math.max(
     (calcTotal ?? 0) * ((Number(config.linePricingReasonThresholdPct ?? 2) || 0) / 100),
     Number(config.linePricingReasonThresholdDollars ?? 100) || 0,
   );
   const reasonRequired = shortfall > reasonThreshold + 1e-9;
   const anyLineEdited = lineRows.some((r) => r.kind === 'calc' && r.override != null && r.calcPrice != null && Math.abs(r.override - r.calcPrice) >= 0.5);
-  const priceMoved = discounted || anyLineEdited;
+  const priceMoved = discounted || anyLineEdited || offeredDiscountTotal > 0;
 
   // ---- Add-on / one-off line money -----------------------------------------
   // Optional lines are EXCLUDED from the total and from GP until the customer
@@ -1203,14 +1205,14 @@ export default function EstimatorScreen({
   const addonMoneyItems = useMemo(
     () =>
       addonForms.map((f) => {
-        const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
-        const unitPrice = Number(f.unitPrice) || 0;
+        const qty = f.isDiscount ? 1 : (Number(f.qty) > 0 ? Number(f.qty) : 1);
+        const unitPrice = f.isDiscount ? -Math.abs(Number(f.unitPrice) || 0) : (Number(f.unitPrice) || 0);
         return {
           total: r2(qty * unitPrice),
           qty,
-          unit_cost: Number(f.unitCost) || 0,
+          unit_cost: f.isDiscount ? 0 : (Number(f.unitCost) || 0),
           is_optional: f.optional,
-          selected_by_customer: false,
+          selected_by_customer: f.optional && f.preselected,
         };
       }),
     [addonForms],
@@ -1236,7 +1238,7 @@ export default function EstimatorScreen({
 
   // ---- Optional-lines money (prompt 72) ------------------------------------
   // ONE shaped list (area/custom lines at their FINAL amounts with the rep's
-  // optional/preselected flags, then add-ons which stay opt-in/unselected)
+  // optional/preselected flags, followed by add-ons and discount lines)
   // feeds three totals with three DIFFERENT meanings:
   //   required-only = the guaranteed floor (estimates.price while open),
   //   all-in        = every line at full value (estimates.price_all_options),
@@ -1293,6 +1295,13 @@ export default function EstimatorScreen({
     : (moneyReady ? lineTotalsSplit.allIn : null);
   const requiredOnlyTotal = moneyReady ? lineTotalsSplit.requiredOnly : null;
   const requiredGpPct = requiredOnlyTotal != null && requiredOnlyTotal > 0 ? requiredMoney.gp / requiredOnlyTotal : null;
+  // A selectable discount can lower the total below required-only. Show the
+  // lowest permitted selection and evaluate the existing GP floor there.
+  const hasDiscountLines = addonForms.some(f => f.isDiscount);
+  const minimumSelectionTotal = r2(shapedLines.filter(l => !l.is_optional || l.total < 0).reduce((sum, l) => sum + l.total, 0));
+  const minimumSelectionMoney = moneyOver(l => !l.is_optional || l.total < 0);
+  const minimumSelectionGpPct = minimumSelectionTotal > 0 ? minimumSelectionMoney.gp / minimumSelectionTotal : null;
+
   // Decision 8: warn (never block) when the required-only GP lands under the
   // optional-lines threshold. Only meaningful once something IS optional.
   const optionalGpWarn = hasOptionalLines && requiredGpPct != null &&
@@ -1425,7 +1434,9 @@ export default function EstimatorScreen({
   const charmFired = pricing && !err && pricing.priceRaw != null && pricing.price != null &&
     roundEstimatePrice(pricing.priceRaw, { increment: config.priceIncrement, charmThreshold: 0, charmBand: 0 }) !== pricing.price;
   // Floor GP blocks sending; draft progress still saves automatically.
-  const belowFloor = combinedGpPct != null && combinedGpPct * 100 < config.floorGpPct - 0.05;
+  const policyGpPct = hasDiscountLines && minimumSelectionGpPct != null
+    ? Math.min(combinedGpPct ?? minimumSelectionGpPct, minimumSelectionGpPct) : combinedGpPct;
+  const belowFloor = policyGpPct != null && policyGpPct * 100 < config.floorGpPct - 0.05;
   // Per-LINE floor (prompt 69): a line under it goes red; whether it also
   // blocks sending is the line_pricing_block_below_floor knob.
   // Tolerates a pre-69 cached catalog (keys absent) by falling back to the
@@ -1443,27 +1454,6 @@ export default function EstimatorScreen({
     () => r2(customLineRows.reduce((s, r) => s + (Number(areas[r.formIdx].customMaterialCost) || 0), 0)),
     [customLineRows, areas],
   );
-
-  const onSellInput = (v: string) => {
-    const cleaned = v.replace(/[^0-9.]/g, '');
-    setSellInput(cleaned);
-    setPriceOverride(cleaned === '' ? null : 'sell');
-    if (basePrice != null && cleaned !== '') {
-      const n = Number(cleaned);
-      if (Number.isFinite(n) && n > 0) setDiscInput(((1 - n / basePrice) * 100).toFixed(1));
-    }
-    if (cleaned === '') setDiscInput('');
-  };
-  const onDiscInput = (v: string) => {
-    const cleaned = v.replace(/[^0-9.\-]/g, '');
-    setDiscInput(cleaned);
-    setPriceOverride(cleaned === '' ? null : 'disc');
-    if (basePrice != null && cleaned !== '') {
-      const d = Number(cleaned);
-      if (Number.isFinite(d)) setSellInput(String(Math.max(0, Math.round(basePrice * (1 - d / 100)))));
-    }
-    if (cleaned === '') setSellInput('');
-  };
 
   // ---- Comps: instant, straight from the database, no model call -----------
   const [compCandidates, setCompCandidates] = useState<CompCandidate[] | null>(null);
@@ -1791,7 +1781,7 @@ export default function EstimatorScreen({
   // collapses a keystroke burst into one write; the trigger guarantees once.
   const draftInitialDepsRef = useRef<unknown[] | null>(null);
   useEffect(() => {
-    const deps: unknown[] = [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, discInput, overrideReason];
+    const deps: unknown[] = [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, overrideReason];
     let initial = false;
     if (draftInitialDepsRef.current == null) {
       draftInitialDepsRef.current = deps;
@@ -1813,7 +1803,7 @@ export default function EstimatorScreen({
     // the (already consumed) trigger; saveDraft re-checks the live state.
     window.setTimeout(() => { draftSaveInFlightRef.current = saveDraftRef.current(); }, 800);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, discInput, overrideReason]);
+  }, [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, overrideReason]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -1932,6 +1922,8 @@ export default function EstimatorScreen({
         estHours: '',
         sqft: '',
         optional: a.is_optional_default,
+        preselected: false,
+        isDiscount: false,
       },
     ]);
     setSheetFocusDesc(false);
@@ -1941,8 +1933,18 @@ export default function EstimatorScreen({
     const key = uuid();
     setAddonForms((prev) => [
       ...prev,
-      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', estHours: '', sqft: '', optional: false },
+      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', estHours: '', sqft: '', optional: false, preselected: false, isDiscount: false },
     ]);
+    setSheetFocusDesc(false);
+    setOpenLine({ kind: 'addon', key });
+  };
+  const addDiscount = () => {
+    const key = uuid();
+    setAddonForms(prev => [...prev, {
+      key, addonId: null, label: 'Discount', description: '', qty: '1',
+      unitPrice: '', unitCost: '0', estHours: '', sqft: '', optional: false,
+      preselected: config.optionalLinesPreselectDefault !== false, isDiscount: true,
+    }]);
     setSheetFocusDesc(false);
     setOpenLine({ kind: 'addon', key });
   };
@@ -1954,7 +1956,7 @@ export default function EstimatorScreen({
     setOpenLine((cur) => (cur && cur.kind === 'addon' && cur.key === key ? null : cur));
   };
 
-  const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0));
+  const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !Number.isFinite(Number(f.unitPrice)) || (f.isDiscount ? !(Math.abs(Number(f.unitPrice)) > 0) : (!(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0))));
   // The reason rule (prompt 69, tightened with a threshold): a written reason
   // is required whenever the FINAL system total lands below the CALCULATED
   // total by more than the threshold, no matter how the rep got there (a
@@ -2027,7 +2029,7 @@ export default function EstimatorScreen({
       // linesReady and ship an enabled button whose save no-ops.
       if (list.length === 0 && !linesReady) list.push('The job is not priced yet.');
     }
-    if (addonsIncomplete) list.push('Finish the add-on lines (each needs a label and a price).');
+    if (addonsIncomplete) list.push('Finish the add-on or discount lines (each needs a name and an amount).');
     return list;
   }, [salesperson, customerIncomplete, customer.isCommercial, customer.firstName, customer.phone, customer.email, leadSource, isCustom, customPrice, mvbMissing, err, areas, lineRows, linesReady, addonsIncomplete, calculatorAreaReady, measurementOptional, finalLineAmounts, priceOverride, sellInput]);
   const canSave = saveBlockers.length === 0 && saveState !== 'saving';
@@ -2394,10 +2396,10 @@ export default function EstimatorScreen({
     customer, salesperson?.id ?? null, intake, areas, addonForms, overrideReason,
     isCustom, customScope, customPrice, customSqft, crewNotes, clientNotes,
     companyNotes, scheduleShared, scopeAnswers, leadSource, linkedLead?.id,
-    sellInput, discInput, priceOverride,
+    sellInput, priceOverride,
   ]), [customer, salesperson, intake, areas, addonForms, overrideReason, isCustom,
     customScope, customPrice, customSqft, crewNotes, clientNotes, companyNotes,
-    scheduleShared, scopeAnswers, leadSource, linkedLead?.id, sellInput, discInput, priceOverride]);
+    scheduleShared, scopeAnswers, leadSource, linkedLead?.id, sellInput, priceOverride]);
   const autosaveKeyRef = useRef(autosaveKey);
   useEffect(() => { autosaveKeyRef.current = autosaveKey; }, [autosaveKey]);
   // null until the mount snapshot seeds it (first render effect below).
@@ -2643,8 +2645,8 @@ export default function EstimatorScreen({
       }
       let sort = lineItems.length;
       for (const f of addonForms) {
-        const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
-        const unitPrice = Number(f.unitPrice) || 0;
+        const qty = f.isDiscount ? 1 : (Number(f.qty) > 0 ? Number(f.qty) : 1);
+        const unitPrice = f.isDiscount ? -Math.abs(Number(f.unitPrice) || 0) : (Number(f.unitPrice) || 0);
         lineItems.push({
           addonId: f.addonId,
           areaIndex: null,
@@ -2652,12 +2654,12 @@ export default function EstimatorScreen({
           description: f.description.trim() || null,
           qty,
           unitPrice,
-          unitCost: Number(f.unitCost) || 0,
-          estHours: Number(f.estHours) > 0 ? Number(f.estHours) : null,
-          sqft: Number(f.sqft) > 0 ? Number(f.sqft) : null,
+          unitCost: f.isDiscount ? 0 : (Number(f.unitCost) || 0),
+          estHours: !f.isDiscount && Number(f.estHours) > 0 ? Number(f.estHours) : null,
+          sqft: !f.isDiscount && Number(f.sqft) > 0 ? Number(f.sqft) : null,
           total: r2(qty * unitPrice),
           isOptional: f.optional,
-          selectedByCustomer: false,
+          selectedByCustomer: f.optional && f.preselected,
           sortOrder: sort++,
         });
       }
@@ -2668,7 +2670,8 @@ export default function EstimatorScreen({
       // Decision 7: while the estimate is OPEN, estimates.price stores the
       // REQUIRED-only floor (what pipeline and forecasting count) and every
       // stored money bucket follows that same set so the numbers qualify the
-      // number they sit next to. price_all_options stores the ceiling. On an
+      // number they sit next to. price_all_options stores every offered line,
+      // including discounts, so it is not necessarily the highest total. On an
       // estimate with nothing optional the two are equal and every value
       // lands exactly where it always has. Accept later overwrites price
       // with the signed total (existing behavior, unchanged).
@@ -3567,7 +3570,7 @@ export default function EstimatorScreen({
                 );
               })}
               {addonForms.map((f) => {
-                const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+                const qty = f.isDiscount ? 1 : (Number(f.qty) > 0 ? Number(f.qty) : 1);
                 const total = r2(qty * (Number(f.unitPrice) || 0));
                 return (
                   <button
@@ -3579,12 +3582,12 @@ export default function EstimatorScreen({
                   >
                     <span className="line-row-main">
                       <span className="line-row-name">{f.label.trim() || 'One-off line'}</span>
-                      <span className={f.addonId ? 'line-chip addon' : 'line-chip custom'}>{f.addonId ? 'add-on' : 'one-off'}</span>
+                      <span className={f.addonId ? 'line-chip addon' : 'line-chip custom'}>{f.isDiscount ? 'discount' : f.addonId ? 'add-on' : 'one-off'}</span>
                       {qty !== 1 && <span className="line-row-sys">x{qty}</span>}
                     </span>
                     <span className="line-row-price">{money2(total)}</span>
                     <span className="line-row-sub">
-                      {f.optional && <span className="line-chip optional">optional</span>}
+                      {f.optional && <span className="line-chip optional">optional{f.preselected ? '' : ' · starts unticked'}</span>}
                       {f.description.trim()
                         ? <span className="line-chip scope-ok">description ✓</span>
                         : <span className="line-chip addon">no description</span>}
@@ -3599,6 +3602,7 @@ export default function EstimatorScreen({
                 exactly wrong for it. */}
             <div className="line-actions">
               <button type="button" className="link" onClick={addArea}>+ Add item</button>
+              <button type="button" className="link" onClick={addDiscount}>+ Discount</button>
               <details className="estimate-extra-items">
                 <summary>Other items</summary>
                 <div className="estimate-extra-actions">
@@ -3985,6 +3989,12 @@ export default function EstimatorScreen({
                     <span><strong>Required only</strong> {money(requiredOnlyTotal)}{requiredGpPct != null ? ` · GP ${pct(requiredGpPct)}` : ''}</span>
                   </div>
                 )}
+                {hasDiscountLines && (
+                  <p className={minimumSelectionTotal <= 0 ? 'warn' : 'hint'}>
+                    Lowest selectable total {money2(minimumSelectionTotal)}{minimumSelectionGpPct != null ? ` · GP ${pct(minimumSelectionGpPct)}` : ''}.
+                    {minimumSelectionTotal <= 0 ? ' Reduce the discount or make more work required before sending.' : belowFloor ? ' Adjust the discount or required work to meet the gross profit floor before sending.' : ''}
+                  </p>
+                )}
                 {optionalGpWarn && requiredGpPct != null && (
                   <p className="warn gp-warn">
                     If they take only the required lines, this job runs at {(requiredGpPct * 100).toFixed(1)}% GP, below your {Number(config.optionalLinesGpWarnPct ?? 40).toFixed(0)}% floor. Consider pricing the required lines to stand on their own.
@@ -4001,17 +4011,9 @@ export default function EstimatorScreen({
                 {pricePerSqft != null && (
                   <div className="ppsf-line">{money2(pricePerSqft)}<span className="muted"> / sqft</span></div>
                 )}
-                <details className="estimate-disclosure" open={adjustmentsOpen} onToggle={(event) => setAdjustmentsOpen(event.currentTarget.open)}>
-                  <summary>Adjust price</summary>
+                {adjustmentsRelevant && <details className="estimate-disclosure" open={adjustmentsOpen} onToggle={(event) => setAdjustmentsOpen(event.currentTarget.open)}>
+                  <summary>Price change reason</summary>
                   <div className="estimate-disclosure-body">
-                <div className="sell-row">
-                  <label className="field"><span>Sell price $ (system)</span>
-                    <input inputMode="decimal" value={sellInput} placeholder={basePrice != null ? String(basePrice) : ''} onChange={(e) => onSellInput(e.target.value)} />
-                  </label>
-                  <label className="field"><span>Discount %</span>
-                    <input inputMode="decimal" value={discInput} placeholder="0" onChange={(e) => onDiscInput(e.target.value)} />
-                  </label>
-                </div>
                 {/* Override reason (prompt 69): shown whenever the price
                     moved off the calculated total by ANY route (a per-line
                     edit, the job discount, or both); REQUIRED only when the
@@ -4025,7 +4027,7 @@ export default function EstimatorScreen({
                 )}
                 {overrideNeedsReason && <p className="warn">The final price is {money(shortfall)} under the calculated total, past the allowed {money(reasonThreshold)} leeway. Your changes save automatically. Add a written reason before sending.</p>}
                   </div>
-                </details>
+                </details>}
                 <details className="estimate-disclosure">
                   <summary>Cost breakdown</summary>
                   <div className="estimate-disclosure-body">
@@ -4309,7 +4311,7 @@ export default function EstimatorScreen({
         }
         const f = addonForms.find((x) => x.key === openLine.key);
         if (!f) return null;
-        const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+        const qty = f.isDiscount ? 1 : (Number(f.qty) > 0 ? Number(f.qty) : 1);
         const total = r2(qty * (Number(f.unitPrice) || 0));
         const cat = f.addonId ? addonCatalog.find((x) => x.id === f.addonId) ?? null : null;
         const hasSnippet = !!(cat && cat.scope_snippet && cat.scope_snippet.trim());
@@ -4332,26 +4334,55 @@ export default function EstimatorScreen({
             </>}
           >
             <div className="sheet-section">
-              <div className="sheet-section-title"><span>Line</span><span className={f.addonId ? 'line-chip addon' : 'line-chip custom'}>{f.addonId ? 'catalog add-on' : 'one-off'}</span></div>
+              <div className="sheet-section-title"><span>Line</span><span className={f.addonId ? 'line-chip addon' : 'line-chip custom'}>{f.isDiscount ? 'discount' : f.addonId ? 'catalog add-on' : 'one-off'}</span></div>
               {f.addonId ? (
                 <p style={{ margin: 0, fontWeight: 700 }}>{f.label}</p>
               ) : (
-                <label className="field"><span>One-off item name</span>
-                  <input value={f.label} placeholder="One-off item name" onChange={(e) => setAddonForm(f.key, { label: e.target.value })} />
+                <label className="field"><span>{f.isDiscount ? 'Discount name' : 'One-off item name'}</span>
+                  <input value={f.label} placeholder={f.isDiscount ? 'Discount name' : 'One-off item name'} onChange={(e) => setAddonForm(f.key, { label: e.target.value })} />
                 </label>
               )}
             </div>
             <div className="sheet-section">
               <div className="sheet-section-title"><span>Pricing</span></div>
               <div className="addon-nums">
+                {f.isDiscount ? (
+                  <label className="field"><span>Discount amount $</span>
+                    {/* Dylan types discounts with a minus sign ("-500"). The field
+                        shows the negative number and stores it negative; a bare
+                        amount without the sign is treated the same way. */}
+                    <input inputMode="decimal" value={f.unitPrice} placeholder="-0.00" onChange={(e) => {
+                      const amount = e.target.value.replace(/[^0-9.]/g, '');
+                      setAddonForm(f.key, { unitPrice: amount ? `-${amount}` : (e.target.value.includes('-') ? '-' : '') });
+                    }} />
+                  </label>
+                ) : <>
                 <label className="field"><span>Qty</span><input inputMode="decimal" value={f.qty} onChange={(e) => setAddonForm(f.key, { qty: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
-                <label className="field"><span>Price $</span><input inputMode="decimal" value={f.unitPrice} onChange={(e) => setAddonForm(f.key, { unitPrice: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                {/* A minus sign on a one-off price turns the line into a discount
+                    line (qty 1, no cost), the same record a "+ Discount" line saves. */}
+                <label className="field"><span>Price $</span><input inputMode="decimal" value={f.unitPrice} onChange={(e) => {
+                  const raw = e.target.value;
+                  const amount = raw.replace(/[^0-9.]/g, '');
+                  if (raw.trim().startsWith('-')) {
+                    setAddonForm(f.key, { unitPrice: amount ? `-${amount}` : '-', isDiscount: true, qty: '1', unitCost: '0', estHours: '', sqft: '', label: f.label.trim() || 'Discount', preselected: f.optional ? f.preselected : config.optionalLinesPreselectDefault !== false });
+                  } else {
+                    setAddonForm(f.key, { unitPrice: amount });
+                  }
+                }} /></label>
                 <label className="field"><span>Material cost $</span><input inputMode="decimal" value={f.unitCost} onChange={(e) => setAddonForm(f.key, { unitCost: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
                 <label className="field"><span>Est. crew hours</span><input inputMode="decimal" value={f.estHours} onChange={(e) => setAddonForm(f.key, { estHours: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" /></label>
                 <label className="field"><span>Sq ft (optional)</span><input inputMode="decimal" value={f.sqft} onChange={(e) => setAddonForm(f.key, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" /></label>
-                <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, { optional: e.target.checked })} /><span>Optional (customer picks)</span></label>
+                </>}
+                {optionalControlsVisible(config.optionalLinesEnabled, f.optional) && <>
+                  <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, {
+                    optional: e.target.checked,
+                    preselected: f.isDiscount && e.target.checked ? config.optionalLinesPreselectDefault !== false : f.preselected,
+                  })} /><span>Optional (customer picks)</span></label>
+                  {f.isDiscount && f.optional && <label className="check addon-opt"><input type="checkbox" checked={f.preselected} onChange={(e) => setAddonForm(f.key, { preselected: e.target.checked })} /><span>Start selected</span></label>}
+                </>}
                 <span className="addon-total">{money2(total)}</span>
               </div>
+              {f.isDiscount && <p className="hint">Type the discount as a negative number, for example -500. This line subtracts it from the proposal total.</p>}
               {Number(f.unitPrice) > 0 && !(Number(f.unitCost) > 0) && (
                 <p className="warn addon-warn">No cost on this line: it books as pure margin and inflates GP until a cost is set{f.addonId ? ' (set a default in the Catalog)' : ''}.</p>
               )}

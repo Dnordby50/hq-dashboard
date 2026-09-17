@@ -127,6 +127,27 @@ function mixedDb() {
     pec_notifications: [],
   };
 }
+function discountDb() {
+  const db = mixedDb();
+  db.estimate_areas = db.estimate_areas.slice(0, 1);
+  db.estimate_line_items = db.estimate_line_items.slice(0, 1);
+  db.estimate_line_items[0].unit_cost = 1400;
+  db.estimate_line_items.push({
+    id: 'liD', estimate_id: 'e72', estimate_area_id: null, addon_id: null,
+    label: 'Project discount', description: 'Courtesy discount', qty: 1,
+    unit_price: -600.25, unit_cost: 0, total: -600.25,
+    is_optional: true, selected_by_customer: false, sort_order: 1,
+  });
+  db.estimates[0].price_all_options = 3599.75;
+  db.estimates[0].commission_pct = 6;
+  db.estimates[0].price_override_reason = 'Courtesy discount';
+  db.estimates[0].scope_of_work = '## Garage: Standard Flake\n\ngarage scope\n\n---\n\n## Project discount\n\nCourtesy discount';
+  db.estimate_installments = [
+    { id: 'dep', estimate_id: 'e72', seq: 0, label: 'Deposit', amount_kind: 'percent', amount_value: 50, trigger_kind: 'on_acceptance', is_deposit: true },
+    { id: 'bal', estimate_id: 'e72', seq: 1, label: 'Completion', amount_kind: 'percent', amount_value: 50, trigger_kind: 'on_completion', is_deposit: false },
+  ];
+  return db;
+}
 const quietFetch = () => { global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) }); };
 
 console.log('optional-lines.test.js');
@@ -163,6 +184,118 @@ await section('empty send gate: zero lines block, null total blocks, zero total 
   ok(emptySendError([{ label: 'Patio', total: 3400, is_optional: true, selected_by_customer: true }]) === null,
     'a pre-selected optional line with a price -> passes (it is in the opening total)');
   ok(emptySendError(mixedDb().estimate_line_items) === null, 'the mixed fixture passes');
+});
+
+await section('discount send gate protects every selection, including an unticked credit', async () => {
+  const items = discountDb().estimate_line_items;
+  ok(emptySendError(items) === null, 'a discount smaller than the required work can be sent');
+  ok(splitLineTotals(items).opening === 4200 && splitLineTotals(items).allIn === 3599.75, 'an unticked discount lowers all-in but not the opening price');
+  for (const total of [-4200, -4200.01, -10000]) {
+    const unsafe = [...items.slice(0, 1), { ...items[1], total }, { total: 20000, is_optional: true, selected_by_customer: true }];
+    ok(/Discounts must leave/.test(emptySendError(unsafe) || ''), `credit ${total} cannot depend on optional paid work to stay positive`);
+  }
+  const requiredCredit = [{ total: -100 }, { total: 1000, is_optional: true, selected_by_customer: true }];
+  ok(/Discounts must leave/.test(emptySendError(requiredCredit) || ''), 'a required credit alone does not establish required paid work');
+  const legacyFlag = [{ total: 100 }, { total: -100, optional: true, selected_by_customer: false }];
+  ok(/Discounts must leave/.test(emptySendError(legacyFlag) || ''), 'legacy optional flags receive the same minimum-selection check');
+  ok(acceptSelectionInvalid([{ total: 100 }, { total: -100, is_optional: true, selected_by_customer: true }]), 'the accept defense rejects a zero total after a selected discount');
+  ok(acceptSelectionInvalid([{ total: 100 }, { total: -101, is_optional: true, selected_by_customer: true }]), 'the accept defense rejects a negative discounted total');
+  ok(emptySendError([{ total: 100 }, { total: -99.99, is_optional: true }]) === null, 'a positive one-cent minimum is valid');
+});
+
+await section('public discount toggle updates the live total, deposit and signature selection', async () => {
+  const db = discountDb();
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+  const estimatorRequire = createRequire(path.join(__dirname, '..', 'apps', 'estimator', 'package.json'));
+  const { JSDOM } = estimatorRequire('jsdom');
+  const dom = new JSDOM(res.body, { url: 'https://fixture.invalid', runScripts: 'outside-only' });
+  try {
+    const { window } = dom;
+    const requests = [];
+    window.fetch = (_url, opts) => { requests.push(JSON.parse(opts.body)); return new Promise(() => {}); };
+    for (const script of window.document.querySelectorAll('script:not([src])')) window.eval(script.textContent);
+    const toggle = window.document.querySelector('[data-li-id="liD"]');
+    ok(res.statusCode === 200 && !!toggle, 'the optional discount renders as a customer checkbox');
+    ok(res.body.includes('-$600.25') && !res.body.includes('$-600.25'), 'discount currency renders with the minus before the dollar sign');
+    ok(window.document.getElementById('heroTotal').textContent === '$4,200.00', 'the unchecked discount leaves the opening price unchanged');
+    toggle.checked = true;
+    toggle.dispatchEvent(new window.Event('change'));
+    ok(window.document.getElementById('heroTotal').textContent === '$3,599.75', 'selecting the discount subtracts its exact amount');
+    ok(window.document.getElementById('acceptTotal').textContent === '$3,599.75', 'the signature button uses the discounted amount');
+    const amounts = [...window.document.querySelectorAll('td.amt[data-sched-kind]')].map(el => el.textContent);
+    ok(amounts.join('|') === '$1,799.88|$1,799.87', 'deposit and final payment preserve every cent after the discount');
+    toggle.checked = false;
+    toggle.dispatchEvent(new window.Event('change'));
+    ok(window.document.getElementById('heroTotal').textContent === '$4,200.00', 'unticking the discount restores the total');
+    toggle.checked = true;
+    toggle.dispatchEvent(new window.Event('change'));
+    window.document.getElementById('sigName').value = 'Discount Tester';
+    window.document.getElementById('goAccept').click();
+    const accept = requests.find(r => r.action === 'accept');
+    ok(accept && accept.selected_optional_ids.join(',') === 'liD', 'the real signature click submits the selected discount ID');
+  } finally { dom.window.close(); }
+});
+
+await section('accepting or declining a discount preserves signed job lines and the payment schedule', async () => {
+  for (const selected of [true, false]) {
+    const db = discountDb();
+    quietFetch();
+    const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+    const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Discount Tester', selected_optional_ids: selected ? ['liD'] : [] }) });
+    const total = selected ? 3599.75 : 4200;
+    ok(res.statusCode === 200 && db.estimates[0].price === total, `${selected ? 'selected' : 'declined'} discount signs for ${total}`);
+    ok(db.jobs[0].price === total && db.pec_prod_jobs[0].revenue === total, 'both job records keep the signed net revenue');
+    ok(db.jobs[0].line_items.some(li => li.name === 'Project discount' && li.price === -600.25) === selected, 'the invoice lines include only a selected discount at its negative price');
+    ok(db.job_areas.some(area => area.name === 'Project discount' && area.price === -600.25 && area.system_type_id === null) === selected, 'job editing receives a standalone negative line without a coating system');
+    ok(db.pec_prod_areas.length === 1 && db.jobs[0].sqft === '800', 'the discount contributes no material area or square footage');
+    const schedule = db.estimates[0].signature.schedule;
+    ok(Math.round(schedule.reduce((sum, row) => sum + row.computed_amount, 0) * 100) === Math.round(total * 100), 'the frozen payment schedule equals the signed net total');
+    ok(db.pec_invoice_installments.length === 2 && db.jobs[0].deposit_amount === (selected ? 1799.88 : 2100), 'deposit and installments use the discounted signed price');
+    if (selected) {
+      db.pec_job_ar = [{ ...db.jobs[0], public_token: TOKEN, customer_name: 'Discount Tester', paid_to_date: 0, balance_remaining: total }];
+      const invoice = loadFn('pec-public-invoice.cjs', makeMockSb(db));
+      const page = await invoice.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN } });
+      ok(page.statusCode === 200 && page.body.includes('Project discount') && page.body.includes('-$600.25'), 'the real customer invoice displays the signed negative discount line');
+      ok(page.body.includes('$3,599.75'), 'the invoice displays the signed net project price');
+    }
+    if (!selected) ok(String(db.pec_prod_jobs[0].notes).includes('Declined by customer: Project discount, -$600'), 'declined discount notes keep clear negative currency');
+  }
+});
+
+await section('unsafe discounts are held on an existing public link before any signature or job write', async () => {
+  const db = discountDb();
+  db.estimate_line_items[1].unit_price = -4200;
+  db.estimate_line_items[1].total = -4200;
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Discount Tester', selected_optional_ids: ['liD'] }) });
+  ok(res.statusCode === 409 && /being updated/.test(res.body), 'an oversized discount blocks a previously sent estimate pending correction');
+  ok(db.estimates[0].status === 'sent' && !db.estimates[0].signature && db.jobs.length === 0, 'status, signature and job creation are untouched');
+});
+
+await section('legacy discount links enforce pricing floors even while the discount is unticked', async () => {
+  const db = discountDb();
+  db.estimate_line_items[0].unit_cost = 2350;
+  quietFetch();
+  const mockSb = makeMockSb(db);
+  const reads = [];
+  const mod = loadFn('pec-public-estimate.cjs', async (...args) => { if (args[0] === 'GET') reads.push(args[1]); return mockSb(...args); });
+  const res = await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+  ok(res.statusCode === 200 && /This estimate is being updated/.test(res.body), 'a discount below the configured GP floor is held without a send-readiness snapshot');
+  ok(reads.some(p => p.startsWith('/estimate_line_items?') && /select=[^&]*addon_id/.test(p)), 'the public line query includes catalog identity for discount classification');
+  ok(db.estimates[0].status === 'sent' && db.jobs.length === 0, 'checking the legacy link creates no job or status write');
+});
+
+await section('settling a selected discount reduces GP and credits its commission saving', async () => {
+  const db = discountDb();
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', signing: true, selected_optional_ids: ['liD'] }) });
+  ok(res.statusCode === 200 && db.estimates[0].price === 3599.75, 'opening the signature panel settles at the selected net price');
+  ok(db.estimates[0].gp_dollars === 2235.77, 'GP is 3599.75 - 1400 cost + 36.015 commission saving, rounded to cents');
+  ok(Math.abs(db.estimates[0].gp_pct - (2235.77 / 3599.75)) < 1e-9, 'GP percentage uses net revenue');
 });
 
 // --- 3. Pre-selected optional line and the stored floor ----------------------

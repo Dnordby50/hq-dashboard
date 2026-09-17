@@ -72,6 +72,61 @@ test('legacy pricing derives area cost and addon commission without confusing op
   assert.match(blockers({ price: 1000, calc_price: 1000, gp_pct: .2 })[0].msg, /floor/);
 });
 
+const discount = (total, patch = {}) => ({ label: 'Courtesy discount', total, unit_price: total, unit_cost: 0, qty: 1, addon_id: null, estimate_area_id: null, is_optional: false, selected_by_customer: true, ...patch });
+
+test('standalone discounts share the reason threshold even when optional and unselected', () => {
+  for (const optional of [false, true]) {
+    const est = estimate({}, { commission_pct: 10 });
+    est.estimate_line_items.push(discount(-200, { is_optional: optional, selected_by_customer: false }));
+    assert.match(blockers(est)[0].msg, /reason.*before sending/);
+    assert.deepEqual(blockers({ ...est, price_override_reason: 'Neighbor referral' }), []);
+    est.estimate_line_items.at(-1).total = -100;
+    assert.deepEqual(blockers(est), [], 'the existing dollar threshold remains inclusive');
+    est.pricing_snapshot.send_readiness.finalSell = 4900;
+    assert.match(blockers(est)[0].msg, /reason/, 'line price reductions and discounts add together');
+  }
+});
+
+test('discount GP is recomputed once, including negative commission and material cost', () => {
+  const est = estimate({ combinedGpPct: .4 }, { commission_pct: 10, price_override_reason: 'Seasonal promotion' });
+  est.estimate_line_items.push(discount(-1000));
+  assert.deepEqual(blockers(est), [], '5000 - 2500 cost - 1000 discount + 100 commission credit yields 40%');
+  assert.deepEqual(blockers({ ...est, pricing_snapshot: null, calc_price: 5000 }), [], 'legacy rows use the same discount math');
+  est.estimate_line_items.at(-1).total = -1100;
+  assert.match(blockers(est)[0].msg, /38.7%.*40% floor/);
+  est.estimate_line_items.push({ label: 'Prep', total: 1000, qty: 2, unit_cost: 300, is_optional: false });
+  assert.match(blockers(est)[0].msg, /36.9%.*40% floor/, 'non-area material cost and commission both reduce GP');
+});
+
+test('optional upsells cannot hide the margin of an offered optional discount', () => {
+  const est = estimate({ combinedGpPct: .6 }, { commission_pct: 10, price_override_reason: 'Limited promotion' });
+  est.estimate_line_items.push(
+    { estimate_area_id: 'upsell', label: 'Patio', total: 5000, unit_cost: 500, qty: 1, is_optional: true, selected_by_customer: true },
+    discount(-1500, { is_optional: true, selected_by_customer: false }),
+  );
+  const before = structuredClone(est);
+  assert.match(blockers(est)[0].msg, /32.9%.*40% floor/);
+  est.estimate_line_items.at(-1).selected_by_customer = true;
+  assert.match(blockers(est)[0].msg, /32.9%.*40% floor/, 'customer preselection cannot change policy');
+  est.estimate_line_items.at(-1).selected_by_customer = false;
+  assert.deepEqual(est, before, 'the unfinished draft stays untouched');
+  const lowOpening = estimate({ combinedGpPct: .3 }, { commission_pct: 10 });
+  lowOpening.estimate_line_items.push(discount(-100));
+  assert.match(blockers(lowOpening)[0].msg, /30.0%.*40% floor/, 'checking the cheapest selection retains the existing opening margin check');
+});
+
+test('discounts cannot make a permitted selection free or bypass missing pricing data', () => {
+  const est = estimate({}, { commission_pct: 10, price_override_reason: 'Draft in progress' });
+  est.estimate_line_items.push(discount(-5000, { is_optional: true, selected_by_customer: false }));
+  assert.match(blockers(est)[0].msg, /above \$0 for every allowed selection/);
+  est.estimate_line_items.at(-1).total = -100;
+  est.commission_pct = null;
+  assert.match(blockers(est)[0].msg, /Finish pricing every line/);
+  est.commission_pct = 10;
+  est.estimate_line_items[0].unit_cost = null;
+  assert.match(blockers(est)[0].msg, /Finish pricing every line/);
+});
+
 test('dashboard flush waits for its own frame and blocks on save failure', async () => {
   const start = dashboard.indexOf('async function flushEstimateBeforeSend(');
   const source = dashboard.slice(start, dashboard.indexOf('\nasync function estimateSendGateOk(', start));
@@ -177,6 +232,15 @@ test('actual email, SMS and public signing handlers reject saved invalid pricing
     current = estimate({ finalSell: 4800 });
     assert.match((await email.handler(post(emailInput))).body, /reason/);
     assert.match((await sms.handler(post(smsInput))).body, /reason/);
+    current = estimate({}, { commission_pct: 10, price_override_reason: 'Offered promotion' });
+    current.estimate_line_items.push(discount(-1500, { is_optional: true, selected_by_customer: false }));
+    assert.match((await email.handler(post(emailInput))).body, /32.9%/);
+    assert.match((await sms.handler(post(smsInput))).body, /32.9%/);
+    const discountedAccept = await publicEstimate.handler(post({ action: 'accept', token: current.id, name: 'Customer' }));
+    assert.equal(discountedAccept.statusCode, 409);
+    assert.match(discountedAccept.body, /being updated/);
+    assert.equal(providerCalls, 0);
+    assert.deepEqual(writes, []);
     current = estimate();
     assert.equal((await email.handler(post(emailInput))).statusCode, 200);
     assert.equal((await sms.handler(post(smsInput))).statusCode, 200);

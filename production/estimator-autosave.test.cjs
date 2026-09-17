@@ -131,7 +131,7 @@ async function harness(options = {}) {
     'lib/customerSearch': { searchCustomersAndLeads: async () => [], ensureLeadForCustomer: async () => 'fixture-lead' },
     'offline/uuid': { uuid: () => `fixture-uuid-${++uuidId}` },
     'features/estimator/AddressAutocomplete': { __esModule: true, default: 'address-autocomplete' },
-    'features/estimator/BottomSheet': { __esModule: true, default: ({ children }) => React.createElement('bottom-sheet', null, children) },
+    'features/estimator/BottomSheet': { __esModule: true, default: ({ children, footer }) => React.createElement('bottom-sheet', null, children, footer) },
     'features/estimator/ScopeEditor': { __esModule: true, default: 'scope-editor' },
   };
   const context = vm.createContext({
@@ -209,6 +209,17 @@ async function harness(options = {}) {
       assert.equal(button.length, 1, `Find one ${label} button`);
       await act(async () => { button[0].props.onClick(); });
     },
+    async editLinePrice(value) {
+      const line = renderer.root.findByProps({ 'aria-label': 'Edit line Fixture coating' });
+      await act(async () => { line.props.onClick(); });
+      await h.change('Price $ (you set it', value);
+      await h.clickLabel('Done');
+    },
+    async addDiscount(amount) {
+      await h.clickLabel('+ Discount');
+      await h.change('Discount amount $', amount);
+      await h.clickLabel('Done');
+    },
     async editCustomer() {
       const summary = renderer.root.findAll(node => node.props['aria-label'] === 'Customer info, click to edit');
       if (summary.length) await act(async () => { summary[0].props.onClick(); });
@@ -236,13 +247,13 @@ test('reading an existing estimate does not create an autosave', async t => {
   assert.equal(h.saves.length, 0);
 });
 
-for (const [label, value, expected] of [
-  ['Sell price $ (system)', '990', 990],
-  ['Discount %', '5', 950],
+for (const [label, edit, expected] of [
+  ['Per-line price', async h => h.editLinePrice('990'), 990],
+  ['Discount line', async h => h.addDiscount('50'), 950],
 ]) {
   test(`${label} alone marks the estimate dirty and autosaves the new total`, async t => {
     const h = await harness(); t.after(() => h.dispose());
-    await h.change(label, value);
+    await edit(h);
     await h.advance(2500);
     assert.equal(h.saves.length, 1);
     assert.equal(h.saves[0].totals.price, expected);
@@ -263,7 +274,7 @@ test('a lead source-only edit autosaves the selected source', async t => {
 
 test('a below-floor price with no override reason still autosaves without confirmation', async t => {
   const h = await harness(); t.after(() => h.dispose());
-  await h.change('Sell price $ (system)', '150');
+  await h.addDiscount('850');
   await h.advance(2500);
   assert.equal(h.saves.length, 1, 'The incomplete price approval must not prevent persistence');
   assert.equal(h.saves[0].totals.price, 150);
@@ -278,10 +289,10 @@ test('edits during saving queue behind the active writer and preserve the latest
   const hold = deferred();
   const h = await harness({ onSave: (_payload, index) => index === 1 ? hold.promise : undefined });
   t.after(async () => { hold.resolve(); await h.dispose(); });
-  await h.change('Sell price $ (system)', '990');
+  await h.editLinePrice('990');
   await h.advance(2500);
   assert.equal(h.saves.length, 1);
-  await h.change('Sell price $ (system)', '950');
+  await h.editLinePrice('950');
   await h.editCustomer();
   await h.change('Lead source', 'Referral');
   await h.event('visibilitychange');
@@ -358,7 +369,7 @@ test('the parent send flush waits for a below-floor draft to finish saving', asy
   const hold = deferred();
   const h = await harness({ props: { embed: true }, onSave: () => hold.promise });
   t.after(async () => { hold.resolve(); await h.dispose(); });
-  await h.change('Sell price $ (system)', '150');
+  await h.editLinePrice('150');
   await h.flush();
   assert.equal(h.saves.length, 1);
   assert.equal(h.saves[0].totals.price, 150);
@@ -373,9 +384,9 @@ test('the parent send flush includes a newer edit arriving during an older save'
   const hold = deferred();
   const h = await harness({ props: { embed: true }, onSave: (_payload, index) => index === 1 ? hold.promise : undefined });
   t.after(async () => { hold.resolve(); await h.dispose(); });
-  await h.change('Sell price $ (system)', '990');
+  await h.editLinePrice('990');
   await h.advance(2500);
-  await h.change('Sell price $ (system)', '150');
+  await h.editLinePrice('150');
   await h.flush();
   assert.deepEqual(h.flushReplies(), []);
   await act(async () => { hold.resolve(); });
@@ -403,7 +414,7 @@ for (const [table, row, id] of [
   test(`the parent send flush refuses queued ${table} writes belonging to this estimate`, async t => {
     const h = await harness({ props: { embed: true }, listOps: () => [{ table, row, id }] });
     t.after(() => h.dispose());
-    await h.change('Sell price $ (system)', '990');
+    await h.editLinePrice('990');
     await h.flush();
     assert.equal(h.saves.length, 1, 'Local save completes before checking remaining sync work');
     assert.equal(h.flushReplies().length, 1);
@@ -426,7 +437,7 @@ test('the parent send flush does not block on an unrelated estimate in the outbo
 test('the parent send flush reports a failed save without claiming success', async t => {
   const h = await harness({ props: { embed: true }, onSave: () => { throw new Error('fixture write failed'); } });
   t.after(() => h.dispose());
-  await h.change('Sell price $ (system)', '990');
+  await h.editLinePrice('990');
   await h.flush();
   assert.equal(h.flushReplies().length, 1);
   assert.equal(h.flushReplies()[0].ok, false);
@@ -435,7 +446,7 @@ test('the parent send flush reports a failed save without claiming success', asy
 
 test('the parent send flush ignores wrong origin, source and estimate identity', async t => {
   const h = await harness({ props: { embed: true } }); t.after(() => h.dispose());
-  await h.change('Sell price $ (system)', '990');
+  await h.editLinePrice('990');
   await h.flush({ origin: 'https://unrelated.invalid' });
   await h.flush({ source: {} });
   await h.flush({ data: { type: 'pec-estimator-flush', request_id: 'wrong-estimate', estimate_id: 'unrelated-estimate' } });

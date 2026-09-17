@@ -1012,6 +1012,7 @@ await section('offline save: areas + add-on line items land complete when the ou
       { addonId: null, areaIndex: 0, label: 'Garage: Standard Flake floor coating system', description: '600 sqft', qty: 1, unitPrice: 3000, unitCost: 900, total: 3000, isOptional: false, selectedByCustomer: true, sortOrder: 0 },
       { addonId: null, areaIndex: 1, label: 'Patio: Quartz floor coating system', description: '200 sqft', qty: 1, unitPrice: 2000, unitCost: 800, total: 2000, isOptional: false, selectedByCustomer: true, sortOrder: 1 },
       { addonId: 'ad-stem', areaIndex: null, label: 'Stem Walls', description: null, qty: 40, unitPrice: 10, unitCost: 4, total: 400, isOptional: true, selectedByCustomer: false, sortOrder: 2 },
+      { addonId: null, areaIndex: null, label: 'Project discount', description: 'Courtesy discount', qty: 1, unitPrice: -250.50, unitCost: 0, total: -250.50, isOptional: true, selectedByCustomer: false, sortOrder: 3 },
     ],
     pricingSnapshot: null,
     areas: [
@@ -1032,7 +1033,7 @@ await section('offline save: areas + add-on line items land complete when the ou
   const firstLine = tables.indexOf('estimate_line_items');
   ok(firstArea > 0 && firstLine > firstArea, 'areas enqueue before line items (FK order)');
   ok(tables.filter((t) => t === 'estimate_areas').length === 2, 'both areas enqueued');
-  ok(tables.filter((t) => t === 'estimate_line_items').length === 3, 'all three line items enqueued');
+  ok(tables.filter((t) => t === 'estimate_line_items').length === 4, 'all four line items, including the discount, enqueued');
 
   // The two system lines resolved their areaIndex to REAL minted area ids.
   const lineRows = out.queued.filter((q) => q.table === 'estimate_line_items').map((q) => q.row);
@@ -1045,6 +1046,10 @@ await section('offline save: areas + add-on line items land complete when the ou
   ok(patioLine && garageLine.estimate_area_id !== patioLine.estimate_area_id, 'each system line bound to its OWN area');
   ok(stemLine && stemLine.estimate_area_id == null && stemLine.addon_id === 'ad-stem', 'the add-on line has no area, keeps its addon_id');
   ok(stemLine.is_optional === true && stemLine.unit_cost === 4, 'the add-on line carries optional + a unit cost (GP honesty)');
+  const discountLine = lineRows.find((r) => r.label === 'Project discount');
+  ok(discountLine && discountLine.estimate_area_id == null && discountLine.addon_id == null, 'the discount is stored as a standalone line without catalog or area foreign keys');
+  ok(discountLine.unit_price === -250.50 && discountLine.total === -250.50 && discountLine.qty === 1 && discountLine.unit_cost === 0, 'offline storage preserves the negative discount amount and zero cost');
+  ok(discountLine.is_optional === true && discountLine.selected_by_customer === false, 'the discount optional and starting-selection flags survive offline saving');
 
   // The split customer fields persist AND the combined safety-net columns are
   // composed on the same row, so an offline save carries both.
@@ -1058,7 +1063,9 @@ await section('offline save: areas + add-on line items land complete when the ou
   ok(out.drain.synced === out.queued.length && out.drain.failed === 0, 'the whole outbox drains clean');
   const upTables = out.uploaded.map((u) => u.table);
   ok(upTables.indexOf('estimates') < upTables.indexOf('estimate_areas'), 'upload order keeps the estimate before its areas');
-  ok(upTables.filter((t) => t === 'estimate_line_items').length === 3, 'all three line items uploaded');
+  ok(upTables.filter((t) => t === 'estimate_line_items').length === 4, 'all four line items uploaded');
+  const uploadedDiscount = out.uploaded.find((u) => u.table === 'estimate_line_items' && u.row.label === 'Project discount');
+  ok(uploadedDiscount && uploadedDiscount.row.total === -250.50 && uploadedDiscount.row.is_optional === true, 'reconnecting uploads the discount without dropping or clamping its amount');
 });
 
 // ===========================================================================

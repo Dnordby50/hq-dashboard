@@ -65,6 +65,7 @@ const {
   isDeclinedLine,
   declinedNoteLine,
   selectedScopeDoc,
+  emptySendError,
 } = require('../../production/optional-lines.cjs');
 const crypto = require('crypto');
 
@@ -778,7 +779,7 @@ ${/* One IIFE, two sections (prompt 78 A1). The TICKING section (checkbox
      preview render can never leak the live public token. */''}
 ${!ticking ? '' : `<script>
 (function(){
-  var money=function(n){return '$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
+  var money=function(n){return (Number(n)<0?'-':'')+'$'+Math.abs(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
   var toggles=Array.prototype.slice.call(document.querySelectorAll('.opt-toggle'));
   var baseTotal=${JSON.stringify(includedTotal(items.filter(li => li && !isOptionalLine(li))))};
   function currentTotal(){
@@ -941,10 +942,13 @@ async function loadEstimate(token) {
   // Autosaving an unfinished revision of a sent estimate must not make its
   // new below-floor price signable through the existing link. Staff preview
   // uses loadEstimateById and stays available. Historical finalized records
-  // and older clients without this snapshot retain their existing access.
+  // retain their existing access. Discount selections are checked even on a
+  // legacy estimate because an oversized credit must never become signable.
+  const hasDiscount = est.line_items.some(li => !li.estimate_area_id && !li.addon_id && Number(li.total) < 0);
+  const discountError = hasDiscount && emptySendError(est.line_items);
   if (!['accepted', 'signed', 'rejected', 'lost'].includes(est.status)
-      && est.pricing_snapshot && est.pricing_snapshot.send_readiness
-      && await estimatePricingSendError(sb, est)) {
+      && (discountError || ((hasDiscount || (est.pricing_snapshot && est.pricing_snapshot.send_readiness))
+        && await estimatePricingSendError(sb, est)))) {
     est.pricing_review_pending = true;
   }
   return est;
@@ -957,7 +961,7 @@ async function loadLineItems(estimateId) {
     // ignores it.
     // unit_cost rides along (prompt 78 A3) so the select action's GP
     // recompute can run server-side; it is never rendered on the page.
-    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,estimate_area_id,label,description,qty,unit_price,unit_cost,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
+    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -2128,7 +2132,15 @@ async function handleSelect(est, body) {
   if (costless.length) {
     console.warn(`public-estimate select: gp skipped for estimate ${est.id}, zero unit_cost on priced line(s): ${costless.map(li => li.id).join(', ')}`);
   } else {
-    const cost = included.reduce((s, li) => s + (Number(li.unit_cost) || 0) * (Number(li.qty) || 0), 0);
+    const cost = included.reduce((s, li) => {
+      const rowCost = (Number(li.unit_cost) || 0) * (Number(li.qty) || 0);
+      // Standalone discounts have no materials or labor. Their negative
+      // revenue reduces commission by the same rule as lineItemsGp in the
+      // estimator; area rows already include commission in unit_cost.
+      const discountCommission = !li.estimate_area_id && !li.addon_id && Number(li.total) < 0
+        ? Number(li.total) * (Number(est.commission_pct) || 0) / 100 : 0;
+      return s + rowCost + discountCommission;
+    }, 0);
     const gpDollars = Math.round((total - cost) * 100) / 100;
     patch.gp_dollars = gpDollars;
     // gp_pct is stored as a FRACTION (0-1), not a percent: the estimator
