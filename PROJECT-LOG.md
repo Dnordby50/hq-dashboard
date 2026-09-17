@@ -1,3 +1,13 @@
+## [2026-09-17 12:47 MST] estimates: discount line items deployed, served assets verified
+By: Claude Code
+
+Verified: Commit db3511e is pushed and Netlify has published it. The served dashboard index.html contains the new discount send gate text, the hosted help/whats-new.json contains the proposal-discount-line-items entry, and the served estimator bundle (estimator/assets/index-*.js, rebuilt by Netlify) contains the "+ Discount" action and the minus-sign hint text. An interactive click-through in the estimator was not possible in this session: the Claude in Chrome extension disconnected after the deploy, so no draft estimate was created or touched. Nothing in production data changed.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Dylan's hands-on check (below).
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-reload TopCoat, open a new estimate, and under Line items choose + Discount, name it, and type -500 (or type a minus sign into a one-off line's Price). The line should show as a deduction, the total should drop, and Send should refuse only if the discount would take the lowest selectable total to $0 or below. Report anything that looks off and it will be fixed the same day.
+
 ## [2026-09-17 12:45 MST] estimates: discount line items with minus-sign entry
 By: Claude Code (integrating an uncommitted Codex working-tree build from earlier today)
 
