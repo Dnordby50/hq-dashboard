@@ -25,7 +25,11 @@ function slotsDb({ allowed = true, malformed = false, unavailable = false, limit
         { key: 'booking_enabled', value: 'true' },
         { key: 'booking_drive_time_enabled', value: 'false' },
         { key: 'booking_slots_rate_limit_per_hour', value: limit },
+        { key: 'booking_require_google_connected', value: 'false' },
       ];
+      // Prompt 105: the engine only reads schedules for eligible reps, so the
+      // fixture needs one bookable rep for the ordering assertion below.
+      if (path.startsWith('/pec_sales_team_members?')) return [{ id: 'fixture-rep', name: 'Fixture', active: true, bookable_online: true, google_connected: false }];
       if (path === '/rpc/pec_take_rate_limit') {
         if (unavailable) throw new Error('fixture database unavailable');
         return malformed ? {} : { allowed, remaining: allowed ? 59 : 0, retry_after: allowed ? 0 : 47 };

@@ -14,6 +14,7 @@ const {
   processBook, processSlots, processOutOfAreaLead, processManage,
   checkArea, routeAnswers,
 } = require('../netlify/functions/pec-booking.cjs');
+const { isBookableRep, resolveEligibility } = require('../netlify/functions/_pec-booking-reps.cjs');
 const { makeDb } = require('./_drip-test-kit.cjs');
 
 let passed = 0, failed = 0;
@@ -46,6 +47,9 @@ function baseTables(over = {}) {
       { key: 'booking_sms_disclosure', value: 'TEST DISCLOSURE: texts from PEC, STOP to opt out.' },
       { key: 'booking_manage_link_text', value: 'Change it: {link}' },
       { key: 'booking_drive_time_enabled', value: 'false' },
+      // Prompt 105: the fixture rep has no Google calendar, so the Google
+      // requirement is off here; the eligibility block below tests it on.
+      { key: 'booking_require_google_connected', value: 'false' },
     ],
     pec_booking_forms: [{
       id: 'form1', slug: 'pec', brand: 'PEC', name: 'PEC', active: true,
@@ -58,9 +62,10 @@ function baseTables(over = {}) {
       { id: 'sa2', form_id: 'form1', zip: null, city: 'Chino Valley', active: true },
     ],
     pec_booking_requests: [],
-    pec_sales_team_members: [{ id: REP, name: 'Dylan', active: true }],
+    pec_sales_team_members: [{ id: REP, name: 'Dylan', active: true, bookable_online: true }],
     pec_sales_member_google_calendars: [],
     pec_appointments: [],
+    pec_appointment_assignment_log: [],
     leads: [],
     customers: [],
     lead_events: [],
@@ -84,6 +89,12 @@ function makeBookSlotStub(db) {
     const s = new Date(row.start_at).getTime();
     const e = new Date(row.end_at).getTime();
     const member = row.sales_member_id || null;
+    // Prompt 105 fence, same as the SQL: the ASSIGNED rep must still be
+    // eligible; a new booking with no rep fails closed.
+    const settings = Object.fromEntries((db.settings || []).map(r => [r.key, r.value]));
+    const repRow = member ? (db.pec_sales_team_members || []).find(m => m.id === member) : null;
+    if (!reschedId && !member) return Promise.resolve({ ok: false, taken: true, not_bookable: true });
+    if (member && !isBookableRep(repRow, settings)) return Promise.resolve({ ok: false, taken: true, not_bookable: true });
     const conflict = db.pec_appointments.some(a => a.status === 'scheduled'
       && (!member || a.sales_member_id === member)
       && (!reschedId || a.id !== reschedId)
@@ -107,6 +118,13 @@ function makeBookSlotStub(db) {
       notes: row.notes || null, customer_notes: row.customer_notes || null,
       booking_manage_token: row.booking_manage_token || null,
       booking_request_id: row.booking_request_id || null,
+    });
+    // The assignment-log trigger's INSERT branch (reason from the GUC the
+    // function sets from p_row.assignment_reason).
+    (db.pec_appointment_assignment_log = db.pec_appointment_assignment_log || []).push({
+      id: 'alog-' + (db.pec_appointment_assignment_log.length + 1), appointment_id: id,
+      from_member_id: null, to_member_id: member, changed_by: null,
+      changed_by_label: 'Customer (online booking)', reason: row.assignment_reason || 'online_booking',
     });
     return Promise.resolve({ ok: true, appointment_id: id });
   };
@@ -344,7 +362,7 @@ const goodBody = (over = {}) => ({
   // ---- Google availability is only as current as its oldest required source.
   // These are real endpoint runs: stale state must hide slots AND refuse a
   // direct post before it creates a contact, appointment, or confirmation.
-  const connectedRep = () => ({ id: REP, name: 'Dylan', active: true,
+  const connectedRep = () => ({ id: REP, name: 'Dylan', active: true, bookable_online: true,
     google_connected: true, google_needs_reconnect: false,
     google_calendar_id: 'dedicated', google_connected_at: '2026-08-01T00:00:00Z' });
   const googleRows = () => ['dedicated', 'private-calendar'].map(calendar_id => ({
@@ -527,6 +545,172 @@ const goodBody = (over = {}) => ({
     const d2 = makeDeps(fx2);
     const expired = await processManage(d2.deps, { token: 'a'.repeat(64), action: 'cancel' });
     ok(expired.status === 410, 'manage: token stops working after the appointment ends');
+  }
+
+  // -------------------------------------------------------------------------
+  // Prompt 105: rep eligibility, primary rep, assignment mode, fail closed.
+  // The live bug in miniature: a second ACTIVE rep with no calendar (Dusty)
+  // used to make every working-hours slot bookable regardless of Dylan's day.
+  // -------------------------------------------------------------------------
+  {
+    const DUSTY = 'cb99d703-0000-0000-0000-000000000002';
+    const dylanBusy = { // Tuesday 10:15-11:00 Phoenix site visit for Dylan
+      id: 'dylan-visit', sales_member_id: REP, status: 'scheduled', source: 'topcoat', all_day: false,
+      start_at: '2026-08-25T17:15:00Z', end_at: '2026-08-25T18:00:00Z',
+      location_address: '9 Elsewhere Rd', location_city: 'Prescott', location_zip: '86301',
+    };
+    const roster = (dustyBookable) => [
+      { id: REP, name: 'Dylan', active: true, bookable_online: true, google_connected: false },
+      { id: DUSTY, name: 'Dusty', active: true, bookable_online: dustyBookable, google_connected: false },
+    ];
+    const tue10 = (res) => (res.body.days || []).some(d => d.slots.some(s => s.start === SLOT_TUE_10));
+
+    // Acceptance 1 in fixture form: Dusty active but NOT bookable -> the
+    // 10:00 slot over Dylan's 10:15 visit is gone. Before this build (Dusty
+    // bookable, which is what `active` alone meant) it was offered.
+    const before = makeDb(baseTables({ pec_sales_team_members: roster(true), pec_appointments: [dylanBusy] }));
+    const after = makeDb(baseTables({ pec_sales_team_members: roster(false), pec_appointments: [dylanBusy] }));
+    const beforeRes = await processSlots(makeDeps(before).deps, goodBody());
+    const afterRes = await processSlots(makeDeps(after).deps, goodBody());
+    ok(beforeRes.status === 200 && tue10(beforeRes), 'eligibility: with a second bookable rep the 10:00 slot over Dylan\'s 10:15 visit IS offered (the bug)');
+    ok(afterRes.status === 200 && !tue10(afterRes) && afterRes.body.days.length > 0,
+      'eligibility: with Dusty active but not bookable, no slot overlaps Dylan\'s visit and other times still show');
+    ok((afterRes.body.days || []).every(d => d.slots.every(s => !s.sales_member_id)),
+      'eligibility: the public payload never names the rep');
+
+    // Acceptance 4: the People toggle changes slot output with no deploy.
+    after.db.pec_sales_team_members[1].bookable_online = true;
+    const toggled = await processSlots(makeDeps(after).deps, goodBody());
+    ok(tue10(toggled), 'eligibility: flipping bookable_online on the row changes the next slot read');
+    after.db.pec_sales_team_members[1].bookable_online = false;
+
+    // The booking insert must be assigned to Dylan (primary_first, one
+    // eligible rep) and log the reason online_booking:primary_first.
+    const bookFx = makeDb(baseTables({
+      pec_sales_team_members: roster(false),
+      settings: baseTables().settings.concat([
+        { key: 'booking_primary_member_id', value: REP }, { key: 'booking_assignment_mode', value: 'primary_first' }]),
+    }));
+    const booked = await processBook(makeDeps(bookFx).deps, goodBody());
+    ok(booked.status === 200 && bookFx.db.pec_appointments[0].sales_member_id === REP, 'eligibility: the booking lands on the primary rep');
+    ok(bookFx.db.pec_appointment_assignment_log.length === 1
+      && bookFx.db.pec_appointment_assignment_log[0].reason === 'online_booking:primary_first'
+      && bookFx.db.pec_appointment_assignment_log[0].to_member_id === REP,
+      'eligibility: the assignment log row carries reason online_booking:primary_first');
+
+    // A primary who is not eligible degrades to round_robin and says so.
+    const noPrimary = resolveEligibility(roster(false), { booking_primary_member_id: DUSTY, booking_assignment_mode: 'primary_first', booking_require_google_connected: 'false' });
+    ok(noPrimary.mode === 'round_robin' && noPrimary.primaryId === null && /not bookable online/.test(noPrimary.warning || ''),
+      'eligibility: an ineligible primary falls back to round_robin with a warning');
+    const noPrimaryFx = makeDb(baseTables({ pec_sales_team_members: roster(false),
+      settings: baseTables().settings.concat([{ key: 'booking_primary_member_id', value: DUSTY }]) }));
+    const rrBooked = await processBook(makeDeps(noPrimaryFx).deps, goodBody());
+    ok(rrBooked.status === 200 && noPrimaryFx.db.pec_appointment_assignment_log[0].reason === 'online_booking:round_robin',
+      'eligibility: the logged reason is the EFFECTIVE mode after fallback');
+
+    // Google requirement (default on): a bookable rep with no connected
+    // calendar is not eligible; switching the setting off admits them.
+    const strict = { booking_require_google_connected: 'true' };
+    ok(!isBookableRep({ id: REP, active: true, bookable_online: true, google_connected: false }, strict)
+      && isBookableRep({ id: REP, active: true, bookable_online: true, google_connected: false }, { booking_require_google_connected: 'false' })
+      && isBookableRep({ id: REP, active: true, bookable_online: true, google_connected: true }, strict)
+      && !isBookableRep({ id: REP, active: false, bookable_online: true, google_connected: true }, strict)
+      && !isBookableRep({ id: REP, active: true, google_connected: true }, strict),
+      'eligibility: the rule is active AND bookable_online AND (google_connected OR requirement off); an undefined flag is not bookable');
+    ok(isBookableRep({ id: REP, active: true, bookable_online: true, google_connected: false }, {}) === false,
+      'eligibility: a missing require setting means require (block)');
+
+    // Acceptance 2: zero eligible reps -> no slots, and the submission lands
+    // as a lead with NO appointment (locked decision 5, fail closed).
+    const nobody = makeDb(baseTables({ pec_sales_team_members: [{ id: REP, name: 'Dylan', active: true, bookable_online: false }] }));
+    const { deps: nobodyDeps, spies: nobodySpies } = makeDeps(nobody, { bookSlot: async () => { throw new Error('write reached with no eligible rep'); } });
+    const noSlots = await processSlots(nobodyDeps, goodBody());
+    ok(noSlots.status === 200 && noSlots.body.no_reps === true && noSlots.body.days.length === 0 && noSlots.body.in_area === true,
+      'fail closed: zero eligible reps returns no slots and the no_reps flag');
+    const noBook = await processBook(nobodyDeps, goodBody());
+    ok(noBook.status === 409 && noBook.body.no_reps === true && nobody.db.pec_appointments.length === 0
+      && nobodySpies.pushed.length === 0 && nobodySpies.reminded.length === 0
+      && nobody.db.pec_booking_requests.some(r => r.status === 'rejected' && r.error_text === 'no_bookable_reps'),
+      'fail closed: a direct /book submission is refused with no appointment effects and an audited request row');
+    const lead = await processOutOfAreaLead(nobodyDeps, { form: 'pec', name: 'Pat Lead', phone: '(928) 555-9999', email: 'pat@example.com',
+      address1: '123 N Test St', city: 'Prescott', zip: '86301', project: 'Garage', reason: 'no_reps', fill_ms: 9000 });
+    ok(lead.status === 200 && lead.body.ok && nobody.db.leads.length === 1 && nobody.db.pec_appointments.length === 0,
+      'fail closed: the leave-your-details submission lands as a lead with no appointment');
+    ok(nobody.db.lead_events.some(e => /nobody was open for online booking/.test((e.payload || {}).text || ''))
+      && nobody.db.pec_booking_requests.some(r => r.status === 'out_of_area' && r.in_area === true && r.error_text === 'no_bookable_reps')
+      && nobody.db.pec_notifications.some(n => n.type === 'booking_out_of_area' && /nobody was bookable online/.test(n.body)),
+      'fail closed: the note, request row and bell say "nobody bookable", not "out of area"');
+    // The client cannot forge the no-reps story when someone IS bookable.
+    const forged = makeDb(baseTables());
+    await processOutOfAreaLead(makeDeps(forged).deps, { form: 'pec', name: 'Forge Try', phone: '(928) 555-9998', address1: '1 Far Rd', city: 'Nowhere', zip: '00000', reason: 'no_reps', fill_ms: 9000 });
+    ok(forged.db.lead_events.some(e => /OUTSIDE the service area/.test((e.payload || {}).text || '')),
+      'fail closed: reason=no_reps is ignored when a rep is bookable (server re-derives it)');
+
+    // A roster read failure is NOT "everyone is free".
+    const broken = makeDb(baseTables());
+    const { deps: brokenDeps } = makeDeps(broken, { sb: async (method, path, ...rest) => {
+      if (path.startsWith('/pec_sales_team_members?')) throw new Error('column bookable_online does not exist');
+      return broken.sb(method, path, ...rest);
+    } });
+    const brokenSlots = await processSlots(brokenDeps, goodBody());
+    ok(brokenSlots.status === 200 && brokenSlots.body.no_reps === true && brokenSlots.body.days.length === 0,
+      'fail closed: an unreadable roster (migration pending) offers nothing');
+
+    // The write path re-checks the ASSIGNED rep: switched off between the
+    // slot read and the submit, the customer is routed to lead capture.
+    const raceFx = makeDb(baseTables());
+    const raceDeps = makeDeps(raceFx).deps;
+    const offered = await processSlots(raceDeps, goodBody());
+    raceFx.db.pec_sales_team_members[0].bookable_online = false;
+    const raced = await processBook(raceDeps, goodBody());
+    ok(offered.body.days.length > 0 && raced.status === 409 && raced.body.no_reps === true && raceFx.db.pec_appointments.length === 0,
+      'fail closed: eligibility is re-read on submit, not trusted from the slot list');
+    // And the SQL-shaped fence inside the lock (stub mirrors book_appointment_slot).
+    const fenceFx = makeDb(baseTables());
+    const fenceDeps = makeDeps(fenceFx, { sb: async (method, path, ...rest) => {
+      const out = await fenceFx.sb(method, path, ...rest);
+      // After the endpoint's eligibility read, flip the flag so only the
+      // in-lock fence can catch it.
+      if (method === 'GET' && path.startsWith('/pec_sales_team_members?')) fenceFx.db.pec_sales_team_members[0].bookable_online = false;
+      return out;
+    } }).deps;
+    const fenced = await processBook(fenceDeps, goodBody());
+    ok(fenced.status === 409 && fenced.body.no_reps === true && fenceFx.db.pec_appointments.length === 0,
+      'fail closed: the locked function refuses a rep who lost eligibility after the endpoint read');
+
+    // Self-serve reschedule uses the same list: the appointment's rep, once
+    // switched off, cannot be moved online.
+    const mgFx = makeDb(baseTables());
+    const mgDeps = makeDeps(mgFx).deps;
+    await processBook(mgDeps, goodBody());
+    const token = mgFx.db.pec_appointments[0].booking_manage_token;
+    const openBefore = await processManage(mgDeps, { token, action: 'slots' });
+    mgFx.db.pec_sales_team_members[0].bookable_online = false;
+    const openAfter = await processManage(mgDeps, { token, action: 'slots' });
+    const moveAfter = await processManage(mgDeps, { token, action: 'reschedule', start: openBefore.body.days[0].slots[0].start });
+    ok(openBefore.body.days.length > 0 && openAfter.body.no_reps === true && openAfter.body.days.length === 0
+      && moveAfter.status === 409 && moveAfter.body.no_reps === true,
+      'eligibility: the manage reschedule offers nothing once the rep is not bookable');
+
+    // primary_only vs primary_first vs round_robin over two eligible reps.
+    const two = () => [
+      { id: REP, name: 'Dylan', active: true, bookable_online: true, google_connected: false },
+      { id: DUSTY, name: 'Dusty', active: true, bookable_online: true, google_connected: false },
+    ];
+    const modeFx = (mode, appts = []) => makeDb(baseTables({ pec_sales_team_members: two(), pec_appointments: appts,
+      settings: baseTables().settings.concat([{ key: 'booking_primary_member_id', value: REP }, { key: 'booking_assignment_mode', value: mode }]) }));
+    const onlyFx = modeFx('primary_only', [dylanBusy]);
+    const onlyRes = await processSlots(makeDeps(onlyFx).deps, goodBody());
+    ok(!tue10(onlyRes) && onlyRes.body.days.length > 0, 'primary_only: slots come from the primary\'s calendar only, even with a free second rep');
+    const firstFx = modeFx('primary_first', [dylanBusy]);
+    const firstRes = await processSlots(makeDeps(firstFx).deps, goodBody());
+    ok(tue10(firstRes), 'primary_first: a slot is offered when any eligible rep is free');
+    const firstBook = await processBook(makeDeps(firstFx).deps, goodBody());
+    ok(firstBook.status === 200 && firstFx.db.pec_appointments.at(-1).sales_member_id === DUSTY,
+      'primary_first: when the primary is busy the next eligible rep takes the booking');
+    const firstFree = modeFx('primary_first');
+    await processBook(makeDeps(firstFree).deps, goodBody());
+    ok(firstFree.db.pec_appointments[0].sales_member_id === REP, 'primary_first: when the primary is free the primary takes the booking');
   }
 
   console.log(`booking: ${passed} passed, ${failed} failed`);

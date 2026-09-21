@@ -20277,6 +20277,36 @@ async function renderSettingsAppointments() {
   }
   const bkUrl = (bkSettings.booking_url || '').trim() || (location.origin + '/book');
   const bkEmbedSnippet = `<iframe src="${bkUrl}?embed=1" style="width:100%;border:0;min-height:760px" loading="lazy" title="Book your free estimate"></iframe>`;
+  // Prompt 105: who the public can book. The per-person flag lives on
+  // Settings > People; this card only summarizes it and holds the primary
+  // rep, the assignment mode, and the Google requirement. The rule here
+  // mirrors netlify/functions/_pec-booking-reps.cjs isBookableRep exactly.
+  const BK_MODES = [
+    ['primary_first', 'Primary first', 'Offer a time when anyone bookable is free. The primary rep gets it when free, otherwise the next bookable person.'],
+    ['primary_only', 'Primary only', 'Only the primary rep\'s calendar is offered. Other bookable people are ignored.'],
+    ['round_robin', 'Round robin', 'Offer a time when anyone bookable is free and rotate bookings across everyone bookable.'],
+  ];
+  const bkModeHelp = Object.fromEntries(BK_MODES.map(([k, , h]) => [k, h]));
+  const bkRepsMigrated = members.some(m => 'bookable_online' in m);
+  const bkBookableList = () => {
+    const requireGoogle = String(bkSettings.booking_require_google_connected == null ? 'true' : bkSettings.booking_require_google_connected) !== 'false';
+    return members.filter(m => m.active !== false && m.bookable_online === true && (m.google_connected === true || !requireGoogle));
+  };
+  const bkRepReadoutHtml = () => {
+    const bookable = bkBookableList();
+    const primaryId = String(bkSettings.booking_primary_member_id || '').trim();
+    const primary = members.find(m => m.id === primaryId) || null;
+    const primaryOk = !!primary && bookable.some(m => m.id === primaryId);
+    const mode = BK_MODES.some(([k]) => k === bkSettings.booking_assignment_mode) ? bkSettings.booking_assignment_mode : 'primary_first';
+    const lines = [];
+    if (!bkRepsMigrated) lines.push('<div style="color:#b45309;font-weight:600">Run the 20260921171120_booking_rep_eligibility.sql migration to control who takes online bookings. Until then every active salesperson is offered.</div>');
+    else if (!bookable.length) lines.push('<div style="color:#dc2626;font-weight:700">Currently bookable online: nobody. The booking page shows no times and only collects the customer\'s details. Switch on "Takes online bookings" for someone in Settings > People.</div>');
+    else lines.push(`<div><strong>Currently bookable online:</strong> ${bookable.map(m => esc(m.name)).join(', ')}</div>`);
+    if (bkRepsMigrated && bookable.length && mode !== 'round_robin' && !primaryOk) {
+      lines.push(`<div style="color:#b45309;font-weight:600">${!primaryId ? 'No primary rep is set' : !primary ? 'The primary rep is not on the roster' : primary.active === false ? esc(primary.name) + ' is inactive' : esc(primary.name) + ' is not bookable online'}, so bookings rotate across everyone bookable until you pick one under Advanced.</div>`);
+    }
+    return lines.join('');
+  };
   let bkHours = { mon: ['08:00', '17:00'], tue: ['08:00', '17:00'], wed: ['08:00', '17:00'], thu: ['08:00', '17:00'], fri: ['08:00', '17:00'], sat: null, sun: null };
   try {
     const parsed = JSON.parse(bkSettings.booking_working_hours || '');
@@ -20491,6 +20521,7 @@ async function renderSettingsAppointments() {
         <a class="pec-btn ghost sm" href="${esc(bkUrl)}" target="_blank" rel="noopener">Open</a>
         <span id="bkCopyStatus" style="font-size:.72rem;color:var(--muted)"></span>
       </div>
+      <div id="bkRepReadout" style="font-size:.8rem;margin:2px 0 8px">${bkRepReadoutHtml()}</div>
       ${!bkAreas.filter(a => a.active).length ? '<div style="font-size:.78rem;color:#b45309;font-weight:600;margin-bottom:6px">The service area is empty. Add zips under Advanced before enabling, or every visitor lands on the call-us page.</div>' : ''}
       <details>
         <summary style="cursor:pointer;font-weight:700;font-size:.8rem">Advanced</summary>
@@ -20559,6 +20590,35 @@ async function renderSettingsAppointments() {
           <button class="pec-btn ghost sm" id="bkAreaBulk" title="Paste a list of zips separated by spaces, commas, or new lines.">Paste a zip list</button>
           <span id="bkAreaStatus" style="font-size:.72rem;color:var(--muted)"></span>
         </div>
+
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Salespeople</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">
+          Who the public can book is a per-person switch in Settings > People ("Takes online bookings").
+          Here you choose who gets the booking when more than one person is bookable. With one
+          bookable person every choice below behaves the same.</div>
+        <div class="pec-row-2" style="max-width:560px">
+          <div class="pec-field"><label>Primary rep</label>
+            <select data-bk-set="booking_primary_member_id" id="bkPrimary" ${bkRepsMigrated ? '' : 'disabled'}>
+              <option value="">None</option>
+              ${(() => {
+                const bookable = bkBookableList();
+                const cur = String(bkSettings.booking_primary_member_id || '').trim();
+                const opts = bookable.map(m => `<option value="${esc(m.id)}" ${m.id === cur ? 'selected' : ''}>${esc(m.name)}</option>`);
+                const curRow = cur && !bookable.some(m => m.id === cur) ? members.find(m => m.id === cur) : null;
+                if (curRow) opts.push(`<option value="${esc(curRow.id)}" selected>${esc(curRow.name)} (not bookable online)</option>`);
+                return opts.join('');
+              })()}
+            </select></div>
+          <div class="pec-field"><label>Assignment</label>
+            <select data-bk-set="booking_assignment_mode" id="bkMode" ${bkRepsMigrated ? '' : 'disabled'}>
+              ${BK_MODES.map(([k, lbl]) => `<option value="${k}" ${(bkSettings.booking_assignment_mode || 'primary_first') === k ? 'selected' : ''}>${lbl}</option>`).join('')}
+            </select>
+            <div id="bkModeHelp" style="font-size:.72rem;color:var(--muted);margin-top:3px">${esc(bkModeHelp[bkSettings.booking_assignment_mode] || bkModeHelp.primary_first)}</div></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin:4px 0 2px;cursor:pointer">
+          <input type="checkbox" id="bkRequireGoogle" style="width:auto" ${String(bkSettings.booking_require_google_connected == null ? 'true' : bkSettings.booking_require_google_connected) !== 'false' ? 'checked' : ''} ${bkRepsMigrated ? '' : 'disabled'}>
+          Require a connected Google Calendar to take online bookings
+          <span style="color:var(--muted);font-size:.74rem">(off lets someone without Google be booked; TopCoat then only knows about the appointments it holds itself)</span></label>
 
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Abuse control and copy</div>
         <div class="pec-row-2" style="max-width:460px">
@@ -20808,6 +20868,28 @@ async function renderSettingsAppointments() {
       try { await bkSave(el.dataset.bkSet, el.value.trim()); bkStatus('Saved.'); }
       catch (err) { bkStatus('Save failed: ' + (err.message || err)); }
     }));
+
+    // Salespeople controls (prompt 105): the generic handler above saves the
+    // two selects; this keeps the read-only summary and the mode description
+    // honest without a re-render, and drops the appointment form's cached
+    // primary so the next New Appointment prefills the new choice.
+    const bkRefreshReps = () => {
+      const r = $('bkRepReadout'); if (r) r.innerHTML = bkRepReadoutHtml();
+      const h = $('bkModeHelp'); if (h) h.textContent = bkModeHelp[bkSettings.booking_assignment_mode] || bkModeHelp.primary_first;
+    };
+    ['bkPrimary', 'bkMode'].forEach(id => { const el = $(id); if (el) el.addEventListener('change', () => {
+      bkSettings[el.dataset.bkSet] = el.value.trim();
+      state._apptPrimaryMember = null;
+      bkRefreshReps();
+    }); });
+    if ($('bkRequireGoogle')) $('bkRequireGoogle').addEventListener('change', async (e) => {
+      const on = e.target.checked;
+      try {
+        await bkSave('booking_require_google_connected', on ? 'true' : 'false');
+        bkSettings.booking_require_google_connected = on ? 'true' : 'false';
+        bkRefreshReps(); bkStatus('Saved.');
+      } catch (err) { e.target.checked = !on; bkStatus('Save failed: ' + (err.message || err)); }
+    });
 
     const saveHours = async () => {
       const map = {};
@@ -22311,7 +22393,7 @@ async function renderSettingsPeople() {
     supabase.from('pec_sales_team_members').select('*'),
     supabase.from('pec_prod_crew_members').select('*'),
     supabase.from('admin_users').select('id,name,email,role,auth_user_id,login_revoked_at,login_revoked_by').order('name'),
-    supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days', 'login_revoked_poll_seconds']),
+    supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days', 'login_revoked_poll_seconds', 'booking_require_google_connected']),
     isLoginAdmin ? supabase.from('user_permissions').select('*') : Promise.resolve({ data: [] }),
     isLoginAdmin ? supabase.from('sign_in_log').select('email,ip_address,user_agent,signed_in_at').order('signed_in_at', { ascending: false }).limit(20) : Promise.resolve({ data: [] }),
   ]), { label: 'renderSettingsPeople' });
@@ -22337,6 +22419,11 @@ async function renderSettingsPeople() {
   let dismissed;
   try { dismissed = new Set(JSON.parse(settingsMap.people_merge_dismissed || '[]')); } catch (_) { dismissed = new Set(); }
   const mirrorOff = String(settingsMap.people_mirror_enabled || 'true') === 'false';
+  // Prompt 105: "Takes online bookings" is a per-person flag on the sales
+  // row (pec_sales_team_members.bookable_online), separate from Active so a
+  // rep can stay selectable as a salesperson without ever being offered to
+  // the public. Default block without a connected Google Calendar.
+  const bookingRequireGoogle = String(settingsMap.booking_require_google_connected == null ? 'true' : settingsMap.booking_require_google_connected) !== 'false';
   const suggestions = pecPeopleMergeSuggestions(people, dismissed);
   const noBirthday = people.filter(p => p.active !== false && (p.birth_month == null || p.birth_day == null));
 
@@ -22383,7 +22470,7 @@ async function renderSettingsPeople() {
         <button class="pec-btn primary sm" id="pecPersonAddBtn">+ Add person</button>
       </div>
       <div class="pec-table-wrap"><table class="pec-table">
-        <thead><tr><th>Name</th><th>Roles</th><th>Crew</th><th style="width:120px">Wage ($/hr)</th><th style="width:110px">Commission %</th><th>Login</th><th>Birthday</th><th style="width:60px">Active</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Roles</th><th>Crew</th><th style="width:120px">Wage ($/hr)</th><th style="width:110px">Commission %</th><th style="width:150px" title="Whether customers can book this person through the online booking page. Active alone does not make someone bookable.">Takes online bookings</th><th>Login</th><th>Birthday</th><th style="width:60px">Active</th><th></th></tr></thead>
         <tbody>
           ${people.map(p => {
             const cm = p.crew_member_id ? crewMemberById[p.crew_member_id] : null;
@@ -22395,12 +22482,19 @@ async function renderSettingsPeople() {
               <td>${cm ? `<select data-person-crew style="min-width:110px"><option value="">No crew</option>${crews.map(c => `<option value="${esc(c.id)}" ${cm.crew_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${cm ? `<input class="prod-num" type="number" min="0" step="0.01" data-person-wage value="${esc(cm.hourly_wage ?? '')}" placeholder="default rate" style="width:100px">` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${sm ? `<input class="prod-num" type="number" min="0" max="100" step="0.5" data-person-pct value="${esc(sm.commission_pct ?? 0)}" style="width:80px">${sm.exclude_from_commission ? ' <span title="Excluded from the Commission report" style="font-size:.7rem;color:var(--muted)">excl.</span>' : ''}` : '<span style="color:var(--muted)">—</span>'}</td>
+              <td>${sm ? (() => {
+                const blocked = bookingRequireGoogle && sm.google_connected !== true;
+                const on = sm.bookable_online === true;
+                return `<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:400;text-transform:none;font-size:.78rem;cursor:${blocked ? 'not-allowed' : 'pointer'}">
+                  <input type="checkbox" data-person-bookable style="width:auto" ${on ? 'checked' : ''} ${blocked ? 'disabled' : ''} title="${blocked ? 'Connect this person\'s Google Calendar first (Settings > Appointments), or switch off the Google requirement on the Online booking card.' : 'Customers can pick this person on the booking page.'}">
+                  ${blocked ? '<span style="color:#b45309">Needs Google Calendar</span>' : (on ? 'Bookable' : 'Off')}</label>`;
+              })() : '<span style="color:var(--muted)">—</span>'}</td>
               <td style="font-size:.78rem">${au ? `${esc(au.email || au.name || 'linked')} <span class="pec-badge ${esc(au.role || '')}">${esc(au.role || '')}</span>${au.login_revoked_at ? ' <span class="pec-badge" style="background:#dc2626;color:#fff" title="This login is revoked: they cannot sign in. Open the person to restore it.">Login revoked</span>' : ''}` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${pecBirthdayLabel(p.birth_month, p.birth_day) || '<span style="color:#b45309" title="No birthday set. Edit to add one.">Not set</span>'}</td>
               <td><input type="checkbox" data-person-active ${p.active !== false ? 'checked' : ''} style="width:auto"></td>
               <td><button class="pec-btn sm ghost" data-person-edit>Edit</button></td>
             </tr>`;
-          }).join('') || '<tr class="nohover"><td colspan="9" class="pec-empty">No people yet. The migration backfill creates them from Users, Sales Team, and Team Members.</td></tr>'}
+          }).join('') || '<tr class="nohover"><td colspan="10" class="pec-empty">No people yet. The migration backfill creates them from Users, Sales Team, and Team Members.</td></tr>'}
         </tbody>
       </table></div>
       <p style="color:var(--muted);font-size:.7rem;margin:10px 0 0">Logins, roles, and permissions moved here from the old Users tab (prompt 57): open a person to manage their Login section, or create a login for someone who has none. The old General-tab cards (Sales Team, Crews, Team Members) keep working and stay in sync. Crews themselves are still managed on the General tab; here you assign people to them.</p>
@@ -22476,6 +22570,22 @@ async function renderSettingsPeople() {
     } catch (err) {
       inp.classList.add('cost-save-failed'); inp.title = 'NOT SAVED: ' + (err.message || err);
       showToast('Could not save commission %: ' + (err.message || err), { ttl: 6000 });
+    }
+  }));
+  // Takes online bookings (prompt 105). The public slot list reads the row
+  // on every request, so this changes availability immediately, no deploy.
+  root.querySelectorAll('[data-person-bookable]').forEach(inp => inp.addEventListener('change', async () => {
+    const p = personOf(inp); if (!p?.sales_team_member_id) return;
+    const on = inp.checked;
+    try {
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_sales_team_members').update({ bookable_online: on }).eq('id', p.sales_team_member_id), { label: 'person-bookable' });
+      if (error) throw error;
+      const sm = salesById[p.sales_team_member_id]; if (sm) sm.bookable_online = on;
+      const lbl = inp.parentElement && inp.parentElement.lastChild; if (lbl && lbl.nodeType === 3) lbl.textContent = on ? 'Bookable' : 'Off';
+      showToast(on ? `${p.full_name} can now be booked online.` : `${p.full_name} is no longer offered for online booking.`, { ttl: 3500 });
+    } catch (err) {
+      inp.checked = !on;
+      showToast('Could not save online booking: ' + (/bookable_online/.test(err.message || '') ? 'the 2026-09-21 rep eligibility migration is not applied yet.' : (err.message || err)), { ttl: 6000 });
     }
   }));
   root.querySelectorAll('[data-person-crew]').forEach(sel => sel.addEventListener('change', async () => {
@@ -27081,6 +27191,22 @@ async function apptDefaultDurationMinutes() {
   return v;
 }
 
+// Primary rep for new appointments (prompt 105): booking_primary_member_id,
+// the same setting the online booking engine assigns to first. Read once per
+// page load and cached on state; the Online booking card clears the cache
+// when the dropdown changes. Null when unset or unreadable (the form then
+// falls back to the first active member, the pre-105 behavior).
+async function apptPrimaryMemberId() {
+  if (state._apptPrimaryMember !== undefined && state._apptPrimaryMember !== null) return state._apptPrimaryMember || null;
+  let v = '';
+  try {
+    const r = await supabase.from('settings').select('value').eq('key', 'booking_primary_member_id').maybeSingle();
+    if (!r.error && r.data && r.data.value) v = String(r.data.value).trim();
+  } catch (_) { /* no default */ }
+  state._apptPrimaryMember = v || '';
+  return v || null;
+}
+
 // Blocked days (pec_appointment_blocked_days) plus crew holidays
 // (pec_prod_holidays) touching the local-date window [from, to]. Rows come
 // back as { id, start_date, end_date, sales_member_id, reason, kind } with
@@ -28013,7 +28139,13 @@ async function openAppointmentForm(existing, prefill = {}) {
     : (prefill.end && prefill.start && (prefill.end - prefill.start) >= 15 * 60000) ? new Date(prefill.end)
     : new Date(defStart.getTime() + defaultDurMin * 60000);
   const curType = a.appt_type || prefill.appt_type || 'on_site_estimate';
-  const curMember = a.sales_member_id || (activeMembers[0] ? activeMembers[0].id : '');
+  // New appointment with no rep chosen: prefill the primary rep (Settings >
+  // Appointments > Online booking > Advanced), editable. Before prompt 105
+  // this was the first active member BY NAME, which silently became Dusty
+  // when she joined the roster (appointment e2e4124c was saved unassigned).
+  const primaryId = isNew ? await apptPrimaryMemberId() : null;
+  const curMember = a.sales_member_id || prefill.sales_member_id
+    || (primaryId && activeMembers.some(m => m.id === primaryId) ? primaryId : (activeMembers[0] ? activeMembers[0].id : ''));
   const leadId = a.lead_id || prefill.lead_id || null;
   const customerId = a.customer_id || prefill.customer_id || null;
 

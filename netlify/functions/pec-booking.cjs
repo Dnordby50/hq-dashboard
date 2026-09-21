@@ -67,6 +67,10 @@ const {
 const { driveMinutesFor, takeBookingRateLimit } = require('./_pec-booking-drive.cjs');
 const { computeSlots, addrKey, HOME_KEY } = require('../../production/booking-availability.cjs');
 const { repsWithVerifiedGoogleCalendars } = require('./_pec-booking-google-health.cjs');
+// Prompt 105: THE eligibility rule (active + bookable_online + Google rule)
+// and the primary-rep / assignment-mode resolution. Slots, the booking
+// insert re-check, and the manage reschedule all go through it.
+const { loadEligibleReps } = require('./_pec-booking-reps.cjs');
 
 const ENDPOINT = 'booking';
 const { bookingDiscovery } = require('../../production/booking-discovery.cjs');
@@ -98,7 +102,7 @@ const json = (status, body, headers = {}) => {
 function validPublicBody(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
   const limits = { form: 80, name: 200, phone: 80, email: 254, address1: 512, city: 120,
-    state: 80, zip: 32, place_id: 512, start: 80, token: 256, project: 4000, website: 1024 };
+    state: 80, zip: 32, place_id: 512, start: 80, token: 256, project: 4000, website: 1024, reason: 32 };
   for (const [key, max] of Object.entries(limits)) {
     if (body[key] == null) continue;
     if (typeof body[key] !== 'string' || body[key].length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(body[key])) return false;
@@ -127,7 +131,13 @@ const SETTING_KEYS = [
   'booking_sms_disclosure', 'booking_manage_link_text',
   'booking_block_crew_holidays', 'google_booking_max_sync_age_minutes',
   'booking_slots_rate_limit_per_hour', 'booking_routes_rate_limit_per_day',
+  // Prompt 105: rep eligibility + primary rep + assignment mode.
+  'booking_primary_member_id', 'booking_assignment_mode', 'booking_require_google_connected',
 ];
+
+// Copy for the "nobody is bookable online" state (locked decision 5: no
+// slots, capture the lead, never fall back to every active rep).
+const NO_REPS_COPY = 'Online scheduling is not open right now. Leave your details and we will call you to set up your visit.';
 
 // Audit-trail actor labels (2026-09-21). The customer never has a staff
 // session, so these ride the write (book_appointment_slot's p_actor, or the
@@ -227,11 +237,6 @@ function checkArea(area, zip, city) {
   return { inArea: false, matched: null };
 }
 
-async function loadActiveReps(db) {
-  const rows = await db('GET', '/pec_sales_team_members?active=eq.true&select=id,name,google_connected,google_calendar_id,google_connected_at,google_needs_reconnect&order=name');
-  return Array.isArray(rows) ? rows : [];
-}
-
 // Busy rows for the horizon, one bounded query. The engine does the precise
 // filtering; this only needs to be a superset of what can block.
 async function loadBusy(db, now, horizonDays) {
@@ -291,18 +296,27 @@ function formApptType(form) {
   };
 }
 
-// The one slot computation both /slots and /book run (rule B6).
+// The one slot computation both /slots and /book run (rule B6). Rep order of
+// filters: eligibility (prompt 105: active + bookable_online + Google rule,
+// via the shared helper) -> the caller's single-rep restriction (manage
+// reschedule keeps its rep) -> Google calendar health. An empty list after
+// eligibility is `noEligibleReps` (fail closed, capture the lead); an empty
+// list only after the health pass is `calendarUnavailable` (call us).
 async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId, onlyRepId }) {
   const db = deps.sb;
   const now = deps.now ? deps.now() : new Date();
   const t = formApptType(form);
+  const eligibility = await loadEligibleReps(db, settings);
   const cfg = engineConfig(settings, t.duration, excludeApptId);
-  let reps = await loadActiveReps(db);
+  cfg.assignmentMode = eligibility.mode;
+  cfg.primaryRepId = eligibility.primaryId;
+  let reps = eligibility.reps;
   if (onlyRepId) reps = reps.filter(r => r.id === onlyRepId);
+  if (!reps.length) return { slots: [], cfg, apptType: t, reps, calendarUnavailable: false, noEligibleReps: true, eligibility };
   const health = await repsWithVerifiedGoogleCalendars(db, reps, settings, now);
   reps = health.reps;
   const calendarUnavailable = !reps.length && health.unavailableCount > 0;
-  if (calendarUnavailable) return { slots: [], cfg, apptType: t, reps, calendarUnavailable };
+  if (calendarUnavailable) return { slots: [], cfg, apptType: t, reps, calendarUnavailable, eligibility };
   const busy = await loadBusy(db, now, cfg.horizonDays);
   const blockedDays = await loadBlockedDays(db, settings, now, cfg.horizonDays);
 
@@ -336,7 +350,7 @@ async function openSlotsFor(deps, { settings, form, customerAddr, excludeApptId,
   const slots = computeSlots({
     now, reps, busy, workingHours: workingHoursFrom(settings), config: cfg, driveTimes, blockedDays,
   });
-  return { slots, cfg, apptType: t, reps, calendarUnavailable };
+  return { slots, cfg, apptType: t, reps, calendarUnavailable, eligibility };
 }
 
 // Group engine slots by Phoenix day for the picker.
@@ -725,6 +739,13 @@ async function processBook(deps, body, meta = {}) {
     // -- Fresh availability re-check: the SAME engine, fresh busy (B6) ------
     const availability = await openSlotsFor(deps, { settings, form, customerAddr: addr });
     const { slots } = availability;
+    if (availability.noEligibleReps) {
+      // Nobody is bookable online (prompt 105). The page switches to the
+      // leave-your-details step and posts /lead with reason no_reps.
+      await writeRequestRow(db, { ...baseRow, status: 'rejected', in_area: true, error_text: 'no_bookable_reps' });
+      await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 409, message: 'no rep is bookable online; lead capture offered', payload: null });
+      return { status: 409, body: { ok: false, no_reps: true, error: NO_REPS_COPY } };
+    }
     if (availability.calendarUnavailable) {
       await writeRequestRow(db, { ...baseRow, status: 'rejected', in_area: true, error_text: 'calendar_unavailable' });
       await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 503, message: 'Calendar availability could not be verified', payload: null });
@@ -787,11 +808,21 @@ async function processBook(deps, body, meta = {}) {
       customer_notes: routed.customer.join('\n'),
       booking_manage_token: manageToken,
       booking_request_id: requestId,
+      // Why this rep (prompt 105): lands in pec_appointment_assignment_log
+      // through the function's transaction GUC. Mode is the EFFECTIVE one
+      // (a missing primary degrades to round_robin and says so here).
+      assignment_reason: `online_booking:${availability.eligibility.mode}`,
     }, slot.buffer_before, slot.buffer_after, null, ACTOR_BOOK);
 
     if (!res || res.ok !== true) {
       if (res && (res.taken || res.calendar_unavailable)) {
         const fresh = await openSlotsFor(deps, { settings, form, customerAddr: addr });
+        if (fresh.noEligibleReps) {
+          // The rep was switched off between the slot read and the write.
+          await writeRequestRow(db, { ...baseRow, id: requestId, status: 'rejected', in_area: true, lead_id: contact.lead_id, customer_id: contact.customer_id, error_text: 'no_bookable_reps' });
+          await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 409, message: `rep no longer bookable at write time for ${startIso}`, payload: null });
+          return { status: 409, body: { ok: false, no_reps: true, error: NO_REPS_COPY } };
+        }
         const unavailable = !!res.calendar_unavailable || fresh.calendarUnavailable;
         await writeRequestRow(db, { ...baseRow, id: requestId, status: 'rejected', in_area: true, lead_id: contact.lead_id, customer_id: contact.customer_id, error_text: unavailable ? 'calendar_unavailable' : 'slot_taken' });
         await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'rejected', status_code: 409, message: `lost the slot race for ${startIso}`, payload: null });
@@ -884,6 +915,10 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
   // of a checkbox and STOP opts out. parseSmsConsent no longer gates.
   const smsConsent = true;
   const disclosure = cleanStr(settings.booking_sms_disclosure);
+  // Prompt 105: the same capture path serves an in-area visitor when nobody
+  // is bookable online (locked decision 5). The client says which; the
+  // server re-derives it from the roster so the note and bell never lie.
+  const noRepsClaimed = cleanStr(body.reason) === 'no_reps';
 
   try {
     if (!form || form.active === false || String(settings.booking_enabled || 'false') !== 'true') {
@@ -922,18 +957,24 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
       await upgradeLeadConsent(db, leadId, disclosure);
     }
     const whereTxt = [addr.address, addr.city, addr.zip].filter(Boolean).join(', ');
+    const noReps = noRepsClaimed && (await loadEligibleReps(db, settings)).reps.length === 0;
     await db('POST', '/lead_events', {
       lead_id: leadId,
       event_type: 'note',
       payload: {
-        text: `Tried to book online from OUTSIDE the service area: ${whereTxt || 'no address given'} (zip ${addr.zip || 'unknown'} not on the allowlist).${project ? ` Project: ${project}` : ''}`,
-        via: 'topcoat_booking_out_of_area',
+        text: noReps
+          ? `Tried to book online but nobody was open for online booking (Settings > People, Takes online bookings). Address: ${whereTxt || 'no address given'}.${project ? ` Project: ${project}` : ''}`
+          : `Tried to book online from OUTSIDE the service area: ${whereTxt || 'no address given'} (zip ${addr.zip || 'unknown'} not on the allowlist).${project ? ` Project: ${project}` : ''}`,
+        via: noReps ? 'topcoat_booking_no_reps' : 'topcoat_booking_out_of_area',
       },
     }).catch(() => {});
     const reqRow = await writeRequestRow(db, {
       form_id: form && form.id, status: 'out_of_area', name, phone: phone10, email,
       address_line1: addr.address, address_city: addr.city, address_state: addr.state, address_zip: addr.zip,
-      in_area: false, lead_id: leadId, customer_id: contact.customer_id,
+      // in_area stays honest; error_text names the no-reps case so the
+      // funnel drill can tell "we do not serve there" from "nobody was on".
+      in_area: noReps ? true : false, lead_id: leadId, customer_id: contact.customer_id,
+      error_text: noReps ? 'no_bookable_reps' : null,
       answers: { ...(body.answers && typeof body.answers === 'object' ? body.answers : {}), project },
       sms_consent: smsConsent, sms_consent_disclosure: smsConsent ? disclosure : null,
       ip_hash: meta.ipHash, user_agent: meta.userAgent,
@@ -941,15 +982,19 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
     try {
       await db('POST', '/pec_notifications', {
         type: 'booking_out_of_area',
-        body: `Out-of-area booking request from ${name}${addr.city ? ` in ${addr.city}` : ''}${addr.zip ? ` (${addr.zip})` : ''}. They were told we would call about scheduling.`,
+        body: noReps
+          ? `Booking request from ${name}${addr.city ? ` in ${addr.city}` : ''} while nobody was bookable online. They were told we would call about scheduling.`
+          : `Out-of-area booking request from ${name}${addr.city ? ` in ${addr.city}` : ''}${addr.zip ? ` (${addr.zip})` : ''}. They were told we would call about scheduling.`,
         target_view: 'leads',
         target_id: leadId,
       });
     } catch (e) { console.warn('pec-booking: out-of-area bell failed (non-fatal):', e && e.message); }
-    await log({ endpoint: ENDPOINT, deal_id: reqRow && reqRow.id, customer_name: name, outcome: 'ok', status_code: 200, message: `out_of_area lead ${leadId} (${addr.zip || addr.city || 'no address'})`, payload: null });
+    await log({ endpoint: ENDPOINT, deal_id: reqRow && reqRow.id, customer_name: name, outcome: 'ok', status_code: 200, message: `${noReps ? 'no_bookable_reps' : 'out_of_area'} lead ${leadId} (${addr.zip || addr.city || 'no address'})`, payload: null });
     return {
       status: 200,
-      body: { ok: true, message: 'Thanks! That address is a little outside our usual area, but we take projects like this case by case. We will call you about scheduling.' },
+      body: { ok: true, message: noReps
+        ? 'Thanks! We will call you to set up your visit.'
+        : 'Thanks! That address is a little outside our usual area, but we take projects like this case by case. We will call you about scheduling.' },
     };
   } catch (err) {
     console.error('pec-booking out-of-area failed:', err);
@@ -1025,8 +1070,11 @@ async function processManage(deps, body, meta = {}) {
         excludeApptId: appt.id,
         // Reschedule keeps the same rep: the locked update only moves times,
         // and swapping reps mid-manage would need a different write shape.
+        // The rep must still pass the shared eligibility rule (prompt 105);
+        // a rep switched off since the booking makes the move a phone call.
         onlyRepId: appt.sales_member_id || null,
       });
+      if (availability.noEligibleReps) return { status: 200, body: { ok: true, no_reps: true, days: [], error: 'This appointment cannot be moved online right now. Please call us and we will find a new time.' } };
       if (availability.calendarUnavailable) return calendarUnavailable();
       const { slots } = availability;
       return { status: 200, body: { ok: true, days: groupSlotsByDay(slots).slice(0, 14) } };
@@ -1043,6 +1091,7 @@ async function processManage(deps, body, meta = {}) {
         excludeApptId: appt.id,
         onlyRepId: appt.sales_member_id || null,
       });
+      if (availability.noEligibleReps) return { status: 409, body: { ok: false, no_reps: true, error: 'This appointment cannot be moved online right now. Please call us and we will find a new time.' } };
       if (availability.calendarUnavailable) return calendarUnavailable();
       const { slots } = availability;
       const startIso = new Date(start).toISOString();
@@ -1122,6 +1171,9 @@ async function processSlots(deps, body, meta = {}) {
     const verdict = checkArea(area, addr.zip, addr.city);
     if (!verdict.inArea) return { status: 200, body: { ok: true, open: true, in_area: false } };
     const availability = await openSlotsFor(deps, { settings, form, customerAddr: addr });
+    // Nobody bookable online (prompt 105): no slots, and the page offers the
+    // same leave-your-details step the out-of-area path uses.
+    if (availability.noEligibleReps) return { status: 200, body: { ok: true, open: true, in_area: true, no_reps: true, days: [] } };
     if (availability.calendarUnavailable) return calendarUnavailable();
     const { slots } = availability;
     return { status: 200, body: { ok: true, open: true, in_area: true, days: groupSlotsByDay(slots) } };
@@ -1291,7 +1343,7 @@ ${preview ? '<div class="card" style="padding:10px 14px;margin-bottom:12px"><spa
 
 <section id="stepOut" aria-labelledby="bkOutHeading" style="display:none">
   <h2 id="bkOutHeading">Outside our online booking area</h2>
-  <p class="qsub">Leave your details and we'll call to discuss your project.</p>
+  <p class="qsub" id="bkOutSub">Leave your details and we'll call to discuss your project.</p>
   <button class="bk-link" id="ooChangeAddress" type="button">Change address</button>
   <label for="ooName">Name</label><input id="ooName" autocomplete="name" aria-required="true">
   <label for="ooPhone">Phone</label><input id="ooPhone" autocomplete="tel" type="tel" aria-required="true">
@@ -1367,6 +1419,15 @@ function go(n){
 }
 function resetSelection(){S.start=null;$('bkContinue').disabled=true;$('bkSelectedDay').textContent='Select a time';$('bkSelectedTime').textContent='';$('bkChosen').textContent='';}
 function changeAddress(){if(CFG.preview||S.busy||S.complete)return;S.addr=null;S.days=[];S.dayOffset=0;resetSelection();go(1)}
+// The leave-your-details step serves two cases: the address is outside the
+// service area, or (prompt 105) nobody is bookable online right now. Same
+// form, same /lead call; only the copy and the reason flag differ.
+function outStep(noReps){
+  S.noReps=!!noReps;
+  $('bkOutHeading').textContent=noReps?'Online scheduling is not open right now':'Outside our online booking area';
+  $('bkOutSub').textContent=noReps?'Leave your details and we will call you to set up your visit.':'Leave your details and we will call to discuss your project.';
+  show('stepAddr',false);show('stepTime',false);show('stepDetails',false);show('stepOut',true);step(1);
+}
 $('st1').addEventListener('click',changeAddress);
 $('st2').addEventListener('click',function(){go(2)});
 $('st3').addEventListener('click',function(){go(3)});
@@ -1444,7 +1505,8 @@ $('bkAddrNext').addEventListener('click',function(){
   api('slots',{form:CFG.slug,address1:a.address1,city:a.city,zip:a.zip}).then(function(j){
     S.busy=false;btn.disabled=false;btn.textContent='See open times';step(1);
     if(j.open===false){$('bkAddrErr').textContent='Online booking is unavailable. Please call us to schedule.';return}
-    if(j.in_area===false){S.addr=a;show('stepAddr',false);show('stepOut',true);step(1);return}
+    if(j.in_area===false){S.addr=a;outStep(false);return}
+    if(j.no_reps){S.addr=a;outStep(true);return}
     if(!j.ok){$('bkAddrErr').textContent=j.error||'Could not load appointments. Please try again.';return}
     S.addr=a;S.days=j.days||[];S.dayOffset=0;S.dayIndex=0;resetSelection();
     if(!S.days.length){$('bkAddrErr').textContent='No appointments are available online. Please call us to schedule.';return}
@@ -1538,6 +1600,7 @@ $('bkBook').addEventListener('click',function(){
     website:$('bkWebsite').value,fill_ms:Date.now()-S.t0
   }).then(function(j){
     S.busy=false;step(3);$('bkChangeTime').disabled=false;btn.disabled=false;btn.textContent='Book appointment';
+    if(j.no_reps){outStep(true);return}
     if(j.taken){S.days=Array.isArray(j.days)?j.days:[];S.dayOffset=0;S.dayIndex=0;resetSelection();show('stepDetails',false);show('stepTime',true);renderDays();$('bkTimeErr').textContent=S.days.length?(j.error||'That time is no longer available. Choose another time.'):'No appointments are available online. Please call us to schedule.';step(2);return}
     if(!j.ok){$('bkErr').textContent=j.error||'Something went wrong.';return}
     if(j.duplicate){$('doneMsg').textContent='';$('doneManage').replaceChildren();$('bkErr').textContent=CFG.duplicateMessage;return}
@@ -1556,6 +1619,7 @@ $('ooSend').addEventListener('click',function(){
   api('lead',{
     form:CFG.slug,name:$('ooName').value.trim(),phone:$('ooPhone').value.trim(),email:$('ooEmail').value.trim(),
     address1:S.addr.address1,city:S.addr.city,zip:S.addr.zip,project:$('ooProject').value.trim(),
+    reason:S.noReps?'no_reps':'',
     sms_consent:'true',website:$('bkWebsite')?$('bkWebsite').value:'',fill_ms:Date.now()-S.t0
   }).then(function(j){
     S.busy=false;step(1);$('ooChangeAddress').disabled=false;btn.disabled=false;btn.textContent='Request a call';
@@ -1631,6 +1695,7 @@ $('mgResched').addEventListener('click',function(){
   api({action:'slots'}).then(function(j){
     btn.disabled=false;btn.textContent='Pick a new time';
     if(!j.ok){$('mgErr').textContent=j.error||'Could not load times.';return}
+    if(j.no_reps){$('mgErr').textContent=j.error||'This appointment cannot be moved online right now. Please call us.';return}
     renderDays(j.days||[]);
   }).catch(function(){btn.disabled=false;btn.textContent='Pick a new time';$('mgErr').textContent='Could not reach us.'});
 });

@@ -61,6 +61,19 @@
 // appointment at-or-after the slot (the rep already heading out soonest
 // absorbs the booking, which keeps the other rep's day from clumping), then
 // by rep id for determinism.
+//
+// Assignment modes (prompt 105, 2026-09-21; config.assignmentMode +
+// config.primaryRepId, resolved by netlify/functions/_pec-booking-reps.cjs):
+//   round_robin    the B5 behavior above, over whatever reps were passed.
+//   primary_first  offer a start when ANY rep is free; assign the primary
+//                  whenever the primary is free at that time, else the B5
+//                  pick among the others.
+//   primary_only   only the primary's calendar produces slots (the other
+//                  reps are ignored even if passed).
+// A primaryRepId that is not in `reps` degrades to round_robin here; the
+// endpoint helper is where the warning for Settings is raised. With ONE rep
+// every mode is identical, which is today's reality (Dylan does every
+// on-site estimate; see the migration header for the Dusty double-book).
 
 'use strict';
 
@@ -79,7 +92,11 @@ const DEFAULTS = {
   bufferMaxMinutes: 90,
   bufferDefaultMinutes: 30,
   excludeApptId: null,
+  assignmentMode: 'round_robin',
+  primaryRepId: null,
 };
+
+const ASSIGNMENT_MODES = ['primary_first', 'primary_only', 'round_robin'];
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -158,8 +175,16 @@ function computeSlots({ now, reps, busy, workingHours, config, driveTimes, block
   const nowMs = toMs(now);
   const drive = driveTimes || {};
   const wh = workingHours || {};
-  const repList = (reps || []).filter(r => r && r.id);
+  let repList = (reps || []).filter(r => r && r.id);
   if (nowMs == null || !repList.length) return [];
+
+  // Mode resolution: an unknown mode or a primary who is not among the reps
+  // means plain round robin. primary_only narrows the rep list up front so
+  // every downstream step (busy maps, day loops, assignment) sees one rep.
+  const primaryId = cfg.primaryRepId != null ? String(cfg.primaryRepId) : null;
+  const primaryRep = primaryId ? repList.find(r => String(r.id) === primaryId) : null;
+  const mode = (ASSIGNMENT_MODES.includes(cfg.assignmentMode) && primaryRep) ? cfg.assignmentMode : 'round_robin';
+  if (mode === 'primary_only') repList = [primaryRep];
 
   const noticeBoundary = nowMs + cfg.minNoticeMinutes * MIN_MS;
   const horizonEnd = nowMs + cfg.horizonDays * DAY_MS;
@@ -267,12 +292,17 @@ function computeSlots({ now, reps, busy, workingHours, config, driveTimes, block
     }
   }
 
-  // Assignment (rule B5).
+  // Assignment (rule B5, with the primary winning outright in primary_first;
+  // primary_only has already narrowed the list to the primary alone).
   const out = [];
   const starts = [...offersByStart.keys()].sort((a, b) => a - b);
   for (const s of starts) {
     const candidates = offersByStart.get(s);
     candidates.sort((a, b) => {
+      if (mode === 'primary_first') {
+        const pa = String(a.rep.id) === primaryId, pb = String(b.rep.id) === primaryId;
+        if (pa !== pb) return pa ? -1 : 1;
+      }
       const loadA = bookingCount.get(a.rep.id) || 0;
       const loadB = bookingCount.get(b.rep.id) || 0;
       if (loadA !== loadB) return loadA - loadB;
@@ -293,4 +323,4 @@ function computeSlots({ now, reps, busy, workingHours, config, driveTimes, block
   return out;
 }
 
-module.exports = { computeSlots, addrKey, busyAddrKey, clampBuffer, normalizeBlockedDays, isDayBlocked, HOME_KEY, DEFAULTS, PHX_OFFSET_MS };
+module.exports = { computeSlots, addrKey, busyAddrKey, clampBuffer, normalizeBlockedDays, isDayBlocked, HOME_KEY, DEFAULTS, ASSIGNMENT_MODES, PHX_OFFSET_MS };

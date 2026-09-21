@@ -293,6 +293,40 @@ test('out-of-area addresses retain the callback flow and original address', asyn
   assert.equal(f.visible('stepDone'), true);
 });
 
+test('nobody bookable online: the address step routes to lead capture with no-reps copy and reason', async () => {
+  // Prompt 105 (locked decision 5): zero eligible reps shows NO slots and
+  // collects the lead through the out-of-area form, flagged reason=no_reps.
+  const f = await fixture(); f.responses.slots.push({ ok: true, open: true, in_area: true, no_reps: true, days: [] }); await f.address();
+  assert.equal(f.visible('stepOut'), true);
+  assert.equal(f.visible('stepTime'), false);
+  assert.match(f.$('bkOutHeading').textContent, /not open right now/);
+  assert.doesNotMatch(f.$('bkOutHeading').textContent, /Outside/);
+  f.$('ooName').value = 'Sam Example'; f.$('ooPhone').value = '9285550101';
+  await f.click('ooSend');
+  const lead = f.requests.find(r => r.path === 'lead').body;
+  assert.equal(lead.reason, 'no_reps');
+  assert.equal(lead.address1, '123 Test Street');
+  assert.equal(f.visible('stepDone'), true);
+  // The out-of-area case keeps its own copy and sends no reason.
+  const g = await fixture(); g.responses.slots.push({ ok: true, in_area: false }); await g.address();
+  assert.match(g.$('bkOutHeading').textContent, /Outside our online booking area/);
+  g.$('ooName').value = 'Sam Example'; g.$('ooPhone').value = '9285550101'; await g.click('ooSend');
+  assert.equal(g.requests.find(r => r.path === 'lead').body.reason, '');
+});
+
+test('nobody bookable at submit time: the book step falls back to lead capture without a success state', async () => {
+  const f = await fixture(); await f.details();
+  f.responses.book.push({ status: 409, ok: false, no_reps: true, error: 'Online scheduling is not open right now.' });
+  await f.click('bkBook');
+  assert.equal(f.visible('stepOut'), true);
+  assert.equal(f.visible('stepDetails'), false);
+  assert.equal(f.visible('stepDone'), false);
+  assert.match(f.$('bkOutHeading').textContent, /not open right now/);
+  f.$('ooName').value = 'Taylor Example'; f.$('ooPhone').value = '9285550100'; await f.click('ooSend');
+  assert.equal(f.requests.find(r => r.path === 'lead').body.reason, 'no_reps');
+  assert.equal(f.visible('stepDone'), true);
+});
+
 test('closed and unavailable slots remain on the address step without enabling booking', async () => {
   for (const response of [{ open: false }, { ok: false, error: 'Availability cannot be confirmed.' }, { ok: true, in_area: true, days: [] }]) {
     const f = await fixture(); f.responses.slots.push(response); await f.address();

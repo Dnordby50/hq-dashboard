@@ -211,5 +211,46 @@ const hasStart = (slots, day, hhmm) => slots.some(s => s.start === phx(day, hhmm
   ok(slots4.some(s => s.start >= phx('2026-08-26', '00:00')), 'blocked days: junk rows never blank the whole calendar');
 }
 
+// Prompt 105: assignment modes. Rep A is the primary; Rep B is free all day.
+// Tuesday 10:00-11:00 is A's busy hour, so at 10:00 only B is free.
+{
+  const busyA = [busyRow(REP_A, phx('2026-08-25', '10:00'), phx('2026-08-25', '11:00'))];
+  const at = (slots, hhmm) => slots.find(s => s.start === phx('2026-08-25', hhmm));
+
+  const only = computeSlots(base({ reps: [REP_A, REP_B], busy: busyA, config: { horizonDays: 7, assignmentMode: 'primary_only', primaryRepId: REP_A.id } }));
+  ok(only.length > 0 && only.every(s => s.sales_member_id === REP_A.id), 'primary_only: every slot is the primary\'s');
+  ok(!at(only, '10:00') && !at(only, '10:30'), 'primary_only: the primary\'s busy hour is not offered even though B is free');
+
+  const first = computeSlots(base({ reps: [REP_A, REP_B], busy: busyA, config: { horizonDays: 7, assignmentMode: 'primary_first', primaryRepId: REP_A.id } }));
+  ok(at(first, '10:00') && at(first, '10:00').sales_member_id === REP_B.id, 'primary_first: A busy at 10:00 -> the slot is offered on B');
+  ok(at(first, '13:00') && at(first, '13:00').sales_member_id === REP_A.id, 'primary_first: A free at 13:00 -> the primary takes it');
+  // Round robin would have given B the 13:00 (B has the earlier next appointment = none, A has fewer bookings... tie on 0 bookings, next appt Infinity for both; id order A first).
+  const rr = computeSlots(base({ reps: [REP_A, REP_B], busy: busyA, config: { horizonDays: 7, assignmentMode: 'round_robin', primaryRepId: REP_A.id } }));
+  ok(at(rr, '10:00') && at(rr, '10:00').sales_member_id === REP_B.id, 'round_robin: still offers the 10:00 on B');
+
+  // Load-balancing proof that primary_first overrides B5: give A two
+  // booking-source appointments so round robin would prefer B, then show
+  // primary_first still picks A when A is free.
+  const loaded = busyA.concat([
+    busyRow(REP_A, phx('2026-08-26', '09:00'), phx('2026-08-26', '10:00'), { source: 'booking' }),
+    busyRow(REP_A, phx('2026-08-27', '09:00'), phx('2026-08-27', '10:00'), { source: 'booking' }),
+  ]);
+  const rrLoaded = computeSlots(base({ reps: [REP_A, REP_B], busy: loaded, config: { horizonDays: 7, assignmentMode: 'round_robin' } }));
+  const pfLoaded = computeSlots(base({ reps: [REP_A, REP_B], busy: loaded, config: { horizonDays: 7, assignmentMode: 'primary_first', primaryRepId: REP_A.id } }));
+  ok(at(rrLoaded, '13:00').sales_member_id === REP_B.id, 'round_robin: the less-loaded rep (B) gets the slot');
+  ok(at(pfLoaded, '13:00').sales_member_id === REP_A.id, 'primary_first: the primary beats the load balance whenever free');
+
+  // Degradation: a primary not in the rep list means plain round robin.
+  const gone = computeSlots(base({ reps: [REP_B], busy: busyA, config: { horizonDays: 7, assignmentMode: 'primary_only', primaryRepId: REP_A.id } }));
+  ok(gone.length > 0 && gone.every(s => s.sales_member_id === REP_B.id), 'primary_only with an absent primary degrades to the eligible list');
+  const unknown = computeSlots(base({ reps: [REP_A, REP_B], busy: busyA, config: { horizonDays: 7, assignmentMode: 'nonsense', primaryRepId: REP_A.id } }));
+  ok(at(unknown, '10:00') && at(unknown, '10:00').sales_member_id === REP_B.id, 'an unknown mode behaves as round_robin');
+
+  // One eligible rep: all three modes identical (today's reality).
+  const cfgs = ['primary_first', 'primary_only', 'round_robin'].map(m => computeSlots(base({ reps: [REP_A], busy: busyA, config: { horizonDays: 7, assignmentMode: m, primaryRepId: REP_A.id } })));
+  ok(JSON.stringify(cfgs[0]) === JSON.stringify(cfgs[1]) && JSON.stringify(cfgs[1]) === JSON.stringify(cfgs[2]) && cfgs[0].length > 0,
+    'one eligible rep: primary_first, primary_only and round_robin produce identical slots');
+}
+
 console.log(`booking-availability: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

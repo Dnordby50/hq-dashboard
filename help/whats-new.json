@@ -1,5 +1,18 @@
 [
   {
+    "id": "online-booking-rep-eligibility",
+    "date": "2026-09-21",
+    "title": "Choose who customers can book online.",
+    "summary": "Being on the sales team no longer means being bookable on the booking page. Each person has a Takes online bookings switch, and a primary rep receives online bookings first. A new salesperson with an empty calendar can no longer make busy times look open.",
+    "howto": [
+      "Settings, People: switch Takes online bookings on for anyone who should appear as available on the booking page. It stays off for new people until you turn it on.",
+      "A person without a connected Google Calendar cannot be switched on while Require a connected Google Calendar is on (Settings, Appointments, Online booking, Advanced).",
+      "Settings, Appointments, Online booking shows who is currently bookable. Under Advanced, pick the primary rep and how bookings are shared: primary first, primary only, or round robin.",
+      "If nobody is bookable, the booking page shows no times and collects the customer details so you can call them.",
+      "New appointments created in TopCoat start with the primary rep selected. Change it on the form if someone else is going."
+    ]
+  },
+  {
     "id": "proposal-discount-line-items",
     "date": "2026-09-17",
     "title": "Add discounts as proposal line items.",

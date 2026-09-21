@@ -3619,6 +3619,54 @@
       "hasHeader": true,
       "none": "portal function isolation, explicit customer projection and validation",
       "artifacts": []
+    },
+    {
+      "file": "20260915230500_owner_income_view_settings.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "owner_income_default_company"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_income_show_empty"
+        }
+      ]
+    },
+    {
+      "file": "20260921171120_booking_rep_eligibility.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.bookable_online"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_appointment_assignment_log"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_appt_assignment_log_appt"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_primary_member_id"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_assignment_mode"
+        },
+        {
+          "kind": "setting",
+          "name": "booking_require_google_connected"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3637,6 +3685,7 @@
     "jobs",
     "lead_events",
     "leads",
+    "pec_appointment_assignment_log",
     "pec_appointment_blocked_days",
     "pec_appointment_reminder_rules",
     "pec_appointment_reminder_sends",
