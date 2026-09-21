@@ -15,6 +15,23 @@ test('browser mirror is identical to the executable server pricing policy', () =
   assert.equal(browserRule.toString(), blockers.toString());
 });
 
+test('choice group (prompt 106): one choice line counts in the legacy pricing path, never two', () => {
+  // Two alternatives at 50% GP each, no snapshot: the sell must be ONE of
+  // them, and the reason check compares calc 3450 against the counted 3450.
+  const lines = [
+    { id: 'b', label: 'Border', total: 2950, qty: 1, unit_cost: 1475, estimate_area_id: 'arB', is_optional: false, choice_group: 'group-1', is_recommended: false },
+    { id: 'p', label: 'Patio', total: 3450, qty: 1, unit_cost: 1725, estimate_area_id: 'arP', is_optional: false, choice_group: 'group-1', is_recommended: true },
+  ];
+  const est = { id: '11111111-1111-4111-8111-111111111111', status: 'sent', price: 3450, calc_price: 3450, pricing_snapshot: null, estimate_line_items: lines, choice_picked_line_id: null };
+  assert.deepEqual(blockers(est), []);
+  // A pick moves the counted line: calc 3450 vs sell 2950 now needs a reason.
+  assert.match(blockers({ ...est, choice_picked_line_id: 'b' })[0].msg, /reason.*before sending/);
+  assert.deepEqual(blockers({ ...est, choice_picked_line_id: 'b', calc_price: 2950 }), []);
+  // The minimum-selection rule with a discount takes the cheapest choice.
+  const withDiscount = { ...est, calc_price: 2950, estimate_line_items: lines.concat([{ id: 'd', label: 'Discount', total: -2950, qty: 1, unit_cost: 0, estimate_area_id: null, addon_id: null, is_optional: true, selected_by_customer: false }]) };
+  assert.match(blockers(withDiscount, { line_pricing_reason_threshold_dollars: '100000' }).map(b => b.msg).join('\n'), /above \$0 for every allowed selection/);
+});
+
 test('ordinary pricing and custom estimates are sendable', () => {
   assert.deepEqual(blockers(estimate()), []);
   assert.deepEqual(blockers(estimate({ combinedGpPct: null, calcTotal: null, finalSell: 500, isCustom: true }, { is_custom: true })), []);
@@ -163,6 +180,8 @@ test('dashboard gate waits for saving, judges fresh prices, and fails closed whe
     estimateOpeningTotal: est => est.estimate_line_items.reduce((sum, li) => sum + li.total, 0),
     estimateOptionalGateOk: () => true,
     estimatePricingSendBlockers: blockers,
+    // Prompt 106: the dashboard's choice-group helper (one-line group gate).
+    estChoiceLines: items => (Array.isArray(items) ? items : []).filter(li => li && typeof li.choice_group === 'string' && li.choice_group.trim()),
     pecScopePlainText: text => String(text || ''),
     estScopeBlanks: () => [],
     EST_CLOBBER_DESC_RE: /^\s*\d+\s*sq\s*ft/i,

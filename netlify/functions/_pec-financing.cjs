@@ -69,11 +69,14 @@ function financingBlockHtml(fin, amount, opts = {}) {
   return `
     <div class="card pad" style="margin-top:18px" id="financingCard">
       <div class="eyebrow">Financing available</div>
+      ${/* finMonthly / finAmt ids (prompt 106): the public estimate page's
+           live script rewrites these when the customer picks a choice-group
+           option; the invoice page never touches them. */''}
       <h3 class="sec" style="margin:6px 0 10px">${monthly != null
-        ? `From ${usdF(monthly)}/mo with ${provider}`
+        ? `From <span id="finMonthly">${usdF(monthly)}</span>/mo with ${provider}`
         : `Pay over time with ${provider}`}</h3>
       <div style="font-size:13.5px;color:#6b7280;line-height:1.6">${monthly != null
-        ? `Estimated payment on ${usdF(amt)} at ${escF(aprTxt)}% APR for ${escF(fin.termMonths)} months. This is an estimate only, not an offer of credit or an approval. Actual rates and terms come from the lender and are subject to credit approval.`
+        ? `Estimated payment on <span id="finAmt">${usdF(amt)}</span> at ${escF(aprTxt)}% APR for ${escF(fin.termMonths)} months. This is an estimate only, not an offer of credit or an approval. Actual rates and terms come from the lender and are subject to credit approval.`
         : `Spread the cost into monthly payments instead of paying all at once. Rates and terms come from the lender and are subject to credit approval.`}</div>
       ${fin.embedUrl ? `<iframe src="${escF(fin.embedUrl)}" title="${provider} financing" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation-by-user-activation" style="width:100%;border:0;border-radius:10px;margin-top:14px;min-height:320px;background:#fff"></iframe>` : ''}
       ${fin.applyUrl ? `<a href="${escF(fin.applyUrl)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:14px;background:${escF(accent)};color:#fff;font-weight:700;font-size:14px;padding:11px 22px;border-radius:10px;text-decoration:none">Check my financing options</a>` : ''}

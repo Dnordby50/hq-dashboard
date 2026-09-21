@@ -245,14 +245,26 @@ declare module '*/production/optional-lines.cjs' {
   export const SEND_GATE_MESSAGE: string;
   export function isOptionalLine(li: unknown): boolean;
   export function isDeclinedLine(li: unknown): boolean;
-  export function splitLineTotals(items: Array<{ total: number; is_optional?: boolean; selected_by_customer?: boolean }>): {
+  // Choice group (prompt 106): items may carry id / choice_group /
+  // is_recommended; opts.pickedId is estimates.choice_picked_line_id (or the
+  // estimator's synthetic form-line id). Exactly one choice line counts.
+  export interface SharedLine { id?: string | null; total: number; is_optional?: boolean; selected_by_customer?: boolean; choice_group?: string | null; is_recommended?: boolean }
+  export function splitLineTotals(items: SharedLine[], opts?: { pickedId?: string | null }): {
     requiredOnly: number;
     allIn: number;
     opening: number;
+    cheapest: number;
+    hasChoice: boolean;
+    countedId: string | null;
+    picked: boolean;
   };
+  export function isChoiceLine(li: unknown): boolean;
+  export function countedChoiceId(items: SharedLine[], pickedId?: string | null): string | null;
+  export function isIncludedLine(li: SharedLine, countedId: string | null): boolean;
+  export function choiceGroupSendError(items: unknown[]): string | null;
   export function sendGateError(items: unknown[]): string | null;
-  export function acceptSelectionInvalid(items: unknown[]): boolean;
-  export function declinedAreaIdSet(items: unknown[]): Set<string>;
+  export function acceptSelectionInvalid(items: unknown[], pickedId?: string | null): boolean;
+  export function declinedAreaIdSet(items: unknown[], pickedId?: string | null): Set<string>;
   export function filterAreasForJob<A>(areas: A[], declinedIds: Set<string> | string[]): A[];
   export function declinedNoteLine(declinedLines: unknown[]): string | null;
   export function selectedScopeDoc(includedLines: unknown[]): string;

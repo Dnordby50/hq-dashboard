@@ -19,7 +19,7 @@
 
 const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { resolveCurrentAsk } = require('./_pec-installments.cjs');
-const { emptySendError } = require('../../production/optional-lines.cjs');
+const { emptySendError, choiceGroupSendError } = require('../../production/optional-lines.cjs');
 const { estimatePricingSendError, PRICING_SEND_COLUMNS, PRICING_LINE_COLUMNS } = require('./_pec-estimate-send.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -223,6 +223,10 @@ exports.handler = async (event) => {
       // client gate; shared in production/optional-lines.cjs.
       const emptyErr = emptySendError(est.estimate_line_items);
       if (emptyErr) return jc(400, { ok: false, error: emptyErr });
+      // Prompt 106: a one-line choice group cannot be sent (after the
+      // has-content check above, never inside a per-line loop).
+      const choiceErr = choiceGroupSendError(est.estimate_line_items);
+      if (choiceErr) return jc(400, { ok: false, error: choiceErr });
       const pricingErr = await estimatePricingSendError(sb, est);
       if (pricingErr) return jc(400, { ok: false, error: pricingErr });
       // Consent: transactional send, opt-out-only (the invoice-text reading).

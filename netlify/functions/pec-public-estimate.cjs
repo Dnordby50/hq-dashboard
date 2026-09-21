@@ -66,6 +66,17 @@ const {
   declinedNoteLine,
   selectedScopeDoc,
   emptySendError,
+  // Choice group (prompt 106): the pick lives on estimates.choice_picked_line_id
+  // and these helpers are the ONE rule for which choice line counts.
+  isChoiceLine,
+  choiceLines,
+  choicePickValid,
+  countedChoice,
+  countedChoiceId,
+  includedLines,
+  notSelectedChoiceLines,
+  notSelectedNoteLine,
+  choiceAcceptError,
 } = require('../../production/optional-lines.cjs');
 const crypto = require('crypto');
 
@@ -115,13 +126,38 @@ function deterministicUuid(name) {
 // are estimate_line_items ROWS since 2026-07-13 (is_optional); the legacy
 // jsonb key (optional) is still honored so nothing breaks mid-deploy.
 const isOptionalLine = (li) => !!li && (li.is_optional === true || li.optional === true);
-function includedTotal(items) {
-  return (Array.isArray(items) ? items : []).reduce((sum, li) => {
-    if (!li) return sum;
-    if (isOptionalLine(li) && !li.selected_by_customer) return sum;
+// Prompt 106: pickedId (estimates.choice_picked_line_id) decides which choice
+// line counts; with no valid pick the recommended / cheapest choice counts
+// (the internal number). Callers that must show NOTHING until the customer
+// picks check choicePickValid themselves; this total is never "two choices".
+function includedTotal(items, pickedId) {
+  return includedLines(items, pickedId).reduce((sum, li) => {
     const t = Number(li.total);
     return sum + (Number.isFinite(t) ? t : 0);
   }, 0);
+}
+// The estimate's pick, read from the ONE place it lives.
+const pickedIdOf = (est) => (est && est.choice_picked_line_id != null ? String(est.choice_picked_line_id) : null);
+
+// Customer-facing copy for the choice section, settings-driven (prompt 106).
+// Missing rows fall back to the seeded defaults so the page never blanks.
+const CHOICE_COPY_DEFAULTS = {
+  heading: 'Choose your project', recommended: 'Recommended', showDiff: true,
+  noPickTotal: 'Select an option', noPickSign: 'Choose an option to sign',
+};
+async function loadChoiceCopy() {
+  try {
+    const rows = await sb('GET', '/settings?key=in.(estimate_choice_heading,estimate_choice_recommended_label,estimate_choice_show_difference,estimate_choice_no_pick_total_text,estimate_choice_no_pick_sign_text)&select=key,value');
+    const map = Object.fromEntries((Array.isArray(rows) ? rows : []).map(r => [r.key, r.value]));
+    const txt = (k, d) => (map[k] != null && String(map[k]).trim() ? String(map[k]).trim() : d);
+    return {
+      heading: txt('estimate_choice_heading', CHOICE_COPY_DEFAULTS.heading),
+      recommended: txt('estimate_choice_recommended_label', CHOICE_COPY_DEFAULTS.recommended),
+      showDiff: String(map.estimate_choice_show_difference == null ? 'true' : map.estimate_choice_show_difference) !== 'false',
+      noPickTotal: txt('estimate_choice_no_pick_total_text', CHOICE_COPY_DEFAULTS.noPickTotal),
+      noPickSign: txt('estimate_choice_no_pick_sign_text', CHOICE_COPY_DEFAULTS.noPickSign),
+    };
+  } catch (_) { return { ...CHOICE_COPY_DEFAULTS }; }
 }
 
 // Freeze the customer's optional-item selection at signature time (decision 4):
@@ -234,9 +270,17 @@ const liDescHtml = (li) => li.description ? `
 // part of the job the customer reads, with a ticked .opt-toggle and a small
 // Optional tag; unticking removes it from the total live through the same
 // script the add-on cards use.
-function lineItemRowsHtml(items, readOnly, areaById) {
+// Prompt 106: choice lines are NOT in this table while the estimate is open
+// (they render as the cards above it). After signing, the picked choice joins
+// "Your project" as an ordinary row with a "Your choice" tag so the signed
+// document reads as one list; the ones not taken stay in the cards block
+// labeled Not selected.
+function lineItemRowsHtml(items, readOnly, areaById, choiceCtx) {
   const list = Array.isArray(items) ? items : [];
-  const shown = list.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer === true));
+  const signedChoiceId = choiceCtx && choiceCtx.signed ? choiceCtx.countedId : null;
+  const shown = list.filter(li => li && (isChoiceLine(li)
+    ? (signedChoiceId != null && String(li.id) === String(signedChoiceId))
+    : (!isOptionalLine(li) || li.selected_by_customer === true)));
   const row = (li) => {
     const optional = isOptionalLine(li);
     const control = optional
@@ -244,7 +288,7 @@ function lineItemRowsHtml(items, readOnly, areaById) {
       : '';
     const tag = optional
       ? ' <span style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#D8531C;border:1px solid #D8531C;border-radius:999px;padding:1px 7px;vertical-align:2px">Optional</span>'
-      : '';
+      : (isChoiceLine(li) ? ' <span style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#D8531C;border:1px solid #D8531C;border-radius:999px;padding:1px 7px;vertical-align:2px">Your choice</span>' : '');
     return `<tr>
       <td><div style="display:flex;gap:10px;align-items:flex-start">${control}<div style="flex:1;min-width:0"><span style="font-weight:700">${esc(li.label || '')}</span>${tag}${liSubtitleHtml(li, areaById)}${liDescHtml(li)}</div></div></td>
       <td>${usd(li.total)}</td>
@@ -272,6 +316,72 @@ function optionalCardsHtml(items, readOnly, areaById) {
           <div class="eyebrow">Options to add</div>
           <div style="color:#6b7280;font-size:13px;margin-top:3px">${readOnly ? 'These items were offered and not selected.' : 'Tick any you would like to add. The total updates as you choose.'}</div>
           <div style="display:grid;gap:12px;margin-top:12px">${optional.map(card).join('')}</div>
+        </div>`;
+}
+
+// "Choose your project" (prompt 106, locked decision 8): the choice group
+// renders as CARDS in its own section above the line list. Each card shows
+// the label, the full price, a short scope, a "View full scope" fold, the
+// Recommended badge when flagged, and (decision 9, settings-driven) the
+// difference against the cheapest choice. Tap to select; nothing starts
+// selected unless the estimate already carries a pick (customer or staff,
+// decision 15). After signing the block is a record: the picked card reads
+// Selected, the rest Not selected (decision 11). Up to three across on a
+// desktop, stacked on phones (CSS .choicegrid). Customer-facing copy: no em
+// dashes.
+function shortScopeText(desc, max) {
+  const plain = String(desc == null ? '' : desc)
+    .replace(/^#+\s*/gm, '').replace(/[*_`>]/g, '').replace(/\s+/g, ' ').trim();
+  if (!plain) return '';
+  return plain.length > max ? plain.slice(0, max - 1).replace(/\s+\S*$/, '') + '…' : plain;
+}
+function choiceCardsHtml(items, ctx) {
+  const choices = choiceLines(items);
+  if (!choices.length) return '';
+  const copy = (ctx && ctx.copy) || CHOICE_COPY_DEFAULTS;
+  const readOnly = !!(ctx && ctx.readOnly);
+  const signed = !!(ctx && ctx.signed);
+  const pickedId = ctx && ctx.pickedId != null ? String(ctx.pickedId) : null;
+  const picked = choicePickValid(choices, pickedId);
+  const cheapest = Math.min(...choices.map(li => Number(li.total) || 0));
+  const card = (li) => {
+    const id = String(li.id);
+    const isPicked = picked && id === pickedId;
+    const total = Number(li.total) || 0;
+    const diff = total - cheapest;
+    const diffLine = copy.showDiff && diff >= 0.5
+      ? `<div class="choicediff">+${usd(diff)} vs ${esc((choices.find(c => (Number(c.total) || 0) === cheapest) || {}).label || 'the lowest option')}</div>`
+      : '';
+    const rec = li.is_recommended === true
+      ? `<span class="choicerec">${esc(copy.recommended)}</span>` : '';
+    const state = signed
+      ? `<div class="choicestate ${isPicked ? 'on' : 'off'}">${isPicked ? 'Selected' : 'Not selected'}</div>`
+      : '';
+    const scope = shortScopeText(li.description, 150);
+    const fold = li.description ? `
+          <details class="scopefold choicefold"${signed && isPicked ? ' open' : ''}>
+            <summary><span class="fold-open">&#9662; Hide full scope</span><span class="fold-closed">&#9656; View full scope</span></summary>
+            <div class="desc">${mdToSafeHtml(li.description)}</div>
+          </details>` : '';
+    return `
+        <div class="choicecard${isPicked ? ' sel' : ''}${signed && !isPicked ? ' notsel' : ''}" role="${readOnly ? 'listitem' : 'radio'}"${readOnly ? '' : ' tabindex="0"'} aria-checked="${isPicked ? 'true' : 'false'}" data-choice-id="${esc(id)}" data-choice-total="${total}">
+          <div class="choicehead">${rec}${state}</div>
+          <div class="choicelabel">${esc(li.label || 'Option')}</div>
+          ${ctx && ctx.areaById ? liSubtitleHtml(li, ctx.areaById) : ''}
+          <div class="choiceprice">${usd(total)}</div>
+          ${diffLine}
+          ${scope ? `<div class="choicescope">${esc(scope)}</div>` : ''}
+          ${fold}
+          ${readOnly ? '' : `<div class="choicepick">${isPicked ? 'Selected' : 'Tap to select'}</div>`}
+        </div>`;
+  };
+  return `
+        <div style="margin-top:24px" id="choiceBlock">
+          <div class="eyebrow">${esc(copy.heading)}</div>
+          <div style="color:#6b7280;font-size:13px;margin-top:3px">${signed
+            ? 'The option you chose is marked Selected.'
+            : (readOnly ? 'One of these options is included in the project.' : 'Pick one option. Your total appears once you choose.')}</div>
+          <div class="choicegrid">${choices.map(card).join('')}</div>
         </div>`;
 }
 
@@ -409,7 +519,8 @@ function estimatePage(est, brand, opts) {
   // (financingBlockHtml is pure and cheap) so the accepted banner's pay
   // chooser knows whether its Financing link has a #financingCard to jump to.
   // Accepted pages price from est.price, matching the `total` math below.
-  const acceptedTotal = Number(est.price || includedTotal(Array.isArray(est.line_items) ? est.line_items : []));
+  const pickedId = pickedIdOf(est);
+  const acceptedTotal = Number(est.price || includedTotal(Array.isArray(est.line_items) ? est.line_items : [], pickedId));
   const financingOffered = est.status === 'accepted'
     && financingBlockHtml(opts && opts.financing, acceptedTotal, { accent: b.accent_color }) !== '';
   const state = stateForStatus(est, opts && opts.acceptedPay, { brand: b, financingOffered });
@@ -432,7 +543,25 @@ function estimatePage(est, brand, opts) {
   // public token, the accept / change / decline panels, and every POST.
   const interactive = state.live && !preview;
   const items = Array.isArray(est.line_items) ? est.line_items : [];
-  const total = (interactive || preview) ? includedTotal(items) : Number(est.price || includedTotal(items));
+  // Choice group (prompt 106). While the estimate is open the customer sees
+  // NO total, deposit, or financing figure until they pick (decision 6):
+  // `total` below is then the required-plus-selected base WITHOUT any choice
+  // (the live script adds the picked card's price), and every money cell
+  // renders the settings-driven prompt instead. A stored pick (customer or
+  // staff, decision 15) opens the page already selected. Signed pages price
+  // from est.price like before.
+  const choices = choiceLines(items);
+  const hasChoice = choices.length > 0;
+  const pickedOk = hasChoice && choicePickValid(items, pickedId);
+  const choiceCopy = (opts && opts.choiceCopy) || CHOICE_COPY_DEFAULTS;
+  const signed = est.status === 'accepted';
+  const choiceCtx = { copy: choiceCopy, readOnly: !ticking, signed, pickedId, countedId: countedChoiceId(items, pickedId), areaById };
+  const noChoiceBase = includedTotal(items.filter(li => !isChoiceLine(li)));
+  const total = (interactive || preview)
+    ? (hasChoice && !pickedOk ? noChoiceBase : includedTotal(items, pickedId))
+    : Number(est.price || includedTotal(items, pickedId));
+  const awaitingPick = (interactive || preview) && hasChoice && !pickedOk;
+  const moneyOrPrompt = (n) => awaitingPick ? esc(choiceCopy.noPickTotal) : usd(n);
 
   // Payment schedule (prompt 74 C4). On a LIVE or preview page the rows come
   // from estimate_installments and resolve against the current selection's
@@ -530,7 +659,8 @@ function estimatePage(est, brand, opts) {
         <label class="lbl">Type your full name as your signature</label>
         <input id="sigName" autocomplete="name" placeholder="Full name" maxlength="120">
         <div id="sigPreview" style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:26px;min-height:34px;margin-top:8px;border-bottom:1.5px solid #94a3b8;max-width:360px;padding:2px 6px"></div>
-        <button type="button" class="btn accent" id="goAccept" style="margin-top:16px">Sign &amp; accept for <span id="acceptTotal">${usd(total)}</span></button>
+        <button type="button" class="btn accent" id="goAccept" style="margin-top:16px"${awaitingPick ? ' disabled data-needs-pick="1"' : ''}>${awaitingPick ? esc(choiceCopy.noPickSign) : `Sign &amp; accept for <span id="acceptTotal">${usd(total)}</span>`}</button>
+        ${hasChoice && !signed ? `<div id="pickHint" style="margin-top:8px;font-size:13px;color:#b45309;font-weight:600${awaitingPick ? '' : ';display:none'}">${esc(choiceCopy.noPickSign)}. Scroll up to ${esc(choiceCopy.heading)}.</div>` : ''}
       </div>
 
       <div id="panelChange" class="panel" style="display:none">
@@ -575,7 +705,19 @@ function estimatePage(est, brand, opts) {
   // financing_enabled is on and the total clears financing_min_amount, and
   // the interpolation below sits flush against signedBlock so the disabled
   // state renders byte-identical to the pre-financing page.
-  const financingBlock = financingBlockHtml(opts && opts.financing, total, { accent: b.accent_color });
+  // Prompt 106: with a choice group open and no pick, the financing figure
+  // is hidden (decision 6). The block is rendered for the MOST EXPENSIVE
+  // choice (so it exists whenever any pick could qualify) and hidden; the
+  // live script reveals it and rewrites the monthly figure once a card is
+  // picked (finConfig carries the rate and term for the client-side mirror
+  // of monthlyPayment).
+  const maxChoiceTotal = hasChoice ? Math.max(...choices.map(li => Number(li.total) || 0)) : 0;
+  const financingBlockRaw = financingBlockHtml(opts && opts.financing, awaitingPick ? noChoiceBase + maxChoiceTotal : total, { accent: b.accent_color });
+  const financingBlock = awaitingPick && financingBlockRaw
+    ? `<div id="finHost" style="display:none">${financingBlockRaw}</div>` : financingBlockRaw;
+  const fin = (opts && opts.financing) || null;
+  const finConfig = hasChoice && fin && fin.enabled
+    ? { aprPct: fin.aprPct, termMonths: fin.termMonths, minAmount: fin.minAmount || 0 } : null;
 
   return htmlResponse(200, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
@@ -641,6 +783,28 @@ function estimatePage(est, brand, opts) {
   .termsbox { max-height:260px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; font-size:13.5px; color:#374151; line-height:1.65; }
   .optcard { display:flex; gap:12px; align-items:flex-start; border:1.5px solid #e5e7eb; border-radius:12px; padding:14px 16px; background:#fff; transition:border-color .15s, box-shadow .15s; }
   .optcard:has(.opt-toggle:checked) { border-color:${accent}; box-shadow:0 0 0 1px ${accent}; }
+  /* Choice group cards (prompt 106): up to 3 across, stacked on phones. */
+  .choicegrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-top:12px; }
+  .choicecard { border:1.5px solid #e5e7eb; border-radius:12px; padding:14px 16px; background:#fff; cursor:pointer; transition:border-color .15s, box-shadow .15s; min-width:0; }
+  .choicecard[role=radio]:hover { border-color:#cbd5e1; }
+  .choicecard.sel { border-color:${accent}; box-shadow:0 0 0 1.5px ${accent}; }
+  .choicecard.notsel { opacity:.72; cursor:default; }
+  .choicecard[role=listitem] { cursor:default; }
+  .choicehead { display:flex; justify-content:space-between; align-items:center; gap:8px; min-height:18px; margin-bottom:6px; }
+  .choicerec { font-size:10px; font-weight:800; letter-spacing:1px; text-transform:uppercase; color:#fff; background:${accent}; border-radius:999px; padding:2px 8px; }
+  .choicestate { font-size:10px; font-weight:800; letter-spacing:1px; text-transform:uppercase; border-radius:999px; padding:2px 8px; margin-left:auto; }
+  .choicestate.on { color:#fff; background:#16a34a; }
+  .choicestate.off { color:#6b7280; border:1px solid #cbd5e1; }
+  .choicelabel { font-weight:800; font-size:15.5px; line-height:1.3; }
+  .choiceprice { font-weight:800; font-size:22px; margin-top:8px; font-variant-numeric:tabular-nums; color:${primary}; }
+  .choicediff { font-size:12.5px; color:#6b7280; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .choicescope { font-size:13px; color:#6b7280; margin-top:8px; line-height:1.5; }
+  .choicepick { margin-top:10px; font-size:12px; font-weight:800; letter-spacing:1px; text-transform:uppercase; color:${accent}; }
+  .choicecard.sel .choicepick { color:#16a34a; }
+  .nopick { font-size:.72em; letter-spacing:.02em; color:#b45309; }
+  .hero .big.nopick { color:rgba(255,255,255,.85); font-size:20px; }
+  @media (max-width:560px) { .choicegrid { grid-template-columns:1fr; } }
+  @media print { .choicecard { break-inside:avoid; } .choicepick { display:none; } }
   table.tot { width:100%; border-collapse:collapse; font-size:14.5px; font-variant-numeric:tabular-nums; margin-top:10px; }
   table.tot td { padding:5px 12px; }
   table.tot td:first-child { text-align:right; color:#6b7280; }
@@ -711,8 +875,8 @@ function estimatePage(est, brand, opts) {
         </div>
         <div class="right">
           <div class="eyebrow">${(state.live || preview) ? 'Your total' : 'Total'}</div>
-          <div class="big" id="heroTotal">${usd(total)}</div>
-          ${ticking ? '<div class="sub">Updates as you tick optional items</div>' : ''}
+          <div class="big${awaitingPick ? ' nopick' : ''}" id="heroTotal">${moneyOrPrompt(total)}</div>
+          ${ticking ? `<div class="sub">${hasChoice ? 'Updates as you choose an option and tick optional items' : 'Updates as you tick optional items'}</div>` : ''}
         </div>
       </div>
       <div class="pad">
@@ -732,24 +896,30 @@ function estimatePage(est, brand, opts) {
           <div class="eyebrow" style="margin-bottom:4px">A note from us</div>
           <div style="color:#374151;font-size:14.5px;line-height:1.6;white-space:pre-wrap">${esc(String(est.client_notes).trim())}</div>
         </div>` : ''}
-        <div class="eyebrow" style="margin-top:26px">Your project</div>
+        ${choiceCardsHtml(items, choiceCtx)}
+        ${/* Prompt 106: with a choice group the required lines keep their
+             own heading; a customer reading "Your project" above a list that
+             excludes the option they are about to pick would be confused. */''}
+        ${hasChoice && !signed && !items.some(li => li && !isChoiceLine(li) && (!isOptionalLine(li) || li.selected_by_customer === true)) ? '' : `
+        <div class="eyebrow" style="margin-top:26px">${hasChoice && !signed ? 'Included with every option' : 'Your project'}</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${lineItemRowsHtml(items, !ticking, areaById)}</tbody>
-        </table>
+          <tbody>${lineItemRowsHtml(items, !ticking, areaById, choiceCtx)}</tbody>
+        </table>`}
         ${optionalCardsHtml(items, !ticking, areaById)}
         ${/* "Your investment" (prompt 74 F6). No tax row: estimates carries no
              tax concept, so none is invented and none is hardcoded at $0. */''}
         <div class="eyebrow" style="margin-top:26px">Your investment</div>
         <table class="tot">
-          <tr><td>Subtotal</td><td id="subTotal">${usd(total)}</td></tr>
-          ${depositView ? `<tr class="dep"><td>Deposit to start</td><td id="depToStart">${usd(depositView.cents / 100)}</td></tr>` : ''}
+          ${awaitingPick && noChoiceBase > 0 ? `<tr><td>Required work (included with every option)</td><td>${usd(noChoiceBase)}</td></tr>` : ''}
+          <tr><td>Subtotal</td><td id="subTotal"${awaitingPick ? ' class="nopick"' : ''}>${moneyOrPrompt(total)}</td></tr>
+          ${depositView ? `<tr class="dep needs-pick"${awaitingPick ? ' style="display:none"' : ''}><td>Deposit to start</td><td id="depToStart">${usd(depositView.cents / 100)}</td></tr>` : ''}
         </table>
         <div class="totband">
-          <div><div class="bandlbl">Project total</div><div class="bandval" id="grandTotal">${usd(total)}</div></div>
-          ${lastSched ? `<div style="text-align:right"><div class="bandlbl">${esc(lastSched.label)} (${esc(lastSched.due.toLowerCase())})</div><div class="bandval2" id="balCompletion">${usd(lastSched.cents / 100)}</div></div>` : ''}
+          <div><div class="bandlbl">Project total</div><div class="bandval${awaitingPick ? ' nopick' : ''}" id="grandTotal" style="${awaitingPick ? 'color:#fff' : ''}">${moneyOrPrompt(total)}</div></div>
+          ${lastSched ? `<div class="needs-pick" style="text-align:right${awaitingPick ? ';display:none' : ''}"><div class="bandlbl">${esc(lastSched.label)} (${esc(lastSched.due.toLowerCase())})</div><div class="bandval2" id="balCompletion">${usd(lastSched.cents / 100)}</div></div>` : ''}
         </div>
-        ${scheduleBlock}
+        ${scheduleBlock ? `<div class="needs-pick"${awaitingPick ? ' style="display:none"' : ''}>${scheduleBlock}</div>` : ''}
       </div>
     </div>
 
@@ -781,14 +951,37 @@ ${!ticking ? '' : `<script>
 (function(){
   var money=function(n){return (Number(n)<0?'-':'')+'$'+Math.abs(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
   var toggles=Array.prototype.slice.call(document.querySelectorAll('.opt-toggle'));
-  var baseTotal=${JSON.stringify(includedTotal(items.filter(li => li && !isOptionalLine(li))))};
+  var baseTotal=${JSON.stringify(includedTotal(items.filter(li => li && !isOptionalLine(li) && !isChoiceLine(li))))};
+  // Choice group (prompt 106): the picked card's price rides on top of the
+  // base; with cards and no pick every money cell shows the prompt and the
+  // sign button stays disabled (the server refuses too).
+  var cards=Array.prototype.slice.call(document.querySelectorAll('.choicecard[role=radio]'));
+  var hasChoice=${JSON.stringify(hasChoice && !signed)};
+  var choiceId=${JSON.stringify(pickedOk ? pickedId : null)};
+  var NOPICK=${JSON.stringify(choiceCopy.noPickTotal)};
+  var NOPICK_SIGN=${JSON.stringify(choiceCopy.noPickSign)};
+  var FIN=${JSON.stringify(finConfig)};
+  function choiceTotal(){
+    if(!hasChoice) return 0;
+    if(choiceId==null) return null;
+    var el=null; cards.forEach(function(c){ if(c.getAttribute('data-choice-id')===choiceId) el=c; });
+    return el?(Number(el.getAttribute('data-choice-total'))||0):null;
+  }
   function currentTotal(){
-    var t=baseTotal;
+    var ct=choiceTotal();
+    if(ct===null) return null;
+    var t=baseTotal+ct;
     toggles.forEach(function(cb){ if(cb.checked) t+=Number(cb.getAttribute('data-li-total'))||0; });
     return Math.round(t*100)/100;
   }
   function selectedIds(){
     return toggles.filter(function(cb){return cb.checked;}).map(function(cb){return cb.getAttribute('data-li-id');});
+  }
+  function monthly(P){
+    if(!FIN||!(P>0)||!(FIN.termMonths>0)||FIN.aprPct==null) return null;
+    var r=Number(FIN.aprPct)/100/12, n=Number(FIN.termMonths);
+    var m=r>0?(P*r)/(1-Math.pow(1+r,-n)):P/n;
+    return Math.round(m*100)/100;
   }
   // Payment-schedule live recompute (prompt 74 C4): a CLIENT MIRROR of
   // computeScheduleCents in production/estimate-installments.cjs; keep the
@@ -812,13 +1005,42 @@ ${!ticking ? '' : `<script>
     out[out.length-1]+=totalCents-sum;
     return out;
   }
+  function setPickState(picked){
+    Array.prototype.forEach.call(document.querySelectorAll('.needs-pick'),function(el){ el.style.display=picked?'':'none'; });
+    ['heroTotal','grandTotal','subTotal'].forEach(function(id){ var el=document.getElementById(id); if(el){ if(picked) el.classList.remove('nopick'); else el.classList.add('nopick'); } });
+    var go=document.getElementById('goAccept');
+    if(go){
+      if(picked){ go.disabled=false; if(!document.getElementById('acceptTotal')){ go.innerHTML='Sign &amp; accept for <span id="acceptTotal"></span>'; } }
+      else { go.disabled=true; go.textContent=NOPICK_SIGN; }
+    }
+    var hint=document.getElementById('pickHint'); if(hint) hint.style.display=picked?'none':'';
+    var fh=document.getElementById('finHost'); if(fh) fh.style.display=picked?'':'none';
+  }
   function refresh(){
     var total=currentTotal();
+    if(total===null){
+      setPickState(false);
+      document.getElementById('heroTotal').textContent=NOPICK;
+      document.getElementById('grandTotal').textContent=NOPICK;
+      var st0=document.getElementById('subTotal'); if(st0) st0.textContent=NOPICK;
+      return;
+    }
+    if(hasChoice) setPickState(true);
     var t=money(total);
     document.getElementById('heroTotal').textContent=t;
     document.getElementById('grandTotal').textContent=t;
     var st=document.getElementById('subTotal'); if(st) st.textContent=t;
     var at=document.getElementById('acceptTotal'); if(at) at.textContent=t;
+    if(FIN){
+      var fc=document.getElementById('financingCard');
+      if(fc){
+        var show=total>0&&!(FIN.minAmount&&total<FIN.minAmount);
+        fc.style.display=show?'':'none';
+        var fm=document.getElementById('finMonthly'); var m=monthly(total);
+        if(fm&&m!=null) fm.textContent=money(m);
+        var fa=document.getElementById('finAmt'); if(fa) fa.textContent=money(total);
+      }
+    }
     if(schedCells.length){
       var cents=schedRecalc(Math.round(total*100));
       schedCells.forEach(function(c,i){ c.textContent=money((cents[i]||0)/100); });
@@ -830,6 +1052,23 @@ ${!ticking ? '' : `<script>
     }
   }
   toggles.forEach(function(cb){ cb.addEventListener('change', refresh); });
+  function pickCard(id){
+    choiceId=id;
+    cards.forEach(function(c){
+      var on=c.getAttribute('data-choice-id')===id;
+      if(on) c.classList.add('sel'); else c.classList.remove('sel');
+      c.setAttribute('aria-checked',on?'true':'false');
+      var p=c.querySelector('.choicepick'); if(p) p.textContent=on?'Selected':'Tap to select';
+    });
+    refresh();
+  }
+  cards.forEach(function(c){
+    c.addEventListener('click',function(){ pickCard(c.getAttribute('data-choice-id')); if(typeof onPick==='function') onPick(); });
+    c.addEventListener('keydown',function(e){ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); c.click(); } });
+    // The scope fold inside a card must not toggle the pick.
+    var f=c.querySelector('details'); if(f) f.addEventListener('click',function(e){ e.stopPropagation(); });
+  });
+  var onPick=null;
   refresh();
 ${interactive ? `
   var TOKEN=${JSON.stringify(String(est.public_token))};
@@ -837,17 +1076,21 @@ ${interactive ? `
   // Prompt 78 A3: persist ticks as the customer makes them. Debounced so a
   // click-through of five options sends one request, and fire-and-forget: a
   // lost tick costs nothing because the signature freeze at accept remains
-  // the authority. Never surfaces an error.
+  // the authority. Never surfaces an error. Prompt 106: the choice pick rides
+  // the same request (choice: id) and is written to the estimate at once.
   var selTimer=null;
   function saveSelection(signing){
     try{
-      fetch('/api/estimate/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN,action:'select',selected_optional_ids:selectedIds(),signing:!!signing})}).catch(function(){});
+      var payload={token:TOKEN,action:'select',selected_optional_ids:selectedIds(),signing:!!signing};
+      if(hasChoice&&choiceId!=null) payload.choice=choiceId;
+      fetch('/api/estimate/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){});
     }catch(_){}
   }
   toggles.forEach(function(cb){ cb.addEventListener('change', function(){
     clearTimeout(selTimer);
     selTimer=setTimeout(function(){ saveSelection(false); }, 250);
   }); });
+  onPick=function(){ clearTimeout(selTimer); saveSelection(false); };
   // estimates.price is written only once the customer opens the accept panel
   // (decision 5): signing:true tells the server to also settle price + GP.
   var signingAnnounced=false;
@@ -902,7 +1145,10 @@ ${interactive ? `
   if(goA) goA.addEventListener('click',function(){
     var name=(sigName.value||'').trim();
     if(!name){ err.textContent='Please type your full name to sign.'; return; }
-    post({token:TOKEN,action:'accept',name:name,selected_optional_ids:selectedIds()}, goA);
+    if(hasChoice&&choiceId==null){ err.textContent=NOPICK_SIGN+'.'; return; }
+    var acceptPayload={token:TOKEN,action:'accept',name:name,selected_optional_ids:selectedIds()};
+    if(hasChoice) acceptPayload.choice=choiceId;
+    post(acceptPayload, goA);
   });
   var goC=document.getElementById('goChange');
   if(goC) goC.addEventListener('click',function(){
@@ -961,7 +1207,7 @@ async function loadLineItems(estimateId) {
     // ignores it.
     // unit_cost rides along (prompt 78 A3) so the select action's GP
     // recompute can run server-side; it is never rendered on the page.
-    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
+    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,total,is_optional,selected_by_customer,sort_order,choice_group,is_recommended&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -1534,7 +1780,11 @@ async function ensureJobCreated(est) {
   // matter which caller reached it, including the crash-heal path. The signed
   // selection was frozen onto the rows by applySelection before this runs.
   const items = await loadLineItems(est.id);
-  const included = items.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer));
+  // Choice group (prompt 106, decision 11): the pick is read from the
+  // estimate row (the CAS wrote it before this runs); the option the customer
+  // did NOT take is excluded from the job exactly like a declined line.
+  const pickedId = pickedIdOf(est);
+  const included = includedLines(items, pickedId);
 
   // Decisions 5 and 9 (prompt 72): the job is built from the SELECTED areas
   // only. This is the RE-COST, and it is deliberately NOT a pricing change:
@@ -1547,15 +1797,16 @@ async function ensureJobCreated(est) {
   // offered and refused. GUARDRAIL (in filterAreasForJob): an area with NO
   // line item at all is KEPT; only areas named on a declined line drop.
   const declinedLines = items.filter(isDeclinedLine);
-  const declinedIds = declinedAreaIdSet(items);
+  const notSelected = notSelectedChoiceLines(items, pickedId);
+  const declinedIds = declinedAreaIdSet(items, pickedId);
   const areas = filterAreasForJob(allAreas, declinedIds);
   const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
   // Decision 10: estimates.scope_of_work is NEVER rewritten after signature
   // (it is the document the customer read and signed). The JOB side shows
   // only the selected lines' scope; when nothing was declined this is the
   // full document, byte-for-byte as today.
-  const jobScope = declinedLines.length ? (selectedScopeDoc(included) || null) : (est.scope_of_work || null);
-  const declinedNote = declinedNoteLine(declinedLines);
+  const jobScope = (declinedLines.length || notSelected.length) ? (selectedScopeDoc(included) || null) : (est.scope_of_work || null);
+  const declinedNote = [declinedNoteLine(declinedLines), notSelectedNoteLine(items, pickedId)].filter(Boolean).join('\n') || null;
 
   // -- Customer: reuse by email, then by exact name + company (the manual-job
   // rule), then by this path's own deterministic id; create only when all
@@ -1954,13 +2205,28 @@ async function handleAccept(est, body, event) {
   if (!name) return json(400, { ok: false, error: 'Please type your full name to sign.' });
   const selectedIds = Array.isArray(body.selected_optional_ids) ? body.selected_optional_ids.slice(0, 50).map(String) : [];
 
+  // Choice group (prompt 106, locked decision 7): a group with no valid pick
+  // is a HARD refusal, server side, before anything flips. The request may
+  // carry the card the customer tapped (choice) in case the debounced select
+  // has not landed; it counts only when it names a real choice line, and it
+  // is written in the CAS below as a customer pick. Otherwise the stored
+  // pick (customer or staff, decision 15) is what gets signed. Never a
+  // default.
+  const bodyChoice = body.choice != null && String(body.choice).trim() ? String(body.choice).trim() : null;
+  const pickedId = bodyChoice && choicePickValid(est.line_items, bodyChoice) ? bodyChoice : pickedIdOf(est);
+  const choiceErr = choiceAcceptError(est.line_items, pickedId);
+  if (choiceErr) return json(400, { ok: false, error: choiceErr, needs_choice: true });
+  const pickPatch = bodyChoice && pickedId === bodyChoice && pickedId !== pickedIdOf(est)
+    ? { choice_picked_line_id: pickedId, choice_picked_at: new Date().toISOString(), choice_picked_by: null, choice_picked_source: 'customer' }
+    : {};
+
   const frozenItems = freezeLineItems(est.line_items, selectedIds);
-  const total = Math.round(includedTotal(frozenItems) * 100) / 100;
+  const total = Math.round(includedTotal(frozenItems, pickedId) * 100) / 100;
   // Decision 4 defense: the rep-side send gate (at least one required line)
   // makes a zero-selection accept unreachable through the UI; this guard is
   // for a hand-crafted POST, and it keeps a $0 accept from ever creating a
   // real job. Checked BEFORE the CAS so status never flips.
-  if (acceptSelectionInvalid(frozenItems)) {
+  if (acceptSelectionInvalid(frozenItems, pickedId)) {
     return json(400, { ok: false, error: 'Please select at least one item before signing.' });
   }
   const nowIso = new Date().toISOString();
@@ -2022,9 +2288,11 @@ async function handleAccept(est, body, event) {
       signature: {
         typed_name: name, signed_at: nowIso, ip, user_agent: ua,
         selected_optional_ids: selectedIds, total, via: 'public_estimate_page',
+        ...(pickedId ? { choice_picked_line_id: pickedId } : {}),
         ...(frozenSched ? { schedule: frozenSched } : {}),
       },
       price: total,
+      ...pickPatch,
       ...(soldOnSite == null ? {} : { sold_on_site: soldOnSite }),
     }, true);
 
@@ -2117,11 +2385,27 @@ async function handleSelect(est, body) {
   // The one selection writer: idempotent, optional rows only, scoped to this
   // estimate. Same helper the accept path uses; never duplicated.
   await applySelection(est.id, est.line_items, selectedIds);
+  // Choice pick (prompt 106): written to the ONE place it lives, as a
+  // customer pick, only when it names a real choice line on this estimate.
+  // Status-guarded like the price PATCH below so a signature landing
+  // mid-flight is never overwritten. A repeat of the stored pick is a no-op.
+  let pickedId = pickedIdOf(est);
+  const bodyChoice = body.choice != null && String(body.choice).trim() ? String(body.choice).trim() : null;
+  if (bodyChoice && choicePickValid(est.line_items, bodyChoice)) {
+    if (bodyChoice !== pickedId) {
+      await sb('PATCH', `/estimates?id=eq.${encodeURIComponent(est.id)}&status=in.(sent,signed,change_requested,draft)`,
+        { choice_picked_line_id: bodyChoice, choice_picked_at: new Date().toISOString(), choice_picked_by: null, choice_picked_source: 'customer' });
+    }
+    pickedId = bodyChoice;
+  }
   if (body.signing !== true) return json(200, { ok: true });
+  // Settling the price with a choice group and no pick would store a number
+  // the customer has not chosen; leave the estimator's internal value alone.
+  if (choiceAcceptError(est.line_items, pickedId)) return json(200, { ok: true, needs_choice: true });
 
   const frozen = freezeLineItems(est.line_items, selectedIds);
-  const total = Math.round(includedTotal(frozen) * 100) / 100;
-  const included = frozen.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer === true));
+  const total = Math.round(includedTotal(frozen, pickedId) * 100) / 100;
+  const included = includedLines(frozen, pickedId);
 
   // GP over the SAME included set, with the honesty rule: a zero unit_cost on
   // a PRICED line means the cost data is missing, not that the margin is 100
@@ -2340,7 +2624,7 @@ exports.handler = async (event) => {
       const isPrint = String(qs.print || '') === '1';
       // areas first: the color charts derive from the lines' systems + picks.
       const areas = await loadAreas(est.id);
-      const [brand, financing, literature, installments, ccPhotos, colorCharts, warranty] = await Promise.all([
+      const [brand, financing, literature, installments, ccPhotos, colorCharts, warranty, choiceCopy] = await Promise.all([
         loadBrand(est.brand),
         loadFinancingSettings(sb),
         loadLiterature(est.brand),
@@ -2348,8 +2632,9 @@ exports.handler = async (event) => {
         loadCcCustomerPhotos(est, { preview: true }),
         loadColorCharts(est, areas, { print: isPrint }),
         loadWarranty(est),
+        loadChoiceCopy(),
       ]);
-      return estimatePage(est, brand, { preview: true, print: isPrint, financing, literature, areas, installments, ccPhotos, colorCharts, warranty });
+      return estimatePage(est, brand, { preview: true, print: isPrint, financing, literature, areas, installments, ccPhotos, colorCharts, warranty, choiceCopy });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -2366,7 +2651,7 @@ exports.handler = async (event) => {
     const isPrint = String(qs.print || '') === '1';
     // areas first: the color charts derive from the lines' systems + picks.
     const areas = await loadAreas(est.id);
-    const [brand, financing, literature, installments, acceptedPay, ccPhotos, colorCharts, warranty] = await Promise.all([
+    const [brand, financing, literature, installments, acceptedPay, ccPhotos, colorCharts, warranty, choiceCopy] = await Promise.all([
       loadBrand(est.brand),
       loadFinancingSettings(sb),
       loadLiterature(est.brand),
@@ -2375,6 +2660,7 @@ exports.handler = async (event) => {
       loadCcCustomerPhotos(est),
       loadColorCharts(est, areas, { print: isPrint }),
       loadWarranty(est),
+      loadChoiceCopy(),
     ]);
     // Await (not fire-and-forget): the lambda may freeze the instant the
     // response returns, which would drop an un-awaited insert.
@@ -2387,7 +2673,7 @@ exports.handler = async (event) => {
     // log for the same reason: it is not a customer view and must not light
     // the bell. Same hand-add reasoning applies.
     if (String(qs.present || '') !== '1' && String(qs.print || '') !== '1') await logEstimateView(est, event);
-    return estimatePage(est, brand, { print: isPrint, financing, literature, areas, installments, acceptedPay, ccPhotos, colorCharts, warranty });
+    return estimatePage(est, brand, { print: isPrint, financing, literature, areas, installments, acceptedPay, ccPhotos, colorCharts, warranty, choiceCopy });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();

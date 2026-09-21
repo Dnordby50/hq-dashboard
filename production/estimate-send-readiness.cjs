@@ -11,7 +11,18 @@ function estimatePricingSendBlockers(est, settings = {}) {
   const snapshot = est.pricing_snapshot && est.pricing_snapshot.send_readiness;
   const saved = snapshot && snapshot.version === 1 ? snapshot : null;
   if (est.is_custom === true || (saved && saved.isCustom === true)) return [];
-  const areaItems = items.filter(li => li && li.estimate_area_id);
+  // Choice group (prompt 106): exactly ONE choice line counts in any total.
+  // The valid pick (estimates.choice_picked_line_id), else the recommended
+  // line, else the cheapest; the minimum selection uses the cheapest. Same
+  // rule as production/optional-lines.cjs countedChoice, inlined so this
+  // file stays self-contained for its browser mirror.
+  const choiceKey = li => li && typeof li.choice_group === 'string' && li.choice_group.trim() ? li.choice_group.trim() : null;
+  const choices = items.filter(li => choiceKey(li));
+  const cheapestChoice = choices.reduce((best, li) => (best == null || (finite(li.total) ?? 0) < (finite(best.total) ?? 0) ? li : best), null);
+  const pickedId = est.choice_picked_line_id != null ? String(est.choice_picked_line_id) : null;
+  const countedChoice = choices.find(li => String(li.id) === pickedId) || choices.find(li => li.is_recommended === true) || cheapestChoice;
+  const countsIn = li => !choiceKey(li) || li === countedChoice;
+  const areaItems = items.filter(li => li && li.estimate_area_id && countsIn(li));
   const discountItems = items.filter(li => li && !li.estimate_area_id && !li.addon_id && finite(li.total) < 0);
   const discountTotal = round(discountItems.reduce((sum, li) => sum + Number(li.total), 0));
   const calculated = saved ? finite(saved.calcTotal) : finite(est.calc_price);
@@ -27,7 +38,7 @@ function estimatePricingSendBlockers(est, settings = {}) {
   // Count every offered discount, including an optional line left unticked.
   // Legacy no-area totals already contain their required discount lines.
   const reasonSell = !saved && !areaItems.length && discountItems.length
-    ? round(items.filter(li => li && !discountItems.includes(li)).reduce((sum, li) => sum + (finite(li.total) ?? 0), 0))
+    ? round(items.filter(li => li && countsIn(li) && !discountItems.includes(li)).reduce((sum, li) => sum + (finite(li.total) ?? 0), 0))
     : sell;
   const shortfall = round((calculated != null && reasonSell != null ? calculated - reasonSell : 0) - discountTotal);
   if ((discountItems.length || (calculated != null && reasonSell != null)) && shortfall > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
@@ -38,7 +49,7 @@ function estimatePricingSendBlockers(est, settings = {}) {
   if (!saved) {
     // Legacy rows predate the snapshot. Area costs include commission;
     // add-on costs store materials only, matching the estimator's math.
-    const opening = items.filter(li => li && (!li.is_optional || li.selected_by_customer === true));
+    const opening = items.filter(li => li && countsIn(li) && (!li.is_optional || li.selected_by_customer === true));
     const total = round(opening.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0));
     const commission = finite(est.commission_pct);
     if (areaItems.length && total > 0 && opening.every(li => finite(li.unit_cost) != null && (li.estimate_area_id || commission != null))) {
@@ -55,7 +66,7 @@ function estimatePricingSendBlockers(est, settings = {}) {
     // A customer may decline every optional upsell and take every discount.
     // Recompute that selection from rows, rather than subtracting a discount
     // from combinedGpPct, which already includes selected discount lines.
-    const minimum = items.filter(li => li && (!li.is_optional || finite(li.total) < 0));
+    const minimum = items.filter(li => li && (choiceKey(li) ? li === cheapestChoice : (!li.is_optional || finite(li.total) < 0)));
     const total = round(minimum.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0));
     const commission = finite(est.commission_pct);
     if (total <= 0) {

@@ -1,5 +1,19 @@
 [
   {
+    "id": "estimate-customer-chooses-one",
+    "date": "2026-09-21",
+    "title": "Let the customer choose between options.",
+    "summary": "An estimate can now offer a pick-one choice, such as a border only or the entire patio, instead of faking it with one required line and one optional line that added together. The customer sees the options as cards, sees no total until they pick, and cannot sign without picking. Only the option they choose goes to the job.",
+    "howto": [
+      "In the estimator, open a line and tick Customer chooses one. Do the same on at least one more line. Tick Recommended on one of them if you want the badge to show.",
+      "A line cannot be both Optional and Customer chooses one. Optional add-ons still work as before and apply to whichever option is picked.",
+      "On the customer page the options appear as cards under Choose your project, with each price and how much more it costs than the lowest option. The total, deposit and financing figure appear after they pick.",
+      "You can set the pick yourself from the estimate page (the radio next to each option). The customer can still change it until they sign.",
+      "After signing, the chosen option is marked Selected and the other is marked Not selected. Only the chosen option goes to the job, the work order, the material plan and the invoice.",
+      "Wording and the difference line live in Settings, Estimates, under Optional lines."
+    ]
+  },
+  {
     "id": "online-booking-rep-eligibility",
     "date": "2026-09-21",
     "title": "Choose who customers can book online.",

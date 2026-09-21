@@ -3667,6 +3667,66 @@
           "name": "booking_require_google_connected"
         }
       ]
+    },
+    {
+      "file": "20260921174926_estimate_choice_group.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.choice_group"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.is_recommended"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_line_items.choice_group"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_line_items.is_recommended"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.choice_picked_line_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.choice_picked_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.choice_picked_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.choice_picked_source"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_choice_heading"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_choice_recommended_label"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_choice_show_difference"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_choice_no_pick_total_text"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_choice_no_pick_sign_text"
+        }
+      ]
     }
   ],
   "knownTables": [

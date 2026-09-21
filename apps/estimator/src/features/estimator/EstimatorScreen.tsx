@@ -47,7 +47,7 @@ import { linesInputsKey } from '../../../../../production/ai-lines.cjs';
 // Optional-lines money rules (prompt 72): the same CJS module
 // pec-public-estimate.cjs uses, so the rep's totals and the customer's page
 // can never disagree about what required-only / all-in / opening mean.
-import { CLOBBER_DESC_RE, optionalControlsVisible, splitLineTotals } from '../../../../../production/optional-lines.cjs';
+import { CLOBBER_DESC_RE, optionalControlsVisible, splitLineTotals, isIncludedLine } from '../../../../../production/optional-lines.cjs';
 // Payment-schedule math (prompt 74): the SAME module pec-public-estimate.cjs
 // resolves and freezes with, so the card's dollars and the customer page can
 // never disagree.
@@ -92,8 +92,19 @@ type AreaForm = {
   // edit-load and refreshed after a successful scope generation; empty on a
   // brand-new line (the save writes null and the scope writer fills it).
   lineDescription: string;
+  // Choice group (prompt 106): "Customer chooses one". choice and optional
+  // are mutually exclusive (ticking one clears the other); recommended shows
+  // the badge on at most one line per estimate; picked is the loaded pick
+  // (estimates.choice_picked_line_id matched on load) so the save can
+  // re-point it at this line's fresh id. picked is never edited here.
+  choice: boolean;
+  recommended: boolean;
+  picked: boolean;
 };
-const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '', optional: false, preselected: true, lineDescription: '' };
+const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '', optional: false, preselected: true, lineDescription: '', choice: false, recommended: false, picked: false };
+// One choice group per estimate today (locked decision 4); stored as a text
+// key so a second group later is a UI change, not a migration.
+const CHOICE_GROUP_KEY = 'group-1';
 // A date token's committed value is customer-facing text, so the ISO value
 // the picker produces ("2026-09-03") is rewritten as prose. En-US on purpose:
 // this string lands on the proposal.
@@ -135,6 +146,10 @@ type AddonForm = {
   optional: boolean;
   preselected: boolean;
   isDiscount: boolean;
+  // Choice group (prompt 106); see AreaForm. A discount is never a choice.
+  choice: boolean;
+  recommended: boolean;
+  picked: boolean;
 };
 
 // One payment-schedule row in form state (prompt 74). valueInput is the
@@ -486,6 +501,9 @@ export default function EstimatorScreen({
             optional: a.isOptional === true,
             preselected: a.preselected !== false,
             lineDescription: a.lineDescription ?? '',
+            choice: !!a.choiceGroup,
+            recommended: !!a.choiceGroup && a.isRecommended === true,
+            picked: !!a.choiceGroup && !!editing.choicePickedLineId && a.lineItemId === editing.choicePickedLineId,
           }))
         : null,
       // Prompt 94 B1: the default area is born with its system's template
@@ -520,6 +538,9 @@ export default function EstimatorScreen({
       optional: li.isOptional,
       preselected: li.selectedByCustomer,
       isDiscount: li.addonId == null && li.unitPrice < 0,
+      choice: !!li.choiceGroup,
+      recommended: !!li.choiceGroup && li.isRecommended === true,
+      picked: !!li.choiceGroup && !!editing?.choicePickedLineId && li.id === editing.choicePickedLineId,
     })),
   );
   // Rep's answers to the templates' BLANK placeholders, keyed by the context
@@ -1208,11 +1229,15 @@ export default function EstimatorScreen({
         const qty = f.isDiscount ? 1 : (Number(f.qty) > 0 ? Number(f.qty) : 1);
         const unitPrice = f.isDiscount ? -Math.abs(Number(f.unitPrice) || 0) : (Number(f.unitPrice) || 0);
         return {
+          key: f.key,
           total: r2(qty * unitPrice),
           qty,
           unit_cost: f.isDiscount ? 0 : (Number(f.unitCost) || 0),
           is_optional: f.optional,
           selected_by_customer: f.optional && f.preselected,
+          choice: !f.isDiscount && f.choice,
+          recommended: !f.isDiscount && f.choice && f.recommended,
+          picked: !f.isDiscount && f.choice && f.picked,
         };
       }),
     [addonForms],
@@ -1247,15 +1272,23 @@ export default function EstimatorScreen({
   //                   public page opens (and what the send email quotes).
   // Pre-72 estimates (nothing optional): opening equals today's total and
   // every GP number lands where it always has.
+  // Prompt 106: each shaped line carries a synthetic id plus its choice
+  // flags so the SAME splitLineTotals rule the public page and the dashboard
+  // use decides which choice line counts (the pick, else Recommended, else
+  // cheapest). price_all_options then never sums two alternatives.
   const shapedLines = useMemo(() => {
     const commFrac = config.standardCommissionPct / 100;
     const rows = lineRows.map((r, k) => {
       const a = areas[r.formIdx];
       const m = lineMoney ? lineMoney[k] : null;
       return {
+        id: `area:${r.formIdx}`,
         total: finalLineAmounts ? finalLineAmounts[k] : (r.current ?? 0),
-        is_optional: a.optional === true,
+        is_optional: a.optional === true && !a.choice,
         selected_by_customer: a.optional !== true || a.preselected !== false,
+        choice_group: a.choice ? CHOICE_GROUP_KEY : null,
+        is_recommended: a.choice && a.recommended,
+        picked: a.choice && a.picked,
         gp: m && m.gpDollars != null ? Number(m.gpDollars) : 0,
         laborDollars: m && m.laborDollars != null ? Number(m.laborDollars) : 0,
         commissionDollars: m && m.commissionDollars != null ? Number(m.commissionDollars) : 0,
@@ -1263,9 +1296,13 @@ export default function EstimatorScreen({
       };
     });
     const addons = addonMoneyItems.map((li) => ({
+      id: `addon:${li.key}`,
       total: li.total,
-      is_optional: li.is_optional,
+      is_optional: li.is_optional && !li.choice,
       selected_by_customer: li.selected_by_customer === true,
+      choice_group: li.choice ? CHOICE_GROUP_KEY : null,
+      is_recommended: li.recommended,
+      picked: li.picked,
       gp: li.total - li.qty * li.unit_cost - commFrac * li.total,
       laborDollars: 0,
       commissionDollars: commFrac * li.total,
@@ -1273,7 +1310,14 @@ export default function EstimatorScreen({
     }));
     return [...rows, ...addons];
   }, [lineRows, areas, lineMoney, finalLineAmounts, addonMoneyItems, config.standardCommissionPct]);
-  const lineTotalsSplit = useMemo(() => splitLineTotals(shapedLines), [shapedLines]);
+  const shapedPickedId = useMemo(() => shapedLines.find((l) => l.choice_group && l.picked)?.id ?? null, [shapedLines]);
+  const lineTotalsSplit = useMemo(() => splitLineTotals(shapedLines, { pickedId: shapedPickedId }), [shapedLines, shapedPickedId]);
+  const countedChoiceId: string | null = lineTotalsSplit.countedId ?? null;
+  const cheapestChoiceId = useMemo(() => {
+    const cs = shapedLines.filter((l) => l.choice_group);
+    if (!cs.length) return null;
+    return cs.reduce((best, l) => (best == null || l.total < best.total ? l : best), null as (typeof cs)[number] | null)?.id ?? null;
+  }, [shapedLines]);
   const hasOptionalLines = useMemo(() => shapedLines.some((l) => l.is_optional), [shapedLines]);
   const moneyOver = useCallback((pred: (l: (typeof shapedLines)[number]) => boolean) => {
     const set = shapedLines.filter(pred);
@@ -1283,8 +1327,8 @@ export default function EstimatorScreen({
     const hours = r2(set.reduce((s, l) => s + l.budgetedHours, 0));
     return { gp, labor, comm, hours: hours > 0 ? hours : null };
   }, [shapedLines]);
-  const openingMoney = useMemo(() => moneyOver((l) => !l.is_optional || l.selected_by_customer), [moneyOver]);
-  const requiredMoney = useMemo(() => moneyOver((l) => !l.is_optional), [moneyOver]);
+  const openingMoney = useMemo(() => moneyOver((l) => isIncludedLine(l, countedChoiceId)), [moneyOver, countedChoiceId]);
+  const requiredMoney = useMemo(() => moneyOver((l) => (l.choice_group ? l.id === countedChoiceId : !l.is_optional)), [moneyOver, countedChoiceId]);
   const moneyReady = !isCustom && linesReady && adjusted != null;
 
   const totalPrice = isCustom
@@ -1298,8 +1342,10 @@ export default function EstimatorScreen({
   // A selectable discount can lower the total below required-only. Show the
   // lowest permitted selection and evaluate the existing GP floor there.
   const hasDiscountLines = addonForms.some(f => f.isDiscount);
-  const minimumSelectionTotal = r2(shapedLines.filter(l => !l.is_optional || l.total < 0).reduce((sum, l) => sum + l.total, 0));
-  const minimumSelectionMoney = moneyOver(l => !l.is_optional || l.total < 0);
+  // Prompt 106: with a choice group the lowest selection takes the cheapest
+  // choice (splitLineTotals.cheapest), never two alternatives.
+  const minimumSelectionTotal = lineTotalsSplit.cheapest;
+  const minimumSelectionMoney = moneyOver(l => (l.choice_group ? l.id === cheapestChoiceId : (!l.is_optional || l.total < 0)));
   const minimumSelectionGpPct = minimumSelectionTotal > 0 ? minimumSelectionMoney.gp / minimumSelectionTotal : null;
 
   // Decision 8: warn (never block) when the required-only GP lands under the
@@ -1924,6 +1970,7 @@ export default function EstimatorScreen({
         optional: a.is_optional_default,
         preselected: false,
         isDiscount: false,
+        choice: false, recommended: false, picked: false,
       },
     ]);
     setSheetFocusDesc(false);
@@ -1933,7 +1980,7 @@ export default function EstimatorScreen({
     const key = uuid();
     setAddonForms((prev) => [
       ...prev,
-      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', estHours: '', sqft: '', optional: false, preselected: false, isDiscount: false },
+      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', estHours: '', sqft: '', optional: false, preselected: false, isDiscount: false, choice: false, recommended: false, picked: false },
     ]);
     setSheetFocusDesc(false);
     setOpenLine({ kind: 'addon', key });
@@ -1944,12 +1991,34 @@ export default function EstimatorScreen({
       key, addonId: null, label: 'Discount', description: '', qty: '1',
       unitPrice: '', unitCost: '0', estHours: '', sqft: '', optional: false,
       preselected: config.optionalLinesPreselectDefault !== false, isDiscount: true,
+      choice: false, recommended: false, picked: false,
     }]);
     setSheetFocusDesc(false);
     setOpenLine({ kind: 'addon', key });
   };
   const setAddonForm = (key: string, patch: Partial<AddonForm>) =>
     setAddonForms((prev) => prev.map((f) => (f.key === key ? { ...f, ...patch } : f)));
+  // Choice group controls (prompt 106, decision 13). Ticking "Customer
+  // chooses one" clears Optional on that line (and vice versa, in the
+  // Optional handlers); unticking it also drops its Recommended flag and
+  // its pick. Flagging one line Recommended clears every other line's.
+  type LineRef = { kind: 'area'; idx: number } | { kind: 'addon'; key: string };
+  const setLineChoice = (target: LineRef, on: boolean) => {
+    if (target.kind === 'area') {
+      setAreas((prev) => prev.map((a, i) => (i === target.idx
+        ? { ...a, choice: on, optional: on ? false : a.optional, recommended: on ? a.recommended : false, picked: on ? a.picked : false }
+        : a)));
+    } else {
+      setAddonForms((prev) => prev.map((f) => (f.key === target.key
+        ? { ...f, choice: on, optional: on ? false : f.optional, recommended: on ? f.recommended : false, picked: on ? f.picked : false }
+        : f)));
+    }
+  };
+  const setLineRecommended = (target: LineRef, on: boolean) => {
+    setAreas((prev) => prev.map((a, i) => ({ ...a, recommended: target.kind === 'area' && i === target.idx ? on : (on ? false : a.recommended) })));
+    setAddonForms((prev) => prev.map((f) => ({ ...f, recommended: target.kind === 'addon' && f.key === target.key ? on : (on ? false : f.recommended) })));
+  };
+  const choiceLineCount = areas.filter((a) => a.choice).length + addonForms.filter((f) => f.choice).length;
   const removeAddonForm = (key: string) => {
     setAddonForms((prev) => prev.filter((f) => f.key !== key));
     addonDescEditedRef.current.delete(key);
@@ -2498,8 +2567,10 @@ export default function EstimatorScreen({
             // Decision 5/1: a custom line's typed price lives in
             // price_override (calc_price stays null: nothing was calculated).
             priceOverride: row.current,
-            isOptional: a.optional === true,
+            isOptional: a.optional === true && !a.choice,
             preselected: a.preselected !== false,
+            choiceGroup: a.choice ? CHOICE_GROUP_KEY : null,
+            isRecommended: a.choice && a.recommended,
           };
         }
         const d = deriveProducts(a.slotValues, a.systemTypeId);
@@ -2541,8 +2612,10 @@ export default function EstimatorScreen({
           // (null = sell at calc_price). The job discount stays estimate-level.
           calcPrice: row.calcPrice,
           priceOverride: row.override,
-          isOptional: a.optional === true,
+          isOptional: a.optional === true && !a.choice,
           preselected: a.preselected !== false,
+          choiceGroup: a.choice ? CHOICE_GROUP_KEY : null,
+          isRecommended: a.choice && a.recommended,
         };
       });
 
@@ -2573,6 +2646,9 @@ export default function EstimatorScreen({
       // Custom mode (whole-estimate, build 24) still composes ONE line
       // carrying the typed price + scope, unchanged.
       const lineItems: LineItemInput[] = [];
+      // Prompt 106: the index of the PICKED choice line in lineItems (the
+      // save re-points estimates.choice_picked_line_id at its fresh id).
+      let choicePickedLineIndex: number | null = null;
       if (isCustom) {
         lineItems.push({
           addonId: null,
@@ -2586,6 +2662,8 @@ export default function EstimatorScreen({
           isOptional: false,
           selectedByCustomer: true,
           sortOrder: 0,
+          choiceGroup: null,
+          isRecommended: false,
         });
       } else {
         const calcCount = calcLineCount;
@@ -2598,8 +2676,10 @@ export default function EstimatorScreen({
           // from the area row. A required line stays selected (it is part of
           // the job); an optional line's opening tick is the rep's
           // preselected choice (opt-out for area/custom lines, decision 3).
-          const lineOptional = a.optional === true;
+          const lineOptional = a.optional === true && !a.choice;
           const lineSelected = !lineOptional || a.preselected !== false;
+          const lineChoice = a.choice ? CHOICE_GROUP_KEY : null;
+          if (a.choice && a.picked) choicePickedLineIndex = lineItems.length;
           if (row.kind === 'custom') {
             lineItems.push({
               addonId: null,
@@ -2615,6 +2695,8 @@ export default function EstimatorScreen({
               isOptional: lineOptional,
               selectedByCustomer: lineSelected,
               sortOrder: k,
+              choiceGroup: lineChoice,
+              isRecommended: a.choice && a.recommended,
             });
             return;
           }
@@ -2640,6 +2722,8 @@ export default function EstimatorScreen({
             isOptional: lineOptional,
             selectedByCustomer: lineSelected,
             sortOrder: k,
+            choiceGroup: lineChoice,
+            isRecommended: a.choice && a.recommended,
           });
         });
       }
@@ -2647,6 +2731,8 @@ export default function EstimatorScreen({
       for (const f of addonForms) {
         const qty = f.isDiscount ? 1 : (Number(f.qty) > 0 ? Number(f.qty) : 1);
         const unitPrice = f.isDiscount ? -Math.abs(Number(f.unitPrice) || 0) : (Number(f.unitPrice) || 0);
+        const addonChoice = !f.isDiscount && f.choice;
+        if (addonChoice && f.picked) choicePickedLineIndex = lineItems.length;
         lineItems.push({
           addonId: f.addonId,
           areaIndex: null,
@@ -2658,9 +2744,11 @@ export default function EstimatorScreen({
           estHours: !f.isDiscount && Number(f.estHours) > 0 ? Number(f.estHours) : null,
           sqft: !f.isDiscount && Number(f.sqft) > 0 ? Number(f.sqft) : null,
           total: r2(qty * unitPrice),
-          isOptional: f.optional,
+          isOptional: f.optional && !addonChoice,
           selectedByCustomer: f.optional && f.preselected,
           sortOrder: sort++,
+          choiceGroup: addonChoice ? CHOICE_GROUP_KEY : null,
+          isRecommended: addonChoice && f.recommended,
         });
       }
 
@@ -2782,8 +2870,11 @@ export default function EstimatorScreen({
         // custom mode: the typed price is not an override of anything.
         calcPrice: isCustom ? null : calcTotal,
         // Decision 7: the ceiling (every line at full value). Equal to
-        // totals.price on an estimate with nothing optional.
+        // totals.price on an estimate with nothing optional. Prompt 106:
+        // with a choice group it counts the MOST EXPENSIVE choice only.
         priceAllOptions,
+        // Prompt 106: re-point the pick at the line's fresh id (or clear it).
+        choicePickedLineIndex,
         priceOverride: !isCustom && (priceMoved || shortfall >= 0.5) && overrideReason.trim()
           ? { reason: overrideReason.trim(), by: createdBy }
           : null,
@@ -3557,6 +3648,7 @@ export default function EstimatorScreen({
                     <span className="line-row-price">{price != null ? money2(price) : '--'}</span>
                     <span className="line-row-sub">
                       {a.optional && <span className="line-chip optional">optional{a.preselected ? '' : ' · starts unticked'}</span>}
+                      {a.choice && <span className="line-chip optional">choose one{a.recommended ? ' · recommended' : ''}{a.picked ? ' · picked' : (`area:${i}` === countedChoiceId ? ' · counted' : '')}</span>}
                       {scopePresent
                         ? <span className="line-chip scope-ok">scope ✓</span>
                         : <span className="line-chip scope-missing">no scope yet</span>}
@@ -3588,6 +3680,7 @@ export default function EstimatorScreen({
                     <span className="line-row-price">{money2(total)}</span>
                     <span className="line-row-sub">
                       {f.optional && <span className="line-chip optional">optional{f.preselected ? '' : ' · starts unticked'}</span>}
+                      {f.choice && !f.isDiscount && <span className="line-chip optional">choose one{f.recommended ? ' · recommended' : ''}{f.picked ? ' · picked' : (`addon:${f.key}` === countedChoiceId ? ' · counted' : '')}</span>}
                       {f.description.trim()
                         ? <span className="line-chip scope-ok">description ✓</span>
                         : <span className="line-chip addon">no description</span>}
@@ -4193,6 +4286,11 @@ export default function EstimatorScreen({
                         onChange={(e) => setArea(i, {
                           optional: e.target.checked,
                           preselected: e.target.checked ? (config.optionalLinesPreselectDefault !== false) : a.preselected,
+                          // Decision 13 (prompt 106): Optional and Customer
+                          // chooses one are mutually exclusive.
+                          choice: e.target.checked ? false : a.choice,
+                          recommended: e.target.checked ? false : a.recommended,
+                          picked: e.target.checked ? false : a.picked,
                         })}
                       />
                       <span>Optional (customer picks)</span>
@@ -4204,6 +4302,24 @@ export default function EstimatorScreen({
                       </label>
                     )}
                   </div>
+                )}
+                {optionalControlsVisible(config.optionalLinesEnabled, a.choice) && (
+                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6 }}>
+                    <label className="check addon-opt" title="The customer picks exactly one of the lines ticked here. They see no total until they choose, and cannot sign without choosing.">
+                      <input type="checkbox" checked={a.choice} onChange={(e) => setLineChoice({ kind: 'area', idx: i }, e.target.checked)} />
+                      <span>Customer chooses one</span>
+                    </label>
+                    {a.choice && (
+                      <label className="check addon-opt" title="Shows a Recommended badge on this option. One per estimate.">
+                        <input type="checkbox" checked={a.recommended} onChange={(e) => setLineRecommended({ kind: 'area', idx: i }, e.target.checked)} />
+                        <span>Recommended</span>
+                      </label>
+                    )}
+                    {a.choice && a.picked && <span className="muted" style={{ fontSize: '.8rem' }}>Picked{editing?.status === 'accepted' ? ' and signed' : ''}</span>}
+                  </div>
+                )}
+                {a.choice && choiceLineCount === 1 && (
+                  <p className="warn">A choice group needs at least two lines. Tick Customer chooses one on another line before sending.</p>
                 )}
                 {row && row.current != null && (
                   <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline', fontSize: '.8rem', marginTop: 8 }}>
@@ -4377,8 +4493,17 @@ export default function EstimatorScreen({
                   <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, {
                     optional: e.target.checked,
                     preselected: f.isDiscount && e.target.checked ? config.optionalLinesPreselectDefault !== false : f.preselected,
+                    // Decision 13 (prompt 106): Optional and Customer chooses
+                    // one are mutually exclusive.
+                    choice: e.target.checked ? false : f.choice,
+                    recommended: e.target.checked ? false : f.recommended,
+                    picked: e.target.checked ? false : f.picked,
                   })} /><span>Optional (customer picks)</span></label>
                   {f.isDiscount && f.optional && <label className="check addon-opt"><input type="checkbox" checked={f.preselected} onChange={(e) => setAddonForm(f.key, { preselected: e.target.checked })} /><span>Start selected</span></label>}
+                </>}
+                {!f.isDiscount && optionalControlsVisible(config.optionalLinesEnabled, f.choice) && <>
+                  <label className="check addon-opt" title="The customer picks exactly one of the lines ticked here. They see no total until they choose, and cannot sign without choosing."><input type="checkbox" checked={f.choice} onChange={(e) => setLineChoice({ kind: 'addon', key: f.key }, e.target.checked)} /><span>Customer chooses one</span></label>
+                  {f.choice && <label className="check addon-opt" title="Shows a Recommended badge on this option. One per estimate."><input type="checkbox" checked={f.recommended} onChange={(e) => setLineRecommended({ kind: 'addon', key: f.key }, e.target.checked)} /><span>Recommended</span></label>}
                 </>}
                 <span className="addon-total">{money2(total)}</span>
               </div>

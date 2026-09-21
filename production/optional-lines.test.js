@@ -455,5 +455,181 @@ await section('optional_lines_enabled=false: blocks creating a new optional line
   ok(optionalControlsVisible(undefined, false) === true, 'a pre-72 cached catalog (no key) fails open to enabled');
 });
 
+// ---------------------------------------------------------------------------
+// Prompt 106: choice group ("Customer chooses one"). The Drinville shape in
+// miniature: Border Area 2950 and Entire Patio 3450 are ALTERNATIVES (the
+// patio is Recommended), plus an unselected optional add-on. The old model
+// stacked the two (price_all_options 6400); the real outcomes are 2950 OR
+// 3450 and nothing else.
+// ---------------------------------------------------------------------------
+const {
+  choiceLines, countedChoice, countedChoiceId, includedLines, choicePickValid,
+  choiceGroupSendError, choiceAcceptError, notSelectedChoiceLines, notSelectedNoteLine,
+  CHOICE_GROUP_SEND_MESSAGE, CHOICE_PICK_REQUIRED_MESSAGE,
+} = require('./optional-lines.cjs');
+function choiceDb() {
+  const db = mixedDb();
+  db.estimates[0].price = 3450; db.estimates[0].price_all_options = 3950;
+  db.estimates[0].choice_picked_line_id = null; db.estimates[0].choice_picked_at = null;
+  db.estimates[0].choice_picked_by = null; db.estimates[0].choice_picked_source = null;
+  db.estimates[0].scope_of_work = '## Border Area\n\nborder scope\n\n---\n\n## Entire Patio\n\npatio scope';
+  db.estimate_areas = [
+    { id: 'arB', estimate_id: 'e72', name: 'Border Area', sqft: 200, system_type_id: 'sys-flake', sort_order: 0, is_optional: false, preselected: true, is_custom: false, choice_group: 'group-1', is_recommended: false },
+    { id: 'arP', estimate_id: 'e72', name: 'Entire Patio', sqft: 645, system_type_id: 'sys-quartz', sort_order: 1, is_optional: false, preselected: true, is_custom: false, choice_group: 'group-1', is_recommended: true },
+  ];
+  db.estimate_line_items = [
+    { id: 'liB', estimate_id: 'e72', estimate_area_id: 'arB', label: 'Border Area: Custom System', description: 'border scope', qty: 1, unit_price: 2950, unit_cost: 1500, total: 2950, is_optional: false, selected_by_customer: true, sort_order: 0, choice_group: 'group-1', is_recommended: false },
+    { id: 'liP', estimate_id: 'e72', estimate_area_id: 'arP', label: 'Entire Patio: Custom System', description: 'patio scope', qty: 1, unit_price: 3450, unit_cost: 1800, total: 3450, is_optional: false, selected_by_customer: true, sort_order: 1, choice_group: 'group-1', is_recommended: true },
+    { id: 'liA', estimate_id: 'e72', estimate_area_id: null, addon_id: 'ad1', label: 'Stem Walls', description: null, qty: 1, unit_price: 500, unit_cost: 100, total: 500, is_optional: true, selected_by_customer: false, sort_order: 2, choice_group: null, is_recommended: false },
+  ];
+  return db;
+}
+const getPage = async (mod) => String((await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` })).body);
+const cardOf = (html, id) => { const i = html.indexOf(`data-choice-id="${id}"`); const s = html.lastIndexOf('<div class="choicecard', i); const e = html.indexOf('data-choice-id', i + 10); return html.slice(s, e < 0 ? s + 4000 : e); };
+
+await section('choice helpers: exactly one choice line counts, never two', async () => {
+  const items = choiceDb().estimate_line_items;
+  ok(choiceLines(items).length === 2, 'two choice lines');
+  const t = splitLineTotals(items);
+  ok(t.requiredOnly === 3450 && t.opening === 3450, `no pick: the Recommended line counts for the internal value (got ${t.requiredOnly})`);
+  ok(t.allIn === 3950, `price_all_options = optionals + the MOST EXPENSIVE choice, never 2950 + 3450 (got ${t.allIn})`);
+  ok(t.cheapest === 2950, `lowest selectable total takes the cheapest choice (got ${t.cheapest})`);
+  ok(t.hasChoice === true && t.countedId === 'liP' && t.picked === false, 'counted id is the recommended line, not a pick');
+  const p = splitLineTotals(items, { pickedId: 'liB' });
+  ok(p.requiredOnly === 2950 && p.opening === 2950 && p.countedId === 'liB' && p.picked === true && p.allIn === 3950, 'a valid pick counts instead of the recommended line; all-in unchanged');
+  const bad = splitLineTotals(items, { pickedId: 'liA' });
+  ok(bad.countedId === 'liP' && bad.picked === false, 'a pick that is not a choice line is ignored (recommended counts)');
+  const noRec = items.map((li) => ({ ...li, is_recommended: false }));
+  ok(countedChoiceId(noRec, null) === 'liB', 'no pick and no Recommended: the cheapest counts');
+  ok(includedLines(items, null).map((li) => li.id).join(',') === 'liP', 'included set holds exactly the counted choice (the unselected add-on stays out)');
+  ok(choicePickValid(items, 'liP') && !choicePickValid(items, 'liA') && !choicePickValid(items, null), 'pick validity');
+  ok(notSelectedChoiceLines(items, 'liB').map((li) => li.id).join(',') === 'liP', 'not-selected set is the other choice');
+  ok(/Customer chose Border Area: Custom System, \$2,950\. Not selected: Entire Patio: Custom System, \$3,450/.test(notSelectedNoteLine(items, 'liB') || ''), 'crew note names the chosen and the not-selected option');
+  ok(acceptSelectionInvalid(items, 'liB') === false && acceptSelectionInvalid([items[0], items[1]].map((li) => ({ ...li, total: 0 })), 'liB') === true, 'accept guard counts the picked choice only');
+  ok([...declinedAreaIdSet(items, 'liB')].join(',') === 'arP', 'the unpicked choice area joins the job-side drop set');
+});
+
+await section('choice gates: one-line group blocks sending; no pick blocks accepting', async () => {
+  const items = choiceDb().estimate_line_items;
+  ok(choiceGroupSendError(items) === null, 'two choice lines pass');
+  ok(choiceGroupSendError([items[0], items[2]]) === CHOICE_GROUP_SEND_MESSAGE, 'exactly one choice line blocks: ' + CHOICE_GROUP_SEND_MESSAGE);
+  ok(choiceGroupSendError([items[2]]) === null, 'no choice lines: the gate is silent');
+  ok(emptySendError([]) === EMPTY_SEND_MESSAGE && choiceGroupSendError([]) === null, 'an empty estimate is caught by the has-content precondition, not by this gate');
+  ok(choiceAcceptError(items, null) === CHOICE_PICK_REQUIRED_MESSAGE, 'no pick: accept refused');
+  ok(choiceAcceptError(items, 'liA') === CHOICE_PICK_REQUIRED_MESSAGE, 'a pick outside the group: accept refused');
+  ok(choiceAcceptError(items, 'liP') === null, 'a valid pick: accept allowed');
+  ok(choiceAcceptError([items[2]], null) === null, 'no group: nothing to enforce');
+  ok(!/—/.test(CHOICE_GROUP_SEND_MESSAGE + CHOICE_PICK_REQUIRED_MESSAGE), 'no em dashes in the gate copy');
+});
+
+await section('public page with no pick: cards, no total, no deposit, sign blocked; difference line and Recommended badge', async () => {
+  const db = choiceDb();
+  db.estimate_installments = [
+    { id: 'dep', estimate_id: 'e72', seq: 0, label: 'Deposit', amount_kind: 'percent', amount_value: 50, trigger_kind: 'on_acceptance', is_deposit: true },
+    { id: 'bal', estimate_id: 'e72', seq: 1, label: 'Balance', amount_kind: 'percent', amount_value: 50, trigger_kind: 'on_completion', is_deposit: false },
+  ];
+  db.settings = [{ key: 'financing_enabled', value: 'true' }, { key: 'financing_apply_url', value: 'https://example.test/apply' }, { key: 'financing_apr_pct', value: '9.99' }, { key: 'financing_term_months', value: '60' }];
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const html = await getPage(mod);
+  ok(/Choose your project/.test(html), 'the settings-driven heading renders (default copy)');
+  ok(/data-choice-id="liB"/.test(html) && /data-choice-id="liP"/.test(html), 'both choices render as cards');
+  ok(/id="heroTotal">Select an option</.test(html) && /id="grandTotal"[^>]*>Select an option</.test(html) && /id="subTotal"[^>]*>Select an option</.test(html), 'no total anywhere until a pick');
+  ok(!/\$6,400/.test(html) && !/\$3,950/.test(html), 'the stacked number and the all-in number never appear');
+  ok(/id="goAccept"[^>]*disabled[^>]*>Choose an option to sign</.test(html), 'the sign button is disabled with the no-pick copy');
+  ok(/class="dep needs-pick" style="display:none"/.test(html), 'the deposit row is hidden until a pick');
+  ok(/id="finHost" style="display:none"/.test(html), 'the financing figure is hidden until a pick');
+  ok(/class="choicerec">Recommended</.test(cardOf(html, 'liP')) && !/choicerec/.test(cardOf(html, 'liB')), 'the Recommended badge shows on the flagged card only');
+  ok(/\+\$500\.00 vs Border Area: Custom System/.test(cardOf(html, 'liP')), 'the pricier card shows the difference against the cheapest');
+  ok(!/choicediff/.test(cardOf(html, 'liB')), 'the cheapest card shows no difference line');
+  ok(!/class="choicecard sel"/.test(html), 'nothing starts selected');
+  ok(/View full scope/.test(html) && /border scope/.test(html), 'each card offers the full scope');
+  ok(/Included with every option/.test(html) === false, 'with no required lines there is no required-work table');
+  ok(!/—/.test(html.slice(html.indexOf('<body'))), 'no em dashes on the customer page');
+  // Decision 7 server side: a direct POST with no pick is refused before the CAS.
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'No Pick', selected_optional_ids: [] }) });
+  ok(res.statusCode === 400 && JSON.parse(res.body).needs_choice === true, 'accept with no pick: 400');
+  ok(db.estimates[0].status === 'sent' && db.jobs.length === 0, 'status never flipped, no job');
+  const bad = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Bad Pick', selected_optional_ids: [], choice: 'liA' }) });
+  ok(bad.statusCode === 400 && db.estimates[0].status === 'sent', 'accept with a pick outside the group: 400');
+});
+
+await section('customer pick persists through select, renders selected, and the difference math holds', async () => {
+  const db = choiceDb();
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: [], choice: 'liB' }) });
+  ok(res.statusCode === 200 && db.estimates[0].choice_picked_line_id === 'liB' && db.estimates[0].choice_picked_source === 'customer' && db.estimates[0].choice_picked_by === null && !!db.estimates[0].choice_picked_at, 'the pick is written to the ONE place it lives, as a customer pick');
+  ok(db.estimates[0].price === 3450, 'a plain pick does not settle price (the accept panel does)');
+  const html = await getPage(mod);
+  ok(/class="choicecard sel"[^>]*data-choice-id="liB"/.test(html), 'the picked card opens selected');
+  ok(/id="grandTotal"[^>]*>\$2,950\.00</.test(html) && /id="heroTotal">\$2,950\.00</.test(html), 'Border picked: total 2950');
+  ok(/id="goAccept"[^>]*>Sign &amp; accept for <span id="acceptTotal">\$2,950\.00</.test(html), 'the sign button is live at the picked total');
+  await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: [], choice: 'liP', signing: true }) });
+  ok(db.estimates[0].choice_picked_line_id === 'liP' && db.estimates[0].price === 3450, 'the customer can change the pick; signing:true settles price at the pick');
+  const html2 = await getPage(mod);
+  ok(/id="grandTotal"[^>]*>\$3,450\.00</.test(html2), 'Entire Patio picked: total 3450');
+  const ignored = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: [], choice: 'liA' }) });
+  ok(ignored.statusCode === 200 && db.estimates[0].choice_picked_line_id === 'liP', 'a pick outside the group is ignored, the stored pick stands');
+});
+
+await section('staff pick (decision 15): the customer page opens selected and the customer can still change it', async () => {
+  const db = choiceDb();
+  db.estimates[0].choice_picked_line_id = 'liP'; db.estimates[0].choice_picked_source = 'staff';
+  db.estimates[0].choice_picked_by = 'staff-uid'; db.estimates[0].choice_picked_at = '2026-09-21T18:00:00Z';
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const html = await getPage(mod);
+  ok(/class="choicecard sel"[^>]*data-choice-id="liP"/.test(html) && /id="grandTotal"[^>]*>\$3,450\.00</.test(html), 'staff-set pick renders selected with its total');
+  await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: [], choice: 'liB' }) });
+  ok(db.estimates[0].choice_picked_line_id === 'liB' && db.estimates[0].choice_picked_source === 'customer' && db.estimates[0].choice_picked_by === null, 'the customer overrides a staff pick until they sign; source and who follow');
+});
+
+await section('accept with Entire Patio picked: price 3450, job built from the picked area only, Border is the Not selected record', async () => {
+  const db = choiceDb();
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Choice Tester', selected_optional_ids: [], choice: 'liP' }) });
+  ok(res.statusCode === 200, `accept succeeds (${res.statusCode} ${res.body})`);
+  ok(db.estimates[0].status === 'accepted' && db.estimates[0].price === 3450, `estimates.price rewritten to the picked total (got ${db.estimates[0].price})`);
+  ok(db.estimates[0].price_all_options === 3950, 'price_all_options untouched at accept (the record of what was offered)');
+  ok(db.estimates[0].choice_picked_line_id === 'liP' && db.estimates[0].choice_picked_source === 'customer', 'the pick carried in the accept request was written as the customer pick');
+  ok((db.estimates[0].signature || {}).choice_picked_line_id === 'liP', 'the signature jsonb records the picked line');
+  ok(db.jobs[0].price === 3450, 'jobs.price = the picked total');
+  ok(db.job_areas.length === 1 && db.job_areas[0].name === 'Entire Patio' && db.job_areas[0].price === 3450, 'job_areas has the picked area only');
+  ok(db.pec_prod_areas.length === 1 && db.pec_prod_areas[0].name === 'Entire Patio', 'pec_prod_areas (material plan / ordering / costing) has the picked area only');
+  ok(db.jobs[0].line_items.length === 1 && db.jobs[0].line_items[0].name === 'Entire Patio: Custom System', 'jobs.line_items (invoice) carries the picked line only');
+  ok(db.jobs[0].sqft === '645', 'job sqft counts the picked area only');
+  const notes = String(db.pec_prod_jobs[0].notes || '');
+  ok(/Customer chose Entire Patio: Custom System, \$3,450\. Not selected: Border Area: Custom System, \$2,950/.test(notes), 'the crew note names the chosen and the not-selected option');
+  ok(!/border scope/.test(notes) && /patio scope/.test(notes), 'the crew scope carries the picked line only');
+  ok(!/border scope/.test(String(db.jobs[0].scope || '')), 'jobs.scope carries the picked line only');
+  ok(/border scope/.test(String(db.estimates[0].scope_of_work || '')), 'estimates.scope_of_work is never rewritten after signature');
+  ok(db.estimate_line_items.find((l) => l.id === 'liB').is_optional === false, 'the unpicked line is NOT turned into an optional/declined row (the pick is the record)');
+  const html = await getPage(mod);
+  ok(/class="choicestate off">Not selected</.test(cardOf(html, 'liB')) && /class="choicestate on">Selected</.test(cardOf(html, 'liP')), 'signed page: Selected and Not selected labels');
+  ok(/Your choice/.test(html) && /id="heroTotal">\$3,450\.00</.test(html), 'signed page: the picked line joins Your project with the full total');
+  ok(!/\$6,400/.test(html), 'the stacked number never appears');
+});
+
+await section('accept with Border picked through the stored pick: 2950 and the patio drops', async () => {
+  const db = choiceDb();
+  db.estimates[0].choice_picked_line_id = 'liB'; db.estimates[0].choice_picked_source = 'customer'; db.estimates[0].choice_picked_at = '2026-09-21T18:00:00Z';
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Border Tester', selected_optional_ids: ['liA'] }) });
+  ok(res.statusCode === 200 && db.estimates[0].price === 3450, `Border + the ticked add-on: 2950 + 500 (got ${db.estimates[0].price})`);
+  ok(db.job_areas.length === 2 && db.job_areas[0].name === 'Border Area' && db.job_areas[1].name === 'Stem Walls', 'job_areas: the picked area plus the ticked add-on, no patio');
+  ok(!db.pec_prod_areas.some((a) => a.name === 'Entire Patio'), 'the not-selected area never reaches the material plan');
+});
+
+await section('pre-106 rows (no choice_group anywhere): every total identical to before', async () => {
+  const items = mixedDb().estimate_line_items;
+  const t = splitLineTotals(items);
+  ok(t.requiredOnly === 4200 && t.allIn === 8100 && t.opening === 7600 && t.hasChoice === false && t.countedId === null, 'the three totals are unchanged for an estimate with no choice lines');
+  ok(choiceGroupSendError(items) === null && choiceAcceptError(items, null) === null, 'the new gates are silent without a group');
+  ok(includedLines(items, null).length === 2, 'included set unchanged (required + preselected)');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -92,6 +92,12 @@ function harness(pauseAt) {
       return { minViews: 3, windowHours: 48 };
     },
     estLineOptional: line => line.is_optional === true,
+    // Prompt 106: the choice-group mirrors the detail page calls.
+    estChoiceKey: line => (line && typeof line.choice_group === 'string' && line.choice_group.trim()) ? line.choice_group.trim() : null,
+    estChoiceLines: items => (Array.isArray(items) ? items : []).filter(line => line && typeof line.choice_group === 'string' && line.choice_group.trim()),
+    estChoicePickValid: () => false,
+    estCountedChoiceId: () => null,
+    estimateLineItemsTotal: items => (Array.isArray(items) ? items : []).reduce((sum, line) => sum + (Number(line.total) || 0), 0),
     esc: value => String(value ?? ''),
     fmtMoney: value => String(value ?? ''),
     estimateEffectiveStatus: value => value.status,

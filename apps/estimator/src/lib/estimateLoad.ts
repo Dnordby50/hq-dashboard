@@ -25,6 +25,12 @@ export type LoadedAddonLine = {
   sqft: number | null;
   isOptional: boolean;
   selectedByCustomer: boolean;
+  // Choice group (prompt 106): the row's id (so the estimate's pick can be
+  // matched to this form line and re-pointed on save), its group key and
+  // the Recommended flag.
+  id: string | null;
+  choiceGroup: string | null;
+  isRecommended: boolean;
 };
 
 // One estimate_installments row round-tripped into the schedule card
@@ -101,8 +107,17 @@ export type LoadedEstimate = {
     // (the "970 sqft" clobber). Joined by the area id the line carries; empty
     // when the line has no scope yet.
     lineDescription: string;
+    // Choice group (prompt 106): from the AREA columns (source of truth),
+    // plus this area's line-item id so the estimate's pick can be matched.
+    choiceGroup: string | null;
+    isRecommended: boolean;
+    lineItemId: string | null;
   }>;
   addonLines: LoadedAddonLine[];
+  // Choice group (prompt 106): estimates.choice_picked_line_id, the ONE place
+  // the pick lives. Matched against areas[].lineItemId / addonLines[].id on
+  // load and re-pointed at the fresh line id on save.
+  choicePickedLineId: string | null;
   // Prompt 74: the estimate's payment schedule rows, round-tripped into the
   // schedule card. Empty before the migration or when no schedule exists.
   installments: LoadedInstallment[];
@@ -171,12 +186,12 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       .maybeSingle(),
     supabase
       .from('estimate_areas')
-      .select('id,name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override,is_optional,preselected')
+      .select('id,name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override,is_optional,preselected,choice_group,is_recommended')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
     supabase
       .from('estimate_line_items')
-      .select('addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,est_hours,sqft,is_optional,selected_by_customer,sort_order')
+      .select('id,addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,est_hours,sqft,is_optional,selected_by_customer,sort_order,choice_group,is_recommended')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
   ]);
@@ -208,10 +223,16 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   // verbatim instead of authoring a new one. First line per area wins (an
   // area has at most one system line).
   const descByAreaId = new Map<string, string>();
+  // Prompt 106: the line-item id per area, so the estimate's pick can be
+  // matched to a form line (first line per area wins, like the description).
+  const lineIdByAreaId = new Map<string, string>();
   for (const li of (((linesRes.error ? [] : linesRes.data) ?? []) as Array<Record<string, unknown>>)) {
     const areaId = li.estimate_area_id;
     if (typeof areaId === 'string' && li.description != null && !descByAreaId.has(areaId)) {
       descByAreaId.set(areaId, String(li.description));
+    }
+    if (typeof areaId === 'string' && typeof li.id === 'string' && !lineIdByAreaId.has(areaId)) {
+      lineIdByAreaId.set(areaId, li.id);
     }
   }
   const areas = ((areasRes.error ? [] : areasRes.data) ?? []).map((a) => {
@@ -221,6 +242,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       custom_scope: string | null; custom_material_cost: number | null; custom_labor_hours: number | null;
       notes: string | null; price_override: number | null;
       is_optional: boolean | null; preselected: boolean | null;
+      choice_group: string | null; is_recommended: boolean | null;
     };
     const isCustomLine = row.is_custom === true;
     return {
@@ -241,6 +263,9 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       // Custom lines keep their scope in custom_scope; the round-tripped line
       // description is only meaningful for CALCULATOR lines.
       lineDescription: !isCustomLine && descByAreaId.has(row.id) ? (descByAreaId.get(row.id) as string) : '',
+      choiceGroup: typeof row.choice_group === 'string' && row.choice_group.trim() ? row.choice_group.trim() : null,
+      isRecommended: row.is_recommended === true,
+      lineItemId: lineIdByAreaId.get(row.id) ?? null,
     };
   });
   let savedAreaSellTotal: number | null = null;
@@ -310,9 +335,13 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       sqft: li.sqft != null && Number(li.sqft) > 0 ? Number(li.sqft) : null,
       isOptional: li.is_optional === true,
       selectedByCustomer: li.selected_by_customer === true,
+      id: typeof li.id === 'string' ? li.id : null,
+      choiceGroup: typeof li.choice_group === 'string' && (li.choice_group as string).trim() ? (li.choice_group as string).trim() : null,
+      isRecommended: li.is_recommended === true,
     }));
   return {
     id: String(e.id),
+    choicePickedLineId: typeof e.choice_picked_line_id === 'string' && e.choice_picked_line_id ? String(e.choice_picked_line_id) : null,
     estimateNumber: e.estimate_number != null ? Number(e.estimate_number) : null,
     status: String(e.status || 'draft'),
     sentAt: (e.sent_at as string | null) ?? null,

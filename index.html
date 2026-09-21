@@ -14445,7 +14445,7 @@ function jobEstimateTabHtml(est, viewsInfo, hotCfg) {
         ${items.map(lineRow).join('')}
         <tr style="border-top:1px solid var(--rd-line,var(--border))">
           <td style="padding:6px 8px;font-weight:700">Total</td>
-          <td style="padding:6px 8px;text-align:right;font-weight:700">${fmtMoney(estimateLineItemsTotal(items))}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:700">${fmtMoney(estimateLineItemsTotal(items, est.choice_picked_line_id))}</td>
         </tr>
       </table>
     </div>` : ''}
@@ -14494,7 +14494,7 @@ async function renderJobDetailInner(id) {
     // Widened from id,flake_color for the combined page's Estimate tab: the
     // flake editor keeps reading id/flake_color off the same row, the tab
     // renders the rest. Still one query, newest wins.
-    supabase.from('estimates').select('id,estimate_number,status,price,calc_price,gp_dollars,gp_pct,sent_at,signed_at,signed_name,accepted_at,rejected_at,rejected_reason,change_request_note,created_at,updated_at,flake_color,scope_of_work,public_token,estimate_line_items(*)').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
+    supabase.from('estimates').select('id,estimate_number,status,price,calc_price,gp_dollars,gp_pct,sent_at,signed_at,signed_name,accepted_at,rejected_at,rejected_reason,change_request_note,created_at,updated_at,flake_color,scope_of_work,public_token,choice_picked_line_id,estimate_line_items(*)').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
     cachedRef('flakeColors', () => supabase.from('colors').select('*').eq('category', 'flake-blend').order('name')),
   ]), { label: 'renderJobDetail' });
   if (jobRes.error) {
@@ -19007,6 +19007,7 @@ async function renderSettingsEstimates() {
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample', 'accept_celebration_enabled',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
+      'estimate_choice_heading', 'estimate_choice_recommended_label', 'estimate_choice_show_difference', 'estimate_choice_no_pick_total_text', 'estimate_choice_no_pick_sign_text',
       'estimate_line_generate_enabled', 'estimate_line_polish_enabled', 'estimate_line_templates_enabled', 'estimator_line_sheet_breakpoint_px', 'estimate_autosave_enabled',
       'companycam_estimate_photos_enabled', 'companycam_customer_photos_enabled',
       'companycam_name_match_min_score', 'companycam_max_customer_photos',
@@ -19050,6 +19051,15 @@ async function renderSettingsEstimates() {
   const olOn = (map.optional_lines_enabled || 'true') !== 'false';
   const olPre = (map.optional_lines_preselect_default || 'true') !== 'false';
   const olWarn = Number(map.optional_lines_gp_warn_pct) > 0 ? Number(map.optional_lines_gp_warn_pct) : lpFloor;
+  // Choice group copy (prompt 106). Defaults MUST match the migration seeds
+  // and pec-public-estimate.cjs CHOICE_COPY_DEFAULTS. Customer-facing: no em
+  // dashes in the defaults or the help text.
+  const chTxt = (k, d) => (map[k] != null && String(map[k]).trim() ? String(map[k]) : d);
+  const chHeading = chTxt('estimate_choice_heading', 'Choose your project');
+  const chRecommended = chTxt('estimate_choice_recommended_label', 'Recommended');
+  const chShowDiff = (map.estimate_choice_show_difference || 'true') !== 'false';
+  const chNoPickTotal = chTxt('estimate_choice_no_pick_total_text', 'Select an option');
+  const chNoPickSign = chTxt('estimate_choice_no_pick_sign_text', 'Choose an option to sign');
   // Line editor sheet (prompt 76). Defaults MUST match the estimator's
   // catalog.ts and the migration seeds: true / 700.
   const lsGenOn = (map.estimate_line_generate_enabled || 'true') !== 'false';
@@ -19193,6 +19203,20 @@ async function renderSettingsEstimates() {
           <input type="number" id="olSetWarn" min="0" max="90" step="0.5" value="${olWarn}" style="width:80px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
         </label>
         <button type="button" class="pec-btn ghost sm" id="olSave">Save</button>
+      </div>
+      <div style="font-weight:700;margin-top:16px">Customer chooses one</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The estimator's "Customer chooses one" checkbox turns lines into a pick-one group: the customer page shows them as cards, hides the total, deposit and financing until a pick, and refuses a signature without one. This copy is customer-facing (no em dashes). Flag at most one line as Recommended in the estimator to show the badge.</div>
+      <div class="pec-row-2" style="max-width:640px">
+        <div class="pec-field"><label>Section heading</label><input id="chSetHeading" value="${esc(chHeading)}"></div>
+        <div class="pec-field"><label>Recommended badge text</label><input id="chSetRecommended" value="${esc(chRecommended)}"></div>
+        <div class="pec-field"><label>Total row before a pick</label><input id="chSetNoPickTotal" value="${esc(chNoPickTotal)}"></div>
+        <div class="pec-field"><label>Sign button before a pick</label><input id="chSetNoPickSign" value="${esc(chNoPickSign)}"></div>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">
+          <input type="checkbox" id="chSetDiff" ${chShowDiff ? 'checked' : ''}> Show the price difference on each card (for example "+$2,500 vs Border Area"; hidden on the lowest-priced card)
+        </label>
+        <button type="button" class="pec-btn ghost sm" id="chSave">Save</button>
       </div>
     </div>
     <div class="pec-card">
@@ -19478,6 +19502,22 @@ async function renderSettingsEstimates() {
       await saveSetting('optional_lines_gp_warn_pct', warn);
     } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     showToast('Optional lines settings saved.');
+    renderSettings();
+  });
+  $('chSave').addEventListener('click', async () => {
+    const btn = $('chSave'); btn.disabled = true;
+    const fields = [
+      ['estimate_choice_heading', $('chSetHeading').value, 'Choose your project'],
+      ['estimate_choice_recommended_label', $('chSetRecommended').value, 'Recommended'],
+      ['estimate_choice_no_pick_total_text', $('chSetNoPickTotal').value, 'Select an option'],
+      ['estimate_choice_no_pick_sign_text', $('chSetNoPickSign').value, 'Choose an option to sign'],
+    ];
+    if (fields.some(([, v]) => /—/.test(v))) { showToast('No em dashes in customer-facing text. Use a comma or two sentences.', { ttl: 5000 }); btn.disabled = false; return; }
+    try {
+      for (const [key, v, dflt] of fields) await saveSetting(key, v.trim() || dflt);
+      await saveSetting('estimate_choice_show_difference', $('chSetDiff').checked ? 'true' : 'false');
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    showToast('Customer chooses one settings saved.');
     renderSettings();
   });
   $('lsSave').addEventListener('click', async () => {
@@ -32396,10 +32436,31 @@ function estNumberLabel(est) {
 // public page: optional lines are EXCLUDED until the customer (or the rep, on
 // their behalf) ticks selected_by_customer. Accepts estimate_line_items ROWS
 // (is_optional, 2026-07-13) and the legacy jsonb shape (optional).
-function estimateLineItemsTotal(items) {
-  return (Array.isArray(items) ? items : []).reduce((sum, li) => {
-    if (!li) return sum;
-    if ((li.is_optional === true || li.optional === true) && !li.selected_by_customer) return sum;
+// Choice group (prompt 106): CLIENT MIRROR of production/optional-lines.cjs
+// countedChoice / isIncludedLine; keep in lockstep. Exactly ONE choice line
+// counts in any total: the valid pick (estimates.choice_picked_line_id), else
+// the recommended line, else the cheapest.
+const estChoiceKey = (li) => (li && typeof li.choice_group === 'string' && li.choice_group.trim()) ? li.choice_group.trim() : null;
+const estChoiceLines = (items) => (Array.isArray(items) ? items : []).filter(estChoiceKey);
+function estCountedChoiceId(items, pickedId) {
+  const choices = estChoiceLines(items);
+  if (!choices.length) return null;
+  const pick = pickedId != null ? choices.find(li => String(li.id) === String(pickedId)) : null;
+  const counted = pick || choices.find(li => li.is_recommended === true)
+    || choices.reduce((best, li) => (best == null || (Number(li.total) || 0) < (Number(best.total) || 0) ? li : best), null);
+  return counted && counted.id != null ? String(counted.id) : null;
+}
+const estChoicePickValid = (items, pickedId) => pickedId != null && estChoiceLines(items).some(li => String(li.id) === String(pickedId));
+function estLineIncluded(li, countedId) {
+  if (!li) return false;
+  if (estChoiceKey(li)) return countedId != null && String(li.id) === String(countedId);
+  return !(li.is_optional === true || li.optional === true) || li.selected_by_customer === true;
+}
+function estimateLineItemsTotal(items, pickedId) {
+  const list = Array.isArray(items) ? items : [];
+  const countedId = estCountedChoiceId(list, pickedId);
+  return list.reduce((sum, li) => {
+    if (!estLineIncluded(li, countedId)) return sum;
     const t = Number(li.total);
     return sum + (Number.isFinite(t) ? t : 0);
   }, 0);
@@ -32945,7 +33006,14 @@ async function renderEstimateDetail(estimateId) {
   // page's optional-item tick and this page can never race an array replace.
   const items = (Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [])
     .slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const requiredItems = items.filter(li => li && !estLineOptional(li));
+  // Choice group (prompt 106): the alternatives render in their own block
+  // with the staff pick control; the counted one (pick, else recommended,
+  // else cheapest) is what the total below includes.
+  const choiceItems = estChoiceLines(items);
+  const choicePickedId = est.choice_picked_line_id != null ? String(est.choice_picked_line_id) : null;
+  const choicePickOk = estChoicePickValid(items, choicePickedId);
+  const choiceCountedId = estCountedChoiceId(items, choicePickedId);
+  const requiredItems = items.filter(li => li && !estLineOptional(li) && !estChoiceKey(li));
   const optionalItems = items.filter(li => estLineOptional(li));
   const snapshot = est.pricing_snapshot || {};
   const snapComps = snapshot.comps || null;
@@ -33178,13 +33246,52 @@ async function renderEstimateDetail(estimateId) {
             <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Total</th><th></th></tr></thead>
             <tbody>${requiredItems.length ? requiredItems.map(li => lineRow(li, false)).join('') : '<tr><td colspan="5" style="color:var(--muted)">No line items recorded (estimate predates line items).</td></tr>'}</tbody>
           </table></div>
+          ${choiceItems.length ? (() => {
+            // Prompt 106: the choice group. Before signing the staff pick
+            // control (decision 15) writes estimates.choice_picked_* with
+            // source 'staff'; the customer page opens with it selected and
+            // the customer may still change it until they sign. After
+            // signing the picked line reads Selected and the rest Not
+            // selected (decision 11); changes then go through change orders.
+            const signedRow = est.status === 'accepted';
+            const cheapest = Math.min(...choiceItems.map(li => Number(li.total) || 0));
+            const pickedRow = choicePickOk ? choiceItems.find(li => String(li.id) === choicePickedId) : null;
+            const whoTxt = pickedRow
+              ? `${est.choice_picked_source === 'staff' ? 'Set by staff' : 'Chosen by the customer'}${est.choice_picked_at ? ' ' + esc(fmtRelativeTime(est.choice_picked_at)) : ''}`
+              : (signedRow ? 'No pick recorded' : `No pick yet. Internal value uses ${choiceItems.some(li => li.is_recommended) ? 'the Recommended option' : 'the lowest-priced option'}.`);
+            const row = (li) => {
+              const isPicked = pickedRow && String(li.id) === choicePickedId;
+              const counted = String(li.id) === choiceCountedId;
+              const notSel = signedRow && !isPicked;
+              const diff = (Number(li.total) || 0) - cheapest;
+              return `<tr data-li-id="${esc(li.id)}"${notSel ? ' style="opacity:.6"' : ''}>
+                <td style="width:28px">${signedRow ? '' : `<input type="radio" name="estChoicePick" class="est-choice-pick" data-li-id="${esc(li.id)}" ${isPicked ? 'checked' : ''} title="Set this as the customer's pick">`}</td>
+                <td><div style="font-weight:600${notSel ? ';text-decoration:line-through' : ''}">${esc(li.label || '')}
+                  ${li.is_recommended ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#fff;background:var(--rd-accent,var(--accent));border-radius:999px;padding:1px 7px;vertical-align:middle">Recommended</span>' : ''}
+                  ${isPicked ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#16a34a;border:1px solid #16a34a;border-radius:999px;padding:1px 7px;vertical-align:middle">Selected</span>' : ''}
+                  ${notSel ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border:1px solid currentColor;border-radius:999px;padding:1px 7px;vertical-align:middle">Not selected</span>' : ''}
+                  ${!signedRow && !pickedRow && counted ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border:1px dashed currentColor;border-radius:999px;padding:1px 7px;vertical-align:middle" title="Counted in the internal value until a pick is made">Counted</span>' : ''}
+                </div>${lineDesc(li)}</td>
+                <td style="text-align:right">${Number(li.qty) || 1}</td>
+                <td style="text-align:right">${fmtMoney(li.unit_price)}</td>
+                <td style="text-align:right;font-weight:600${notSel ? ';text-decoration:line-through' : ''}">${fmtMoney(li.total)}${diff >= 0.5 ? `<div style="color:var(--muted);font-size:.7rem;font-weight:400">+${fmtMoney(diff)} vs lowest</div>` : ''}</td>
+                <td></td>
+              </tr>`;
+            };
+            return `
+            <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-top:12px">Customer chooses one <span style="text-transform:none;letter-spacing:0">(exactly one of these counts; the customer sees no total until they pick)</span></div>
+            <div class="pec-table-wrap"><table class="pec-table">
+              <tbody>${choiceItems.map(row).join('')}</tbody>
+            </table></div>
+            <div style="color:var(--muted);font-size:.72rem;margin-top:4px" id="estChoiceWho">${whoTxt}${choiceItems.length === 1 ? ' <span style="color:#dc2626;font-weight:600">A choice group needs at least two lines; sending is blocked.</span>' : ''}</div>`;
+          })() : ''}
           ${optionalItems.length ? `
             <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-top:12px">Optional items <span style="text-transform:none;letter-spacing:0">(excluded from the total until ticked)</span></div>
             <div class="pec-table-wrap"><table class="pec-table">
               <tbody>${optionalItems.map(li => lineRow(li, true)).join('')}</tbody>
             </table></div>` : ''}
           <div style="display:flex;justify-content:flex-end;margin-top:10px;font-size:1.05rem;font-weight:800">
-            Total: <span id="estItemsTotal" style="margin-left:8px">${fmtMoney(estimateLineItemsTotal(items))}</span>
+            Total: <span id="estItemsTotal" style="margin-left:8px">${fmtMoney(estimateLineItemsTotal(items, choicePickedId))}</span>
           </div>
           <div style="color:var(--muted);font-size:.7rem;margin-top:8px">
             ${est.scope_edited_at
@@ -33651,6 +33758,24 @@ async function renderEstimateDetail(estimateId) {
       renderEstimateDetail(est.id);
     } catch (err) { showToast('Could not update item: ' + esc(err.message || err), { ttl: 5000 }); }
   }));
+  // Staff pick for the choice group (prompt 106, decision 15): logged with
+  // who, when and source 'staff'. Its own PATCH that never carries status
+  // (trg_estimate_status_guard). The customer can still change it until
+  // they sign; after signing the radios do not render.
+  root.querySelectorAll('.est-choice-pick').forEach(rb => rb.addEventListener('change', async () => {
+    if (!rb.checked) return;
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({
+        choice_picked_line_id: rb.dataset.liId,
+        choice_picked_at: new Date().toISOString(),
+        choice_picked_by: state.session?.user?.id || state.adminUser?.auth_user_id || null,
+        choice_picked_source: 'staff',
+      }).eq('id', est.id), { label: 'estimate-choice-pick' });
+      if (upd.error) throw upd.error;
+      showToast('Pick saved. The customer page opens with it selected; they can still change it until they sign.', { ttl: 4000 });
+      renderEstimateDetail(est.id);
+    } catch (err) { showToast('Could not save the pick: ' + esc(err.message || err), { ttl: 5000 }); }
+  }));
   root.querySelectorAll('.est-li-remove').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('Remove this optional item?')) return;
     try {
@@ -33864,7 +33989,18 @@ function estimatePricingSendBlockers(est, settings = {}) {
   const snapshot = est.pricing_snapshot && est.pricing_snapshot.send_readiness;
   const saved = snapshot && snapshot.version === 1 ? snapshot : null;
   if (est.is_custom === true || (saved && saved.isCustom === true)) return [];
-  const areaItems = items.filter(li => li && li.estimate_area_id);
+  // Choice group (prompt 106): exactly ONE choice line counts in any total.
+  // The valid pick (estimates.choice_picked_line_id), else the recommended
+  // line, else the cheapest; the minimum selection uses the cheapest. Same
+  // rule as production/optional-lines.cjs countedChoice, inlined so this
+  // file stays self-contained for its browser mirror.
+  const choiceKey = li => li && typeof li.choice_group === 'string' && li.choice_group.trim() ? li.choice_group.trim() : null;
+  const choices = items.filter(li => choiceKey(li));
+  const cheapestChoice = choices.reduce((best, li) => (best == null || (finite(li.total) ?? 0) < (finite(best.total) ?? 0) ? li : best), null);
+  const pickedId = est.choice_picked_line_id != null ? String(est.choice_picked_line_id) : null;
+  const countedChoice = choices.find(li => String(li.id) === pickedId) || choices.find(li => li.is_recommended === true) || cheapestChoice;
+  const countsIn = li => !choiceKey(li) || li === countedChoice;
+  const areaItems = items.filter(li => li && li.estimate_area_id && countsIn(li));
   const discountItems = items.filter(li => li && !li.estimate_area_id && !li.addon_id && finite(li.total) < 0);
   const discountTotal = round(discountItems.reduce((sum, li) => sum + Number(li.total), 0));
   const calculated = saved ? finite(saved.calcTotal) : finite(est.calc_price);
@@ -33880,7 +34016,7 @@ function estimatePricingSendBlockers(est, settings = {}) {
   // Count every offered discount, including an optional line left unticked.
   // Legacy no-area totals already contain their required discount lines.
   const reasonSell = !saved && !areaItems.length && discountItems.length
-    ? round(items.filter(li => li && !discountItems.includes(li)).reduce((sum, li) => sum + (finite(li.total) ?? 0), 0))
+    ? round(items.filter(li => li && countsIn(li) && !discountItems.includes(li)).reduce((sum, li) => sum + (finite(li.total) ?? 0), 0))
     : sell;
   const shortfall = round((calculated != null && reasonSell != null ? calculated - reasonSell : 0) - discountTotal);
   if ((discountItems.length || (calculated != null && reasonSell != null)) && shortfall > threshold + 1e-9 && !String(est.price_override_reason || '').trim()) {
@@ -33891,7 +34027,7 @@ function estimatePricingSendBlockers(est, settings = {}) {
   if (!saved) {
     // Legacy rows predate the snapshot. Area costs include commission;
     // add-on costs store materials only, matching the estimator's math.
-    const opening = items.filter(li => li && (!li.is_optional || li.selected_by_customer === true));
+    const opening = items.filter(li => li && countsIn(li) && (!li.is_optional || li.selected_by_customer === true));
     const total = round(opening.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0));
     const commission = finite(est.commission_pct);
     if (areaItems.length && total > 0 && opening.every(li => finite(li.unit_cost) != null && (li.estimate_area_id || commission != null))) {
@@ -33908,7 +34044,7 @@ function estimatePricingSendBlockers(est, settings = {}) {
     // A customer may decline every optional upsell and take every discount.
     // Recompute that selection from rows, rather than subtracting a discount
     // from combinedGpPct, which already includes selected discount lines.
-    const minimum = items.filter(li => li && (!li.is_optional || finite(li.total) < 0));
+    const minimum = items.filter(li => li && (choiceKey(li) ? li === cheapestChoice : (!li.is_optional || finite(li.total) < 0)));
     const total = round(minimum.reduce((sum, li) => sum + (finite(li.total) ?? 0), 0));
     const commission = finite(est.commission_pct);
     if (total <= 0) {
@@ -34016,6 +34152,13 @@ async function estimateSendGateOk(est) {
     if (!(minimum > 0)) blockers.push({ msg: 'Discounts must leave the required work above $0 for every customer selection. Reduce the discount or make more work required before sending.' });
   }
   if (!estimateOptionalGateOk({ ...est, estimate_line_items: items })) return false;
+  // Prompt 106: a choice group with exactly one member cannot be sent.
+  // CLIENT MIRROR of production/optional-lines.cjs choiceGroupSendError
+  // (pec-send-sms / pec-send-email enforce it server side); after the
+  // has-content check above, never inside the per-line loop below.
+  if (estChoiceLines(items).length === 1) {
+    blockers.push({ msg: 'A choice group needs at least two lines.' });
+  }
   blockers.push(...estimatePricingSendBlockers(est, pricingSettings));
   if (scopeStale) {
     // Prompt 94: nothing sets scope_stale anymore and prod rows were
@@ -34161,11 +34304,12 @@ function pecApplyEstimateEditingLayout({ supportingOpen = false } = {}) {
 function estimateOpeningTotal(est) {
   const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
   if (!items.length) return est.price != null ? Number(est.price) : null;
+  // Prompt 106: one choice line counts (the pick, else recommended, else
+  // cheapest), so the send email never quotes two alternatives added up.
+  const countedId = estCountedChoiceId(items, est.choice_picked_line_id);
   let t = 0;
   for (const li of items) {
-    if (!li) continue;
-    const opt = li.is_optional === true || li.optional === true;
-    if (!opt || li.selected_by_customer === true) t += Number(li.total) || 0;
+    if (estLineIncluded(li, countedId)) t += Number(li.total) || 0;
   }
   return Math.round(t * 100) / 100;
 }

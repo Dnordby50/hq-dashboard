@@ -48,6 +48,13 @@ export type AreaInput = {
   // line starts TICKED for the customer (ignored while not optional).
   isOptional: boolean;
   preselected: boolean;
+  // Choice group (prompt 106): non-null = this line is one of the "Customer
+  // chooses one" alternatives (one group per estimate today; the key is text
+  // so a second group later is a UI change). isRecommended shows the badge on
+  // at most one line. Mirrored onto the line item like the optional flags;
+  // the CHECK constraint refuses optional + choice on the same row.
+  choiceGroup: string | null;
+  isRecommended: boolean;
 };
 
 // The one line item a CUSTOM estimate always carries (build 24): it holds the
@@ -81,6 +88,10 @@ export type LineItemInput = {
   isOptional: boolean;
   selectedByCustomer: boolean;
   sortOrder: number;
+  // Choice group (prompt 106); see AreaInput. Add-on / one-off lines carry
+  // it here directly (they have no area row).
+  choiceGroup: string | null;
+  isRecommended: boolean;
 };
 
 // One payment-schedule row (prompt 74), written to public.estimate_installments.
@@ -181,6 +192,13 @@ export type SaveEstimateArgs = {
   // ceiling. totals.price carries the required-only floor while the estimate
   // is open; accept later overwrites price with the signed total.
   priceAllOptions?: number | null;
+  // Choice group (prompt 106): the index into `lineItems` of the line the
+  // customer (or staff) has PICKED, or null for no pick. Every save deletes
+  // and re-inserts the child rows with fresh client-minted ids, so the
+  // estimate's pick (estimates.choice_picked_line_id, the ONE place it
+  // lives) must be re-pointed at the new id in the same save; null clears
+  // the pick and its who/when/source columns.
+  choicePickedLineIndex?: number | null;
   priceOverride: { reason: string; by: string | null } | null;
   createdBy: string | null;
   // The rep's picked lead source (2026-08-26 required-fields rule); stored on
@@ -229,9 +247,23 @@ export async function saveEstimateOffline(args: SaveEstimateArgs, scope: Account
   const isCustom = args.isCustom === true;
   const customScope = isCustom ? (args.customScope ?? '').trim() || null : null;
   const customPrice = isCustom ? args.customPrice ?? null : null;
+  // Line item ids are minted up front (prompt 106) so the parent row can
+  // point its choice pick at the line that is about to be written. The
+  // outbox writes the parent first; there is deliberately no FK on
+  // estimates.choice_picked_line_id, and readers treat a dangling id as no
+  // pick, so the brief parent-before-child window is harmless.
+  const lineIds = args.lineItems.map(() => uuid());
+  const pickIdx = args.choicePickedLineIndex;
+  const pickedLineId = pickIdx != null && pickIdx >= 0 && pickIdx < lineIds.length
+    && args.lineItems[pickIdx] && args.lineItems[pickIdx].choiceGroup ? lineIds[pickIdx] : null;
 
   const estimateRow: Record<string, unknown> = {
     id: estimateId,
+    // Re-pointed on every save (see lineIds above). A cleared pick also
+    // clears its who/when/source; a kept pick leaves them untouched (the
+    // on-conflict update only touches supplied columns).
+    choice_picked_line_id: pickedLineId,
+    ...(pickedLineId ? {} : { choice_picked_at: null, choice_picked_by: null, choice_picked_source: null }),
     system_type_id: args.systemTypeId,
     // Carries through the outbox unchanged, so an estimate written offline at a
     // job site still lands attached to its lead when the phone gets signal.
@@ -400,6 +432,9 @@ export async function saveEstimateOffline(args: SaveEstimateArgs, scope: Account
       price_override: a.priceOverride ?? null,
       is_optional: a.isOptional === true,
       preselected: a.preselected !== false,
+      // Choice group (prompt 106). Written on every save so unticking clears.
+      choice_group: a.choiceGroup || null,
+      is_recommended: !!a.choiceGroup && a.isRecommended === true,
     };
     ops.push(makeOutboxOp({ table: 'estimate_areas', id: areaId, row: areaRow, client_updated_at: now }, scope));
 
@@ -441,8 +476,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs, scope: Account
   }
 
   // Line items LAST (they FK both the estimate and, for system lines, an area).
-  for (const li of args.lineItems) {
-    const liId = uuid();
+  for (const [i, li] of args.lineItems.entries()) {
+    const liId = lineIds[i];
     const liRow = {
       id: liId,
       estimate_id: estimateId,
@@ -459,6 +494,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs, scope: Account
       is_optional: li.isOptional,
       selected_by_customer: li.selectedByCustomer,
       sort_order: li.sortOrder,
+      choice_group: li.choiceGroup || null,
+      is_recommended: !!li.choiceGroup && li.isRecommended === true,
     };
     ops.push(makeOutboxOp({ table: 'estimate_line_items', id: liId, row: liRow, client_updated_at: now }, scope));
   }
