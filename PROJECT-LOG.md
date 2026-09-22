@@ -1,3 +1,29 @@
+## [2026-09-22 09:18 MST] booking: prompt 105 migration booking_rep_eligibility APPLIED LIVE, then pushed and deployed
+By: Cowork
+Changed: Applied supabase/migrations/20260921171120_booking_rep_eligibility.sql (file md5 0d5c5191cd0e98952dab67b5dce35c39, unchanged since the prompt 105 commit) to production with Supabase apply_migration as booking_rep_eligibility, recorded in supabase_migrations.schema_migrations as 20260922161736 booking_rep_eligibility. Passed the file body byte for byte except the outer begin;/commit; lines (the tool runs its own transaction). No repo file other than this log changed.
+Why: Prompt 105 (Dusty double-book fix) was held on this apply since 2026-09-21 because Claude Code's auto-mode classifier refused it. Preflight on live prod before the apply confirmed every dependency present (is_admin_staff(), pec_appt_actor(text), pec_sales_member_google_calendars with member_id/sync_enabled/calendar_id/pull_version/last_error/last_synced_at, pec_appointment_blocked_days, pec_prod_holidays, all 19 pec_appointments insert columns, Dylan's member id) and nothing partially applied (no bookable_online column, no booking_* settings, no log table, 3 triggers on pec_appointments).
+
+Acceptance (live queries after the apply, all five as specified in the prompt 105 handoff):
+1. pec_sales_team_members: Aron Bronson active=false bookable_online=false google=false; Dusty Wilson active=true bookable_online=false google=false; Dylan Nordby active=true bookable_online=true google=true. Only Dylan bookable. Dusty still active.
+2. settings: booking_assignment_mode=primary_first, booking_primary_member_id=2add1f35-c46f-4931-8220-e5ba14939e3f, booking_require_google_connected=true.
+3. pec_appointments triggers: trg_pec_appointments_assignment_log, trg_pec_appointments_audit, trg_pec_appointments_stamp_actor, trg_pec_appointments_touch.
+4. pec_appointment_assignment_log count: 0. RLS enabled, policy pec_appt_assignment_log_staff_read present.
+5. book_appointment_slot arguments unchanged: p_row jsonb, p_buffer_before_minutes integer DEFAULT 30, p_buffer_after_minutes integer DEFAULT 30, p_reschedule_id uuid DEFAULT NULL::uuid, p_actor text DEFAULT NULL::text. Function body digest changed 261bf8b4342cb4114857e9b2aba59bca -> a883e99baaa14d5a723989c70c4d6a43 (the eligibility fence).
+Not touched: pec_appointments rows, any other setting, Dusty's active flag.
+
+Live slot list BEFORE deploy (read-only POST /api/booking/slots for 1030 Sandretto Dr Suite K, Prescott 86305 at 09:14 MST, books nothing): 2026-09-22 offered 11:30 AM | 12:00 PM | 12:30 PM | 1:00 PM | 1:30 PM | 2:00 PM | 2:30 PM. The 11:30 through 1:00 slots sit inside Dylan's lunch block and exist only because the still-deployed old code counts Dusty. Every later weekday offers the full 8:30 AM through 2:30 PM grid for the same reason. The 9:30/10:00 AM slots from the 2026-09-21 10:11 MST expectation had already aged out by the time of this call.
+
+Interim state until the push: the new book_appointment_slot is live under the OLD endpoint code. If the old code ever assigns Dusty, the function now answers taken:true/not_bookable:true, which the old endpoint treats as a taken slot, so no booking can land on her. Expected /api/booking/slots for 2026-09-22 after deploy: 1:30 PM | 2:00 PM | 2:30 PM (assuming the calendar is unchanged).
+
+Push and deploy: origin/main was updated to 8d8a8e9 by a push at 09:18:01 MST (reflog: update by push), 25 seconds after this apply and not from this Cowork session. Netlify deployed prompts 105 and 106 plus the portal commits. Migration landed first, so the endpoint never saw the missing column.
+
+Live slot list AFTER deploy (same read-only /slots POST at 09:20 MST): 2026-09-22 | 11:30 AM; 2026-09-23 | 9:30 AM | 10:00 AM | 10:30 AM | 11:00 AM | 11:30 AM | 2:30 PM; 2026-09-24 | 1:30 PM | 2:00 PM | 2:30 PM; 2026-09-25 | 9:30 AM | 10:00 AM | 2:00 PM | 2:30 PM. Dusty no longer inflates any day. The 9/22 list differs from the 2026-09-21 expectation (1:30 through 2:30) because the calendar changed since: the 11:30 to 1:00 lunch block is canceled, and two site visits now sit at 1:00 to 1:25 (Karen Adams) and 1:45 to 2:30 (David VanBuren), so 11:30 is the one remaining slot that clears the 9:45 to 10:15 appointment plus buffers and ends before 1:00. Consistent with Dylan-only availability.
+
+Files touched: PROJECT-LOG.md.
+Next steps: None for booking. Portal, prompt 105 and prompt 106 are now deployed; verify their served surfaces per their own log entries.
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-reload TopCoat and check Settings > People (Takes online bookings column, you on, Dusty off with the Needs Google Calendar note) and Settings > Appointments > Online booking (Currently bookable online: Dylan Nordby, Salespeople controls under Advanced). New appointments default to you as the rep.
+
 ## [2026-09-22 08:18 MST] portal: implement approved customer hub with estimates, invoices and referrals
 By: Codex
 
