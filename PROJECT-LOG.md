@@ -1,3 +1,19 @@
+## [2026-09-22 09:37 MST] portal: customer hub release verified live
+By: Codex
+
+Release: Dylan's "Push this" was fulfilled. Booking prerequisite is applied live; customer hub, signing guard UI and scalar-filter correction are pushed to origin/main. Netlify authenticated UI confirmed ba25437 Published (deploy 6ab2ab54d383c40008d16ed7). Diagnostic follow-up 0706f07 completed its Netlify build in 48 seconds (deploy 6ab2ad70ac0f7400082e7436); its separate Published badge was not confirmed because browser connectivity failed. No reconnect is needed for functional acceptance: repeated production requests now pass.
+
+Live acceptance: Valid empty customer returned HTTP 200 with zero jobs. Two separate customers with sent estimates and active jobs returned HTTP 200, correct token-scoped customer, one job, one estimate and one invoice each. The signed-account response has an accepted estimate and signed receipt, valid /e and /pay links, invoice total/paid/balance exactly matching the database, all three saved scheduled dates, and no-store/private headers. Invalid token returns 404. Live dashboard HTML matches the approved source. Public /book loads and read-only /api/booking/slots returns 200 with an open 21-day availability result. No booking, signature, payment, message or customer-record changes were made to test the release.
+
+Verification context: The initial live failure was traced to scalar UUID quoting and corrected in ba25437. Early checks after that publication still returned 503; after deployment settled, repeated nonempty customer reads passed without another data or business-logic change. Diagnostics retain only a static table/RPC name and protocol codes so any recurrence can be identified without customer data. Full npm test/posttest passes, including 64 portal cases; source/JSON and touched-CJS checks pass. Existing synthetic browser coverage validates desktop/mobile navigation, signed read-only actions and document-return refresh. Yelp links remain optional and unconfigured; Google review links and referral/review visibility use the existing portal settings.
+
+Release housekeeping: The documentation commit encountered a stale HEAD.lock dated 09:32:38. No live host Git process was present; the only open descriptor was a read-only macOS virtualization file handle. Moved the zero-byte stale lock to the private QA directory before retrying the commit.
+
+Documentation: Refreshed portal SCHEMA release status. Preserved the concurrent Cowork investigation log entry unchanged. This documentation-only follow-up uses [skip ci]; code build and live feature verification are already complete.
+Next steps: None required for this release.
+Handoff to Cowork: None.
+Handoff to Dylan: Customer portal is live. Hard-refresh an already-open portal to load the new layout.
+
 ## [2026-09-22 09:45 MST] investigation: four stale leads in Estimate Scheduled (read-only)
 By: Cowork
 What: Dylan asked why four Estimate Scheduled leads never made it onto the estimate calendar. Read-only SQL on leads, lead_events, pec_appointments, estimates, pec_prod_jobs, customers; SalesAsk name search. No data or code changed.
