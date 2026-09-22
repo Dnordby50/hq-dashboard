@@ -195,11 +195,11 @@ export function applyMbpEdits(body, edits, editedAt) {
   validatedBody(next); return next;
 }
 
-function currentWeek(queriedAt) {
+export function currentMbpWeek(queriedAt) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(queriedAt));
   const item = type => parts.find(part => part.type === type).value;
   const date = new Date(`${item('year')}-${item('month')}-${item('day')}T00:00:00Z`);
-  return new Date(date.getTime() + (7 - date.getUTCDay()) % 7 * DAY).toISOString().slice(0, 10);
+  return new Date(date.getTime() + (7 - date.getUTCDay()) * DAY).toISOString().slice(0, 10);
 }
 /** Refresh eligible PEC actuals; manual and untracked imported values remain intact. */
 export function applyMbpLive(body, feed) {
@@ -221,7 +221,7 @@ export function applyMbpLive(body, feed) {
   const next = structuredClone(body);
   // Out-of-order responses cannot replace a newer source snapshot or its availability.
   if (body.mbpLiveState && Date.parse(feed.queriedAt) < Date.parse(body.mbpLiveState.queriedAt)) return next;
-  const current = currentWeek(feed.queriedAt);
+  const current = currentMbpWeek(feed.queriedAt);
   const throughWeek = feed.throughWeek === null ? null : feed.throughWeek < current ? feed.throughWeek : current;
   next.mbpLiveState = { queriedAt: feed.queriedAt, throughWeek, warnings: [...(feed.warnings || [])] };
   for (const field of mbpInputFields(next).filter(field => field.live)) {
@@ -247,3 +247,7 @@ export function applyMbpLive(body, feed) {
   }
   validatedBody(next); return next;
 }
+
+// Sunday source keys remain stable for saved cells and original workbook references.
+export const mbpSaturday = week => new Date(Date.parse(`${week}T00:00:00Z`) - DAY).toISOString().slice(0, 10);
+export const mbpSunday = week => new Date(Date.parse(`${week}T00:00:00Z`) - 7 * DAY).toISOString().slice(0, 10);

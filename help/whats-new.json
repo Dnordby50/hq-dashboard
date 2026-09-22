@@ -1,5 +1,15 @@
 [
   {
+    "id": "sales-sunday-saturday-weeks",
+    "date": "2026-09-22",
+    "title": "Sales reporting weeks run Sunday through Saturday.",
+    "summary": "Sales Plan and Revenue Produced now show the Saturday closing date and count Sunday through Saturday in Arizona time.",
+    "howto": [
+      "Open Growth and Development to see the updated weekly ranges. Proposals still count once, on their first successful send.",
+      "Saved manual entries and the original workbook remain intact. Missing booking or completion dates show an unverified source instead of silently dropping jobs from the total."
+    ]
+  },
+  {
     "id": "sales-pipeline-first-send-reporting",
     "date": "2026-09-22",
     "title": "New inquiries follow the sales pipeline.",

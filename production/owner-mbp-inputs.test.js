@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { calculateMbp } from './owner-mbp.js';
 import { ownerFixture } from './owner-test-fixture.js';
 import { mbpInputFields, getMbpInput, applyMbpEdits, applyMbpLive, validateMbpInputState, MbpInputEditError } from './owner-mbp-inputs.js';
-const at = '2026-01-12T18:00:00.000Z';
+const at = '2026-01-11T07:00:00.000Z';
 const later = '2026-01-13T18:00:00.000Z';
 const final = '2026-01-14T18:00:00.000Z';
 const week = '2026-01-11';
@@ -93,13 +93,13 @@ test('older responses cannot roll back current source values or availability', (
 
 test('current in-progress Phoenix week is eligible while future weeks and different-year actuals are isolated', () => {
   const input = body();
-  const update = feed({ leads: 6 }, '2026-01-12T06:00:00.000Z', '2026-01-11'); // Sunday night in Phoenix.
+  const update = feed({ leads: 6 }, '2026-01-11T06:59:59.000Z', '2026-01-11'); // Saturday night in Phoenix.
   update.throughWeek = '2026-01-25';
   update.weeks.push({ weekEnding: '2026-01-18', actual: { leads: 99 }, available: { leads: true } });
   const sunday = applyMbpLive(input, update);
   assert.equal(getMbpInput(sunday, key()), 6);
   assert.equal(getMbpInput(sunday, key('leads', 'sales', 'epoxy', '2026-01-18')), null);
-  const monday = applyMbpLive(input, { ...update, queriedAt: '2026-01-12T18:00:00.000Z' });
+  const monday = applyMbpLive(input, { ...update, queriedAt: '2026-01-11T07:00:00.000Z' });
   assert.equal(getMbpInput(monday, key('leads', 'sales', 'epoxy', '2026-01-18')), 99);
   const foreignYear = applyMbpLive(input, feed({ leads: 20 }, at, '2025-01-05'));
   assert.deepEqual(foreignYear.mbp, input.mbp);

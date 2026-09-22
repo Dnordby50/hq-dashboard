@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateMbp } from './owner-mbp.js';
+import { mbpSaturday } from './owner-mbp-inputs.js';
 import { ownerFixture } from './owner-test-fixture.js';
 import { ownerConfig, routineStatus } from './owner-routine.js';
 import { renderMbpGrid, mbpGroups, escapeHtml, createOwnerStudio, checkinSaveMessage, showCheckinSaving, renderOwnerHeader, renderMbpPeriodFilter, rockMilestones, renderRockMilestones, rockWeekStart, weeklyRockFocus } from './owner-studio.js';
@@ -84,7 +85,7 @@ test('month filtering partitions every sheet by week-ending date and leaves cumu
     for(let month=1;month<=12;month++) {
       const mm=String(month).padStart(2,'0'), html=renderMbpGrid(sheet,`month:${mm}`);
       const dates=[...html.matchAll(/data-week="([^"]+)"/g)].map(m=>m[1]);
-      assert.deepEqual(dates,sheet.rows.filter(r=>r.weekEnding.slice(5,7)===mm).map(r=>r.weekEnding));
+      assert.deepEqual(dates,sheet.rows.filter(r=>mbpSaturday(r.weekEnding).slice(5,7)===mm).map(r=>r.weekEnding));
       assert.ok(html.includes('Month uses the week-ending date.')&&html.includes('Summary and footer remain full-year.'));
       if(month===3) {assert.ok(!dates.includes('2026-04-05'));assert.ok(dates.includes('2026-03-29'));}
       shown.push(...dates);
@@ -129,4 +130,13 @@ test('temporary discovery failures show retry access and recover with bounded re
   studio.tick();assert.equal(calls,1);
   clock=new Date(clock.getTime()+31000);studio.tick();await studio.bootstrap();
   assert.equal(calls,2);assert.equal(studio.isAllowed(),true);assert.equal(studio.due(),true);
+});
+
+test('Saturday labels preserve saved Sunday keys and the immutable source calendar',()=>{
+  const body={mbp:ownerFixture()},sheet=calculateMbp(body.mbp).sheets[0];
+  const working=renderMbpGrid(sheet,'all',{body}),source=renderMbpGrid(sheet,'all',{body,readOnly:true});
+  assert.match(working,/data-week="2026-01-04">2026-01-03/);
+  assert.match(source,/data-week="2026-01-04">2026-01-04/);
+  assert.match(renderMbpGrid(sheet,'all',{body,readOnly:true,sourceCalendar:false}),/data-week="2026-01-04">2026-01-03/);
+  assert.match(working,/Sunday–Saturday/);
 });

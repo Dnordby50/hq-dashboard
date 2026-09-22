@@ -129,6 +129,7 @@ RLS: enabled · rows: 754
 | created_at | timestamptz | no | now() |
 
 PK: id
+Note (2026-09-22): action `historical_booking_date`, entity_type `jobs`, records full before/after job snapshots for the authorized 30-row booking-date reconciliation. after_json includes reconciliation_key and the private source export SHA-256. Live readback verified zero changes outside signed_date.
 Note (2026-09-21): entity_type 'pec_appointments' rows are written by the trigger trg_pec_appointments_audit (see pec_appointments); admin_email holds the ACTOR LABEL for those rows (a staff name, or 'Customer (online booking)', 'Customer via manage link', 'Routemize booking', 'Google Calendar sync', 'System'), auth_user_id the staff uid when there was one, after_json the changed tracked fields plus actor_label / source / title. Partial index idx_audit_log_appointments (entity_id, created_at desc) where entity_type = 'pec_appointments'.
 Security update (2026-09-14): `pec_payment_audit` writes payment_insert/payment_update/payment_delete events with entity_type='pec_payments', payment id, complete before/after payment snapshots, and JWT actor attribution when present. The payment and audit event share a transaction; audit failure rolls back the payment. No-op updates do not add events. Browser audit UPDATE/DELETE remain revoked.
 

@@ -7,7 +7,7 @@ Database migration applied and verified on 2026-09-22 as `20260922173603 sales_p
 - **Lead:** one distinct new contact requesting a quote, represented by a pipeline lead. Use the earliest nondeleted lead `created_at` for a linked customer, separately by business. A website inquiry, phone inquiry entered by staff, estimate appointment, or direct estimate contact must have a lead. Booking, rescheduling, sending, winning, losing and archiving do not create another new contact.
 - **Estimates sent:** one proposal, once, in the Arizona week of its first successful email or text send. Dual-channel delivery and resends add no extra proposal. The current proposal stage does not determine whether it was sent. Presenting an unsigned quote on a device is not an email/text send.
 - A provider-accepted send is a send. It does not claim the recipient opened/read it. A later bounce does not erase the send.
-- Weeks run Monday 00:00 through the next Monday 00:00 in `America/Phoenix`, using a half-open timestamp range. Current-week values are partial. FTP MBP actuals remain manual under the existing coverage policy.
+- Weeks run Sunday 00:00 through the next Sunday 00:00 in `America/Phoenix`, using a half-open timestamp range. Current-week values are partial. FTP MBP actuals remain manual under the existing coverage policy.
 
 ## Owning records
 
@@ -41,3 +41,15 @@ The reviewed September 14–20 repair was applied on September 22: seven leads r
 This is a private service operation, not a customer resend or a browser write. Read the pending attempt's proposal, channel, recipient and start time. Prefer an existing successful communication log's provider ID. If unavailable, use provider history to match the exact recorded recipient, exact proposal URL and attempt time. Absence from an incomplete search is not proof of failure.
 
 With affirmative provider evidence, conditionally update that same `pending` attempt to `sent`, recording the real provider ID and original acceptance time in `completed_at`. The database updates the projection and eligible stages atomically. A definitive rejection can be recorded as `failed`, with its known time and reason. Never move an attempt to failed merely to unlock the send button. Do not edit completed attempts or create a new customer send to repair a metric. Re-read the attempt, first-send row, estimate and lead to verify the outcome before retrying an uncertain database response.
+
+## Historical audit and calendar correction, 2026-09-22
+
+The working Sales Plan and Revenue Produced views show Saturday closing dates and use Sunday-through-Saturday Arizona ranges. Saved Sunday workbook keys remain stable for field addresses and revisions; the immutable original source view retains its source labels. Imported/manual values are preserved with their original source meaning. This changes report grouping, not activity timestamps.
+
+The retrospective audit compared 161 TopCoat customers and 119 jobs with private DripJobs exports (516 YTD lead rows, 328 proposal rows and 148 closed deals). DripJobs proposal totals include 23 records marked Not Sent, so that headline is not a first-delivery count. The export does not alone certify first versus latest delivery. Original inquiry dates differ from many TopCoat import dates. Do not bulk-create historical leads from customer import timestamps or copy external aggregate totals.
+
+Thirty uniquely matched native/imported CRM jobs had their signed_date corrected to the original DripJobs Date Accepted: eight missing dates and 22 import dates. Matching required customer name plus email or phone, exact price, and a single external match. A reviewed private allowlist pinned the current customer, prior date, deal ID and price. The transaction rejected drift, recorded before/after audit_log rows under historical-booking-dates-2026-09-22, and changed no other job fields. No customer communication, owner document, transaction amount, or protected sheet was changed.
+
+Remaining undated jobs prevent certification of historical bookings/completions. The live adapter separately checks date completeness, returns unavailable for affected metric families and retains saved inputs with source-unavailable labels. Absence of a date is not zero activity. Older source coverage, duplicate contacts and first-send gaps remain unresolved; this audit does not certify all historical totals.
+
+Private evidence lives outside the public repository at Documents/Codex/TopCoat-Historical-Audit-2026-09-22. The generic reconciliation emitter defaults to read-only and its isolated PostgreSQL rehearsal verifies replay, rollback on drift, field preservation and duplicate rejection.

@@ -11,10 +11,10 @@ async function allRows(db,path,order='id'){
   }
   throw new Error('Sales source limit reached; no partial counts were returned.');
 }
-function firstFullMonday(value){
+function firstFullSunday(value){
   if(!validTime(value))return null;
   const date=phoenixDay(value),stamp=Date.parse(`${date}T00:00:00Z`);
-  return new Date(stamp+(8-new Date(stamp).getUTCDay())%7*DAY).toISOString().slice(0,10);
+  return new Date(stamp+(7-new Date(stamp).getUTCDay())%7*DAY).toISOString().slice(0,10);
 }
 function canonicalLeads(rows){
   const contacts=new Map();
@@ -56,14 +56,14 @@ function recoverFirstSends({estimates,firstSends,emails,sms,trackingStartedAt=nu
     from:validTime(row.created_at)?phoenixDay(row.created_at):'0000-01-01',
     through:validTime(row.sent_at)?phoenixDay(row.sent_at):'9999-12-31',
   }));
-  const sunday=value=>{const date=phoenixDay(value),stamp=Date.parse(`${date}T00:00:00Z`);return new Date(stamp+(7-new Date(stamp).getUTCDay())%7*DAY).toISOString().slice(0,10);};
+  const weekStart=value=>{const date=phoenixDay(value),stamp=Date.parse(`${date}T00:00:00Z`);return new Date(stamp-new Date(stamp).getUTCDay()*DAY).toISOString().slice(0,10);};
   for(const record of records.values()){
     const estimate=byId.get(record.estimate_id);
     const created=estimate?.created_at;
     const fullyTracked=record.evidence==='first_send_record'&&validTime(created)&&validTime(trackingStartedAt)&&Date.parse(created)>=Date.parse(trackingStartedAt);
     // Historical logs were best-effort. If creation and earliest receipt span
     // weeks, a missing older receipt could move this proposal to another week.
-    if(!fullyTracked&&(!validTime(created)||sunday(created)!==sunday(record.first_sent_at)))unresolved.push({
+    if(!fullyTracked&&(!validTime(created)||weekStart(created)!==weekStart(record.first_sent_at)))unresolved.push({
       estimate_id:record.estimate_id,estimate_number:record.estimate_number,
       from:validTime(created)?phoenixDay(created):'0000-01-01',through:phoenixDay(record.first_sent_at),
     });
@@ -97,24 +97,24 @@ async function fetchSalesMetrics({db,start,until}){
   if(recovered.unresolved.length)warnings.push(`${recovered.unresolved.length} older proposal(s) lack complete first-send evidence. Affected historical weeks remain unverified.`);
   return {leads,missingLeads,firstSends:recovered.records,unresolved:recovered.unresolved,pending,
     leadsAvailable:ok(0)&&ok(1),estimatesAvailable,warnings,
-    coverageStarts:{leads:firstFullMonday(leads.map(r=>r.created_at).sort()[0]),estimates:firstFullMonday(recovered.records.map(r=>r.first_sent_at).sort()[0])}};
+    coverageStarts:{leads:firstFullSunday(leads.map(r=>r.created_at).sort()[0]),estimates:firstFullSunday(recovered.records.map(r=>r.first_sent_at).sort()[0])}};
 }
-function salesWeek(source,monday,sunday){
-  const within=value=>validTime(value)&&phoenixDay(value)>=monday&&phoenixDay(value)<=sunday;
+function salesWeek(source,start,end){
+  const within=value=>validTime(value)&&phoenixDay(value)>=start&&phoenixDay(value)<=end;
   const leads=source.leads.filter(row=>within(row.created_at));
   const estimates=source.firstSends.filter(row=>within(row.first_sent_at));
   const missingLeads=source.missingLeads.filter(row=>within(row.created_at));
-  const unresolved=source.unresolved.filter(row=>row.from<=sunday&&row.through>=monday);
+  const unresolved=source.unresolved.filter(row=>row.from<=end&&row.through>=start);
   // Pending sends for an already counted proposal are resends, so cannot add a new proposal.
   const known=new Map(source.firstSends.map(row=>[row.estimate_id,row.first_sent_at]));
   const pending=source.pending.filter(row=>{
     const first=known.get(row.estimate_id);
     if(first&&validTime(row.started_at)&&Date.parse(first)<=Date.parse(row.started_at))return false;
-    return (!validTime(row.started_at)||phoenixDay(row.started_at)<=sunday)&&(!first||phoenixDay(first)>=monday);
+    return (!validTime(row.started_at)||phoenixDay(row.started_at)<=end)&&(!first||phoenixDay(first)>=start);
   });
   return {leads,estimates,missingLeads,unresolved,pending,available:{
-    leads:source.leadsAvailable&&!!source.coverageStarts.leads&&monday>=source.coverageStarts.leads&&!missingLeads.length,
-    estimates:source.estimatesAvailable&&!!source.coverageStarts.estimates&&monday>=source.coverageStarts.estimates&&!unresolved.length&&!pending.length,
+    leads:source.leadsAvailable&&!!source.coverageStarts.leads&&start>=source.coverageStarts.leads&&!missingLeads.length,
+    estimates:source.estimatesAvailable&&!!source.coverageStarts.estimates&&start>=source.coverageStarts.estimates&&!unresolved.length&&!pending.length,
   }};
 }
 module.exports={fetchSalesMetrics,salesWeek,canonicalLeads,recoverFirstSends,messageEstimateIds,allRows};

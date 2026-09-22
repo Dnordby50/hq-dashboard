@@ -48,12 +48,12 @@ with successful_messages as (
 select estimate_id, brand, customer_id, lead_id, public_token,
   current_estimate_status, estimate_created_at, estimate_deleted_at, first_sent_at, channel,
   provider_id, evidence_ref, matching_success_messages,
-  date_trunc('week', estimate_created_at at time zone 'America/Phoenix')
-    = date_trunc('week', first_sent_at at time zone 'America/Phoenix')
+  date_trunc('week', (estimate_created_at at time zone 'America/Phoenix') + interval '1 day')
+    = date_trunc('week', (first_sent_at at time zone 'America/Phoenix') + interval '1 day')
     as creation_receipt_same_phoenix_week,
   (estimate_created_at > first_sent_at
-    or date_trunc('week', estimate_created_at at time zone 'America/Phoenix')
-      is distinct from date_trunc('week', first_sent_at at time zone 'America/Phoenix'))
+    or date_trunc('week', (estimate_created_at at time zone 'America/Phoenix') + interval '1 day')
+      is distinct from date_trunc('week', (first_sent_at at time zone 'America/Phoenix') + interval '1 day'))
     as first_send_week_reconciliation_required
 from candidates where send_rank = 1
 order by first_sent_at, estimate_id;

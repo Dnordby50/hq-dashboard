@@ -24,6 +24,7 @@ function fixture(overrides={}) {
       const isLead=url.includes('/leads?'),source=isLead?overrides.liveLeads:overrides.liveJobs,params=new URL(url).searchParams;
       if(source) {
         data=source.filter(row=>isLead?(!row.brand||row.brand==='PEC')&&!row.deleted_at:(!row.company||row.company==='prescott-epoxy')&&!row.archived_at&&!row.voided_at);
+        if(params.get('or')==='(signed_date.is.null,and(status.eq.completed,completed_date.is.null))')data=data.filter(row=>row.signed_date==null||row.status==='completed'&&row.completed_date==null);
         const order=params.get('order');
         if(order?.endsWith('.asc')){const field=order.slice(0,-4);data=data.filter(row=>row[field]).sort((a,b)=>a[field].localeCompare(b[field])).slice(0,1);}
         else {
@@ -57,7 +58,7 @@ async function mbpFixture(overrides={}){
   const {ownerFixture}=await import('./owner-test-fixture.js');
   const body={status:'draft',source:{file:'Synthetic workbook'},mbp:ownerFixture()};
   const docMap={'mbp:2026':{revision:3,body}},revisions=[];
-  const liveLeads=[{id:'lead-start',created_at:'2026-07-11T12:00:00Z'},{id:'lead-sunday',created_at:'2026-09-07T06:59:59Z'},{id:'lead-monday',created_at:'2026-09-07T07:00:00Z'},{id:'lead-future',created_at:'2026-09-08T12:00:00Z'},{id:'lead-ftp',brand:'FTP',created_at:'2026-09-07T08:00:00Z'}];
+  const liveLeads=[{id:'lead-start',created_at:'2026-07-11T12:00:00Z'},{id:'lead-saturday',created_at:'2026-09-06T06:59:59Z'},{id:'lead-sunday',created_at:'2026-09-06T07:00:00Z'},{id:'lead-future',created_at:'2026-09-08T12:00:00Z'},{id:'lead-ftp',brand:'FTP',created_at:'2026-09-07T08:00:00Z'}];
   const liveJobs=[{id:'job-start',signed_date:'2026-05-06',completed_date:'2026-05-22',price:100,dripjobs_deal_id:'first'},{id:'job-prior',signed_date:'2026-09-03',completed_date:'2026-09-04',price:1100,dripjobs_deal_id:'prior'},{id:'job-current',signed_date:'2026-09-07',completed_date:null,price:1200,dripjobs_deal_id:'current'},{id:'job-future',signed_date:'2026-09-08',completed_date:null,price:1300,dripjobs_deal_id:'future'},{id:'job-ftp',company:'finishing-touch',signed_date:'2026-09-07',price:9000}];
   const save=async({opts})=>{const row=JSON.parse(opts.body),doc={doc_key:row.p_doc_key,revision:row.p_expected_revision+1,body:row.p_body};docMap[row.p_doc_key]=doc;revisions.push({...doc,auth_user_id:row.p_auth_user_id,request_id:row.p_request_id});return {ok:true,revision:doc.revision,replayed:false};};
   return {body,docMap,revisions,...fixture({docMap,revisions,liveLeads,liveJobs,save,...overrides})};
@@ -242,11 +243,11 @@ test('AI sends only saved goals, KPI summaries and explicitly selected notes to 
 test('PEC CRM preview uses Phoenix weeks and distinct date definitions, leaves unsupported metrics unknown',async()=>{
   const f=await mbpFixture(),e=event('crm-week');e.queryStringParameters.week='2026-09-06';
   const r=await f.handler(e),body=JSON.parse(r.body);assert.equal(r.statusCode,200);
-  assert.equal(body.actual.leads,1);assert.equal(body.actual.bookedDollars,1100);assert.equal(body.actual.producedDollars,1100);
+  assert.equal(body.start,'2026-08-30');assert.equal(body.end,'2026-09-05');assert.equal(body.actual.leads,1);assert.equal(body.actual.bookedDollars,1100);assert.equal(body.actual.producedDollars,1100);
   assert.equal(body.actual.estimates,null);assert.equal(body.actual.laborHours,null);
-  assert.ok(f.calls.some(c=>c.url.includes('2026-08-31T07:00:00Z')));
-  assert.ok(f.calls.some(c=>c.url.includes('signed_date.gte.2026-08-31')));
-  assert.ok(f.calls.some(c=>c.url.includes('completed_date.gte.2026-08-31')));
+  assert.ok(f.calls.some(c=>c.url.includes('2026-08-30T07:00:00Z')));
+  assert.ok(f.calls.some(c=>c.url.includes('signed_date.gte.2026-08-30')));
+  assert.ok(f.calls.some(c=>c.url.includes('completed_date.gte.2026-08-30')));
   assert.ok(f.calls.every(c=>c.opts.method!=='PATCH'&&!c.url.includes('pec_owner_save_document')));
   const missing=await (await mbpFixture({liveJobs:[{id:'start',signed_date:'2026-05-01',completed_date:'2026-05-01',price:100},{id:'job',signed_date:'2026-09-02',completed_date:'2026-09-02',price:null}]})).handler(e);assert.equal(JSON.parse(missing.body).actual.bookedDollars,null);
   for(const week of ['2026-09-13','2026-09-05','2026-02-30','bad']){e.queryStringParameters.week=week;assert.equal((await fixture().handler(e)).statusCode,400);}
@@ -261,10 +262,10 @@ test('MBP live feed batches source reads, uses Phoenix weeks, and never fills un
   assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-12').available.leads,false);
   assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-12').actual.leads,null);
   assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-19').actual.leads,0);
-  assert.equal(feed.coverageStarts.leads,'2026-07-13');assert.equal(feed.coverageStarts.jobsBooked,'2026-05-11');assert.equal(feed.coverageStarts.producedDollars,'2026-05-25');
+  assert.equal(feed.coverageStarts.leads,'2026-07-12');assert.equal(feed.coverageStarts.jobsBooked,'2026-05-10');assert.equal(feed.coverageStarts.producedDollars,'2026-05-24');
   assert.ok(feed.weeks.every(w=>w.weekEnding<='2026-09-13'&&!w.available.estimates&&!w.available.laborHours));
-  assert.equal(f.calls.filter(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')).length,4);
-  assert.ok(f.calls.some(c=>c.url.includes('created_at=gte.2025-12-29T07:00:00Z')));
+  assert.equal(f.calls.filter(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')).length,5);
+  assert.ok(f.calls.some(c=>c.url.includes('created_at=gte.2025-12-28T07:00:00Z')));
   assert.ok(!f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
 });
 
@@ -405,4 +406,11 @@ test('oversized owner records and database size rejections return a clear 413 wi
   assert.equal(unknown.statusCode,503);
   assert.match(JSON.parse(unknown.body).error,/could not be confirmed/);
   assert.doesNotMatch(JSON.parse(unknown.body).error,/22023|Invalid owner document/);
+});
+
+test('undated jobs never silently disappear from certified booking or completed-work totals',async()=>{
+  const f=await mbpFixture({liveJobs:[{id:'dated',signed_date:'2026-05-06',completed_date:'2026-05-22',price:100},{id:'undated',signed_date:null,completed_date:null,status:'completed',price:900}]}),feed=JSON.parse((await f.handler(liveEvent(2026))).body);
+  assert.ok(feed.weeks.every(row=>row.actual.jobsBooked===null&&row.actual.bookedDollars===null&&row.actual.producedDollars===null));
+  assert.ok(feed.warnings.some(w=>w.includes('no verified booking date')));
+  assert.ok(feed.warnings.some(w=>w.includes('no verified completion date')));
 });

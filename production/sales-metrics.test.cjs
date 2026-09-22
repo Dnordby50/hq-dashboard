@@ -41,11 +41,11 @@ test('unmapped new contact blocks a falsely low lead count, while estimates stil
   const source=await load(data),week=salesWeek(source,'2026-09-14','2026-09-20');
   assert.equal(week.available.leads,false);assert.equal(week.missingLeads.length,1);assert.equal(week.available.estimates,true);assert.equal(week.estimates.length,1);
 });
-test('Phoenix boundary assigns Sunday night and Monday morning to separate weeks',async()=>{
-  const data=base();data.pec_email_log=[email('late','2026-09-21T06:59:59Z')];
-  let source=await load(data);assert.equal(salesWeek(source,'2026-09-14','2026-09-20').estimates.length,1);
-  data.pec_email_log=[email('next','2026-09-21T07:00:00Z')];source=await load(data);
-  assert.equal(salesWeek(source,'2026-09-14','2026-09-20').estimates.length,0);assert.equal(salesWeek(source,'2026-09-21','2026-09-27').estimates.length,1);
+test('Phoenix boundary assigns Saturday night and Sunday morning to separate weeks',async()=>{
+  const data=base();data.pec_email_log=[email('late','2026-09-20T06:59:59Z')];
+  let source=await load(data);assert.equal(salesWeek(source,'2026-09-13','2026-09-19').estimates.length,1);
+  data.pec_email_log=[email('next','2026-09-20T07:00:00Z')];source=await load(data);
+  assert.equal(salesWeek(source,'2026-09-13','2026-09-19').estimates.length,0);assert.equal(salesWeek(source,'2026-09-20','2026-09-26').estimates.length,1);
 });
 test('uncertain first delivery blocks counts, but pending resend after known first delivery does not',async()=>{
   const data=base();data.pec_estimate_send_attempts=[{id:'attempt',estimate_id:estimate.id,started_at:'2026-09-22T15:00:00Z',status:'pending'}];

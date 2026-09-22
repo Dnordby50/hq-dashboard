@@ -81,10 +81,10 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
         if (action === 'crm-week') {
           const week = event.queryStringParameters?.week || '';
           const endDate = new Date(`${week}T00:00:00Z`);
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(week) || !Number.isFinite(endDate.getTime()) || endDate.toISOString().slice(0,10) !== week || endDate.getUTCDay() !== 0 || week > clock.priorWeekEnding) throw error(400, 'Choose a completed Sunday-ending week.');
-          const start = new Date(endDate.getTime()-6*86400000).toISOString().slice(0,10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(week) || !Number.isFinite(endDate.getTime()) || endDate.toISOString().slice(0,10) !== week || endDate.getUTCDay() !== 0 || week > clock.day) throw error(400, 'Choose a completed Sunday-through-Saturday reporting week.');
+          const start = new Date(endDate.getTime()-7*86400000).toISOString().slice(0,10);
           const feed=await fetchMbpLive({db,weekEndings:[week],now:now()});
-          return reply(200,{week,start,queriedAt:feed.queriedAt,
+          return reply(200,{week,start,end:new Date(endDate.getTime()-86400000).toISOString().slice(0,10),queriedAt:feed.queriedAt,
             description:'PEC new contacts by first pipeline inquiry date and proposals by first successful send, in Arizona time. Each contact/proposal counts once. Resends and later stages do not add counts. Missing evidence stays unavailable.',
             actual:feed.weeks[0]?.actual,available:feed.weeks[0]?.available,warnings:feed.warnings});
         }
