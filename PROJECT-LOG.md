@@ -1,3 +1,11 @@
+## [2026-09-22 09:45 MST] investigation: four stale leads in Estimate Scheduled (read-only)
+By: Cowork
+What: Dylan asked why four Estimate Scheduled leads never made it onto the estimate calendar. Read-only SQL on leads, lead_events, pec_appointments, estimates, pec_prod_jobs, customers; SalesAsk name search. No data or code changed.
+Findings: The four are Larry Bowles, Jay McCoy, Daniel Northrup, Brent Boyer. Each HAS a pec_appointments row (on_site_estimate, source routemize, rep Aron Bronson, now inactive) dated 2026-07-30 to 2026-08-03. They are on the TopCoat Appointments calendar, but in those past weeks. None was pushed to Google (google_event_id null; Aron had no Google connection). None has a TopCoat estimate, and none has a SalesAsk recording. Bowles sold: pec_prod_jobs MANUAL-20260803-100639-ZR05, completed 2026-08-20, $1,800. The lead never moved because the job was created manually without an estimate. McCoy, Northrup, Boyer: no estimate, job, or note after the visit. They are orphaned from Aron's departure (2026-08-12).
+Systemic: 40 past on_site_estimate appointments are still status scheduled (19 from Routemize), and 0 appointments have ever been marked completed. Nothing moves a lead out of estimate_scheduled when the visit date passes, and nothing moves a lead to accepted when a job is created without an estimate.
+Next steps: Dylan decides the disposition of the 4 leads (Bowles -> accepted; the other three need a callback or a Lost disposition). A build prompt for a past-visit / no-estimate flag is optional and was not written.
+Handoff to Cowork: None. Handoff to Dylan: see above.
+
 ## [2026-09-22 09:31 MST] portal: add private read diagnostics for production verification
 By: Codex
 
