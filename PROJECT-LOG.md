@@ -1,3 +1,15 @@
+## [2026-09-22 09:31 MST] portal: add private read diagnostics for production verification
+By: Codex
+
+Changed: Added server-only static resource, HTTP status and database code diagnostics. Raw error messages, customer data, query strings and portal tokens are discarded. Public failure responses remain generic.
+
+Evidence: ba25437 is Published on Netlify. A valid empty customer returns 200; a signed customer with existing documents still returns 503. Read-only SQL confirms required columns/grants and valid financial values; the same customer data replays successfully through the local handler with actual selected-column projections. Anonymous no-row REST probes validate every child query shape. Production-only failure remains under investigation; this diagnostic identifies the failing request without disclosing private data.
+
+Validation: Full npm test/posttest passed including 64 portal cases and a diagnostic redaction regression. Both touched CJS syntax checks, source/JSON checks (6 dashboard scripts) and git diff --check passed. No customer mutations.
+Next steps: Publish, inspect the redacted failing resource, fix the remaining live failure and verify the real customer portal before closing the release.
+Handoff to Cowork: None. Codex remains release owner.
+Handoff to Dylan: Authorized push and verification remain in progress.
+
 ## [2026-09-22 09:21 MST] release: booking prerequisite applied; portal scalar filter correction
 By: Codex
 

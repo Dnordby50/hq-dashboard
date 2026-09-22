@@ -95,6 +95,19 @@ test('invalid/missing tokens and malformed requests never read customer records'
   assert.equal(fx.calls.filter(call => call.method === 'GET').length, 0);
 });
 
+test('read diagnostics retain only resource and protocol codes, never customer secrets', async () => {
+  const diagnostics = [];
+  const handler = createHandler({
+    sb: async () => { throw new Error('Supabase POST /rpc/pec_take_rate_limit?token=' + TOKEN + ' failed (400): {"code":"22P02","message":"PRIVATE CUSTOMER"}'); },
+    reportError: diagnostic => diagnostics.push(diagnostic),
+  });
+  const result = await handler(event());
+  assert.equal(result.statusCode, 503);
+  assert.deepEqual(diagnostics, [{ resource: '/rpc/pec_take_rate_limit', http: '400', code: '22P02' }]);
+  assert.ok(!JSON.stringify([result, diagnostics]).includes(TOKEN));
+  assert.ok(!JSON.stringify([result, diagnostics]).includes('PRIVATE CUSTOMER'));
+});
+
 test('scalar UUID and brand filters use PostgREST equality without list-literal quotes', async () => {
   const fx = fixture(), result = await body(fx);
   assert.equal(result.jobs.length, 1);

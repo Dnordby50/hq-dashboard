@@ -331,7 +331,22 @@ async function loadBundle(db, token, now) {
 
 function createHandler(deps = {}) {
   const sourceDb = deps.sb || sb;
-  const db = (method, path, payload) => sourceDb(method, path, payload, { timeoutMs: 8000 });
+  const db = async (method, path, payload) => {
+    try { return await sourceDb(method, path, payload, { timeoutMs: 8000 }); }
+    catch (error) {
+      // Only static resource names and protocol codes may reach diagnostics.
+      // Never retain a query, payload, database message or customer identifier.
+      const resource = path.split('?')[0];
+      const diagnostic = new Error('Portal read failed');
+      diagnostic.portalRead = {
+        resource: /^\/(?:rpc\/)?[a-z_]+$/.test(resource) ? resource : 'unknown',
+        http: String(error?.message || '').match(/failed \((\d{3})\)/)?.[1] || null,
+        code: String(error?.message || '').match(/"code"\s*:\s*"([A-Z0-9]{5,12})"/)?.[1] || null,
+      };
+      throw diagnostic;
+    }
+  };
+  const reportError = deps.reportError || (diagnostic => console.error('customer_portal_read_failed', diagnostic));
   const now = deps.now || (() => new Date());
   return async event => {
     const method = event.httpMethod || 'GET';
@@ -354,9 +369,10 @@ function createHandler(deps = {}) {
       }
       const bundle = await loadBundle(db, token, now());
       return bundle ? response(200, bundle) : response(404, { error: 'Portal not found. Check your link.' });
-    } catch (_) {
+    } catch (error) {
       // Database errors can include bearer tokens in query paths. Return and
       // log no raw error text; a failed read must never look like $0 due.
+      reportError(error?.portalRead || { resource: 'projection', http: null, code: null });
       return response(503, { error: 'We could not load your portal. Please try again or contact the office.' });
     }
   };
