@@ -1617,18 +1617,36 @@
     {
       "name": "Customer portal",
       "area": "portal",
-      "description": "Customer portal with project details, scheduled-date descriptions, photos, colors and referrals. A signed estimate is displayed read-only and counts as signed even when the legacy job confirmation flag is unset, so the customer is not asked to sign the project again. Estimate-signed customers can confirm catalog colors separately without another signature. Legacy unsigned projects retain their signature flow. Signature/color submission rechecks the current token-scoped project, prevents repeated clicks, and ignores detached controls. The database confirmation wrapper also refuses a new project signature once a linked, nondeleted accepted estimate has a signing timestamp, while preserving identical retries of previously confirmed jobs. Estimate/invoice history navigation and the broader portal redesign are separate proposed work.",
+      "description": "Customer hub using the light/orange TopCoat UI with Home, Estimates, Invoices, Refer friends and Reviews navigation. Shared quote history retains signed and past estimates; accepted signatures are read-only even when the legacy job confirmation flag is unset. Invoice history reuses the current installment ask and distinguishes paid, currently due, due later and processing bank payments. Scheduled dates use native CRM links, estimate production-job links and unambiguous legacy links, including individual schedule days; the progress tracker is removed. Token-scoped server reads keep drafts, costs, internal notes and other customers private, with explicit history pagination and visible read failures. Existing project photos, warranty, separate catalog color confirmation and legacy unsigned signatures remain. Referrals keep drafts and show the customer their submission history. Reviews open configured brand-specific Google and Yelp destinations directly. Settings > Customer portal controls referrals/reviews and review destinations. Staff share the existing customer-profile portal link. The database blocks repeat project signatures after accepted estimate signing; unrelated document tokens never grant account-wide portal access.",
       "code": {
         "indexHtml": [
           "renderCustomerPortal",
           "portalJobDetail",
-          "portalJobIsSigned"
+          "portalJobIsSigned",
+          "portalEstimatesHtml",
+          "portalInvoicesHtml",
+          "portalReferralForm",
+          "renderSettingsPortal"
+        ],
+        "netlifyFunctions": [
+          "pec-customer-portal.cjs",
+          "_pec-installments.cjs"
         ]
       },
       "tables": [
         "customers",
         "jobs",
-        "estimates"
+        "estimates",
+        "leads",
+        "pec_job_ar",
+        "pec_invoice_installments",
+        "pec_payments",
+        "pec_stripe_pending",
+        "pec_prod_jobs",
+        "pec_prod_job_schedule_days",
+        "referrals",
+        "pec_brand_identity",
+        "settings"
       ],
       "since": "2026-04"
     },

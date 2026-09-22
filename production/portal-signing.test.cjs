@@ -4,17 +4,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { JSDOM } = require('../apps/estimator/node_modules/jsdom');
 const { estimatePage } = require('../netlify/functions/pec-public-estimate.cjs')._internals;
 
 // Exercise the shipped portal renderer and its real event handlers with only
 // synthetic token-scoped responses. No customer records or network writes.
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const start = html.indexOf('function portalFootHtml(company) {');
-const end = html.indexOf('\nasync function portalReferralForm(', start);
+const start = html.indexOf('function portalFootHtml(');
+const end = html.indexOf('// Helpers\n', start);
 assert.ok(start >= 0 && end > start, 'Portal source boundaries exist');
 const source = html.slice(start, end);
 const clone = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const openDoms = new Set();
+test.afterEach(() => { for (const dom of openDoms) dom.window.close(); openDoms.clear(); });
 const signedEstimate = {
   estimate_number: 100001, signed_name: 'Synthetic Customer',
   signed_at: '2026-09-21T12:00:00Z', public_token: 'synthetic-estimate-token',
@@ -40,106 +43,86 @@ function harness(overrides = {}, catalogData = null) {
   const latest = {
     customer: { id: 'customer-1', name: 'Synthetic Customer', company: 'prescott-epoxy' },
     jobs: [clone(job)], referral_reward_amount: '50', statusDescriptions: {},
+    estimates: [], invoices: [], referrals: [], brand: {}, config: {},
   };
-  const ids = new Map(), calls = [], alerts = [];
-  let rendered = '', grids = [], beforeRpc = async () => {};
-  function node(id = '') {
-    const listeners = new Map();
+  const dom = new JSDOM('<!doctype html><body class="pec-portal-mode"><main id="customerPortalRoot"></main>', {
+    url: 'https://portal.test/?portal=synthetic-portal-token#job/job-1', runScripts: 'outside-only', pretendToBeVisual: true,
+  });
+  openDoms.add(dom);
+  const context = dom.window, calls = [], alerts = [], listeners = new WeakMap(), canvasStates = new WeakMap();
+  let beforeRpc = async () => {};
+  const originalAddListener = context.EventTarget.prototype.addEventListener;
+  context.EventTarget.prototype.addEventListener = function(event, callback, options) {
+    const own = listeners.get(this) || new Map();
+    own.set(event, callback); listeners.set(this, own);
+    return originalAddListener.call(this, event, callback, options);
+  };
+  context.Element.prototype.emit = async function(event, values = {}) {
+    return listeners.get(this)?.get(event)?.call(this, { target: this, clientX: 10, clientY: 10, preventDefault() {}, ...values });
+  };
+  context.HTMLCanvasElement.prototype.getBoundingClientRect = () => ({ width: 300, height: 160, left: 0, top: 0 });
+  context.HTMLCanvasElement.prototype.getContext = function() {
+    let state = canvasStates.get(this);
+    if (!state) { state = { ink: false, fills: 0, strokes: 0, points: [] }; canvasStates.set(this, state); }
     return {
-      id, style: {}, dataset: {}, disabled: false, textContent: '',
-      addEventListener(event, callback) { listeners.set(event, callback); },
-      async emit(event, values = {}) {
-        return listeners.get(event)?.({ clientX: 10, clientY: 10, preventDefault() {}, ...values });
-      },
-      getBoundingClientRect: () => ({ width: 300, height: 160, left: 0, top: 0 }),
-      getContext: () => ({ scale() {}, fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {} }),
-      toDataURL: () => 'data:image/png;base64,c3ludGhldGlj',
-      removeAttribute(name) { if (name === 'data-sel') delete this.dataset.sel; },
-      setAttribute(name, value) { if (name === 'data-sel') this.dataset.sel = value; },
+      scale() {}, beginPath() {},
+      fillRect() { state.ink = false; state.fills++; },
+      moveTo(x, y) { state.points.push(['move', x, y]); },
+      lineTo(x, y) { state.points.push(['line', x, y]); },
+      stroke() { state.ink = true; state.strokes++; },
     };
-  }
-  let back = node();
-  const root = {
-    style: {},
-    get innerHTML() { return rendered; },
-    set innerHTML(value) {
-      rendered = value;
-      ids.clear();
-      for (const match of value.matchAll(/\bid="([^"]+)"/g)) {
-        const element = node(match[1]);
-        element.disabled = new RegExp(`id="${match[1]}"[^>]*\\bdisabled`).test(value);
-        ids.set(match[1], element);
-      }
-      back = node();
-      grids = value.includes('data-pick-grid') ? (catalogData?.areas || []).flatMap(area => area.slots.map(slot => {
-        const grid = node();
-        grid.dataset = { area: area.id, slot: slot.recipe_slot_id };
-        grid.options = slot.options.map(option => {
-          const swatch = node();
-          swatch.dataset.prod = option.product_id;
-          if (slot.selected_product_id === option.product_id) swatch.dataset.sel = '1';
-          swatch.closest = selector => selector === '[data-prod]' ? swatch : null;
-          return swatch;
-        });
-        grid.querySelector = () => grid.options.find(option => option.dataset.sel === '1') || null;
-        grid.querySelectorAll = () => grid.options;
-        return grid;
-      })) : [];
-    },
-    contains(element) { return [...ids.values()].includes(element); },
-    querySelector: selector => selector === 'a[href="#"]' ? back : null,
-    querySelectorAll: selector => selector === '[data-pick-grid]' ? grids : [],
   };
+  context.HTMLCanvasElement.prototype.toDataURL = function() {
+    return canvasStates.get(this)?.ink ? 'data:image/png;base64,c3ludGhldGlj' : 'data:image/png;base64,Ymxhbms=';
+  };
+  context.$ = id => context.document.getElementById(id);
+  context.esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  context.fmtDate = value => String(value ?? '');
+  context.fmtMoney = value => `$${value}`;
+  context.alert = message => alerts.push(message);
+  context.fetch = async () => ({ ok: true, status: 200, json: async () => clone(latest) });
   const query = new Proxy({}, { get: (_target, key) => key === 'then'
     ? (resolve, reject) => Promise.resolve({ data: [], error: null }).then(resolve, reject)
     : () => query });
-  const context = vm.createContext({
-    console, Promise, Map,
-    $: id => id === 'customerPortalRoot' ? root : ids.get(id) || null,
-    document: { getElementById: id => ids.get(id) || null, body: { classList: { toggle() {} } } },
-    location: { hash: '#job/job-1' }, window: { addEventListener() {} }, devicePixelRatio: 1,
-    esc: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
-    fmtDate: value => String(value ?? ''), fmtMoney: value => `$${value}`,
-    alert: message => alerts.push(message),
-    supabase: {
-      from: () => query,
-      async rpc(name, payload) {
-        calls.push({ name, payload: clone(payload) });
-        const override = await beforeRpc(name, payload);
-        if (override) return override;
-        if (name === 'get_portal_data') return { data: clone(latest), error: null };
-        if (name === 'get_portal_job_catalog') return { data: clone(catalogData), error: null };
-        if (name === 'portal_set_area_colors') latest.jobs[0].colors_confirmed = true;
-        else if (name === 'portal_confirm_job') {
-          latest.jobs[0].confirmed = true;
-          latest.jobs[0].signature_data = payload.p_signature;
-          latest.jobs[0].confirmed_at = '2026-09-21T12:30:00Z';
-        } else throw new Error(`Unexpected RPC ${name}`);
-        return { data: { ok: true }, error: null };
-      },
+  context.supabase = {
+    from: () => query,
+    async rpc(name, payload) {
+      calls.push({ name, payload: clone(payload) });
+      const override = await beforeRpc(name, payload);
+      if (override) return override;
+      if (name === 'get_portal_data') return { data: clone(latest), error: null };
+      if (name === 'get_portal_job_catalog') return { data: clone(catalogData), error: null };
+      if (name === 'portal_set_area_colors') latest.jobs[0].colors_confirmed = true;
+      else if (name === 'portal_confirm_job') {
+        latest.jobs[0].confirmed = true;
+        latest.jobs[0].signature_data = payload.p_signature;
+        latest.jobs[0].confirmed_at = '2026-09-21T12:30:00Z';
+      } else throw new Error(`Unexpected RPC ${name}`);
+      return { data: { ok: true }, error: null };
     },
-  });
-  vm.runInContext(source, context);
+  };
+  vm.runInContext(source, dom.getInternalVMContext());
+  const root = context.$('customerPortalRoot');
   return {
-    root, latest, calls, alerts, context,
+    root, latest, calls, alerts, context, canvasState: canvas => canvasStates.get(canvas),
     render: () => context.portalJobDetail('synthetic-portal-token', 'job-1', clone(latest)),
     renderHome: () => { context.location.hash = ''; return context.renderCustomerPortal('synthetic-portal-token'); },
-    element: id => ids.get(id),
+    element: id => context.$(id),
     beforeRpc(callback) { beforeRpc = callback; },
     writes: () => calls.filter(call => call.name.startsWith('portal_')),
     async ink() {
-      const canvas = ids.get('pecPortalSig');
+      const canvas = context.$('pecPortalSig');
       assert.ok(canvas, 'An unsigned project has a canvas');
       await canvas.emit('pointerdown');
       await canvas.emit('pointermove', { clientX: 20, clientY: 20 });
       await canvas.emit('pointerup');
     },
-    pick: () => grids[0].emit('click', { target: grids[0].options[0] }),
+    pick: () => root.querySelector('[data-pick-grid]').emit('click', { target: root.querySelector('[data-prod]') }),
   };
 }
 
-test('accepted estimate is read-only even when legacy confirmed is false or signer name is absent', async () => {
-  for (const signature of [signedEstimate, { ...signedEstimate, signed_name: null }]) {
+test('accepted estimate is read-only for current or legacy document links and a missing signer name', async () => {
+  for (const signature of [signedEstimate, { ...signedEstimate, signed_name: null }, { ...signedEstimate, public_token: undefined, url: '/e/synthetic-estimate-token' }]) {
     const h = harness({ estimate_signature: signature });
     await h.render();
     assert.match(h.root.innerHTML, /Your signed estimate/);
@@ -147,7 +130,7 @@ test('accepted estimate is read-only even when legacy confirmed is false or sign
     assert.doesNotMatch(h.root.innerHTML, /pecPortalSig|pecSigConfirm|Sign your project/);
     assert.equal(h.writes().length, 0);
     await h.renderHome();
-    assert.match(h.root.innerHTML, /Signed ✓/);
+    assert.match(h.root.innerHTML, /Signed/);
   }
 });
 
@@ -269,6 +252,41 @@ test('navigating away while freshness is pending leaves the new screen intact an
   await button.emit('click');
   assert.equal(h.writes().length, 0);
   assert.match(h.root.innerHTML, /Other screen/);
+});
+
+test('resizing preserves actual signature ink and scales saved strokes before confirmation', async () => {
+  const h = harness();
+  await h.render();
+  const canvas = h.element('pecPortalSig'), button = h.element('pecSigConfirm');
+  h.context.dispatchEvent(new h.context.Event('resize'));
+  assert.equal(button.disabled, true, 'A resized blank canvas is still unsigned');
+  await h.ink();
+  const bitmap = h.canvasState(canvas), beforeStrokes = bitmap.strokes;
+  canvas.getBoundingClientRect = () => ({ width: 600, height: 320, left: 0, top: 0 });
+  h.context.dispatchEvent(new h.context.Event('resize'));
+  assert.equal(bitmap.strokes, beforeStrokes + 1, 'The cleared bitmap is redrawn from saved strokes');
+  assert.deepEqual(bitmap.points.slice(-2), [['move', 20, 20], ['line', 40, 40]], 'Signature geometry scales with the new canvas');
+  assert.equal(bitmap.ink, true);
+  assert.equal(button.disabled, false);
+  await button.emit('click'); await tick();
+  const signature = h.writes().find(call => call.name === 'portal_confirm_job');
+  assert.equal(signature.payload.p_signature, 'data:image/png;base64,c3ludGhldGlj', 'The submission contains ink, not the resized blank bitmap');
+});
+
+test('cleared signatures stay blank after resizing and detached canvases stop receiving resize writes', async () => {
+  const h = harness();
+  await h.render(); await h.ink();
+  const canvas = h.element('pecPortalSig'), button = h.element('pecSigConfirm');
+  await h.element('pecSigClear').emit('click');
+  h.context.dispatchEvent(new h.context.Event('resize'));
+  assert.equal(h.canvasState(canvas).ink, false);
+  assert.equal(button.disabled, true);
+  await button.emit('click');
+  assert.equal(h.writes().length, 0);
+  await h.renderHome();
+  const fillCount = h.canvasState(canvas).fills;
+  h.context.dispatchEvent(new h.context.Event('resize'));
+  assert.equal(h.canvasState(canvas).fills, fillCount, 'Navigation removed the detached canvas resize listener');
 });
 
 test('signed estimate link still shows the existing read-only contract and deposit payment action', () => {

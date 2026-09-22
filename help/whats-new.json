@@ -1,5 +1,18 @@
 [
   {
+    "id": "customer-portal-quotes-invoices-referrals",
+    "date": "2026-09-22",
+    "title": "A customer portal for quotes, payments and staying in touch.",
+    "summary": "The customer portal now matches TopCoat with clear navigation for estimates, invoices, referrals and reviews. Installation dates replace the progress tracker, and signed estimates remain read-only.",
+    "howto": [
+      "Open a customer profile and use Copy portal link to share their portal. Customers can reopen their shared and signed quotes under Estimates.",
+      "Invoices shows the amount currently due, payment history, future amounts and bank payments that are processing. Review & pay opens the existing secure invoice page.",
+      "Home and project details show scheduled installation dates. The office remains the contact for arrival times, preparation and schedule changes.",
+      "Refer friends lets customers send a friend or family member and view previous referrals. Reviews opens the business Google review page or Find us on Yelp.",
+      "In Settings, Customer portal, turn referrals and reviews on or off. Under Advanced, set Google and Yelp destinations separately for each business. Blank destinations stay hidden."
+    ]
+  },
+  {
     "id": "portal-signed-estimate-no-resign",
     "date": "2026-09-21",
     "title": "Signed estimates stay signed in the customer portal.",
