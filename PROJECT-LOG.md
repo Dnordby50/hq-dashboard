@@ -13994,3 +13994,7 @@ Handoff to Dylan: Specific actions needed, or "None"
 
 ---
 END TEMPLATE
+## [2026-09-22 15:01 MST] sales: record historical reporting release verification
+By: Codex
+
+Release ce21562d3e752c62d39e5ed18fda9ac6be677c3c was fast-forwarded into shared main and pushed. Four live assets (owner-studio.js, owner-mbp-inputs.js, owner-mbp-ui.js, and What's New) matched the committed byte hashes at 18:22:52 UTC. The authenticated owner Sales Plan showed Saturday closing dates, the Sunday-through-Saturday Arizona rule, and server warnings for 10 missing booking dates, seven missing completion dates, three proposals with incomplete first-send evidence, and missing pipeline contacts. This verifies the reporting release, not complete historical reconciliation. The remaining lead backfill depends on Dylan's returning-customer counting decision and verified source dates. Private verification and remaining gaps are recorded in /Users/dylannordby/Documents/Codex/TopCoat-Historical-Audit-2026-09-22/audit-summary.md. No additional database or owner document writes accompanied this verification entry.
