@@ -34,6 +34,8 @@ New contact records without a pipeline lead also make their affected lead week u
 3. Run `missing-pipeline-leads-dry-run.sql` with explicitly reviewed dates. The list includes supporting appointment/proposal/send evidence and is not permission to insert all customers. Review import-only/ambiguous contacts and preserve the actual first-contact date. A separately authorized backfill must be idempotent, support dry-run, and link the existing appointments/estimates to the new canonical lead without inventing a visit, send or sale. Reconcile the derived current stage from actual evidence. Do not enroll historical contacts into a fresh nurture campaign.
 4. Run `first-send-evidence-dry-run.sql` for historical review. Do not certify an across-week earliest receipt as first without evidence. No historical send rewrite is required for same-week reconstructed counts; the reporting adapter reads the receipts directly.
 
+The reviewed September 14–20 repair was applied on September 22: seven leads restored with original contact dates, six proposals and three appointments linked. See `week-2026-09-14-pipeline-reconciliation.md` and the default-read-only SQL emitter `scripts/reconcile-sales-week-2026-09-14.cjs`. Other incomplete historical records remain unverified.
+
 ## Pending send recovery
 
 This is a private service operation, not a customer resend or a browser write. Read the pending attempt's proposal, channel, recipient and start time. Prefer an existing successful communication log's provider ID. If unavailable, use provider history to match the exact recorded recipient, exact proposal URL and attempt time. Absence from an incomplete search is not proof of failure.
