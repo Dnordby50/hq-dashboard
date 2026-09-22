@@ -3727,6 +3727,13 @@
           "name": "estimate_choice_no_pick_sign_text"
         }
       ]
+    },
+    {
+      "file": "20260922040822_portal_signed_estimate_guard.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": "portal_confirm_job refuses a second project signature after estimate acceptance",
+      "artifacts": []
     }
   ],
   "knownTables": [

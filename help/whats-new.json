@@ -1,5 +1,16 @@
 [
   {
+    "id": "portal-signed-estimate-no-resign",
+    "date": "2026-09-21",
+    "title": "Signed estimates stay signed in the customer portal.",
+    "summary": "Customers with an accepted, signed estimate see their signed agreement without another project signature form. Color selections can still be confirmed separately.",
+    "howto": [
+      "Open the customer portal and choose the project. The signed estimate shows the recorded name, date and a link to view the agreement.",
+      "When catalog colors need confirmation, choose the colors and use Confirm colors. No second estimate signature is required.",
+      "Older projects without a signed estimate retain their existing signing flow."
+    ]
+  },
+  {
     "id": "estimate-customer-chooses-one",
     "date": "2026-09-21",
     "title": "Let the customer choose between options.",

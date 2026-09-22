@@ -1617,13 +1617,19 @@
     {
       "name": "Customer portal",
       "area": "portal",
-      "description": "A customer-facing portal, styled to the TopCoat brand, where the customer picks their flake color and signs off, sees an editable per-status project description, and views per-area budget details. Portal activity raises notifications on the internal side.",
+      "description": "Customer portal with project details, scheduled-date descriptions, photos, colors and referrals. A signed estimate is displayed read-only and counts as signed even when the legacy job confirmation flag is unset, so the customer is not asked to sign the project again. Estimate-signed customers can confirm catalog colors separately without another signature. Legacy unsigned projects retain their signature flow. Signature/color submission rechecks the current token-scoped project, prevents repeated clicks, and ignores detached controls. The database confirmation wrapper also refuses a new project signature once a linked, nondeleted accepted estimate has a signing timestamp, while preserving identical retries of previously confirmed jobs. Estimate/invoice history navigation and the broader portal redesign are separate proposed work.",
       "code": {
         "indexHtml": [
-          "renderCustomerPortal"
+          "renderCustomerPortal",
+          "portalJobDetail",
+          "portalJobIsSigned"
         ]
       },
-      "tables": [],
+      "tables": [
+        "customers",
+        "jobs",
+        "estimates"
+      ],
       "since": "2026-04"
     },
     {

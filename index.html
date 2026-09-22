@@ -42666,6 +42666,13 @@ function portalFootHtml(company) {
     : '<div class="pec-portal-foot">Prescott Epoxy Company &middot; Licensed, Bonded &amp; Insured &middot; ROC353243</div>';
 }
 
+// Estimate acceptance records its signature on estimates, while the legacy
+// portal canvas records jobs.confirmed. Either signed record closes signing.
+// Do not use job.status: even an unsigned legacy job can have status 'signed'.
+function portalJobIsSigned(job) {
+  return !!(job && (job.confirmed || (job.estimate_signature && job.estimate_signature.signed_at)));
+}
+
 async function renderCustomerPortal(token) {
   const root = $('customerPortalRoot');
   root.style.display = '';
@@ -42709,7 +42716,7 @@ async function renderCustomerPortal(token) {
           <span class="pec-badge ${j.status}">${j.status.replace('_',' ')}</span>
         </div>
         <div style="color:var(--muted);font-size:.8rem">
-          ${j.package ? esc(j.package) : ''}${j.price ? ' · ' + fmtMoney(j.price) : ''}${j.confirmed ? ' · Signed ✓' : ''}
+          ${j.package ? esc(j.package) : ''}${j.price ? ' · ' + fmtMoney(j.price) : ''}${portalJobIsSigned(j) ? ' · Signed ✓' : ''}
         </div>
       </div>
     `).join('') || '<div class="pec-empty">No jobs yet — your account manager will add one soon.</div>'}
@@ -42724,6 +42731,7 @@ async function portalJobDetail(token, jobId, bundle) {
   const root = $('customerPortalRoot');
   const job = bundle.jobs.find(j => j.id === jobId);
   if (!job) { location.hash = ''; renderCustomerPortal(token); return; }
+  const isSigned = portalJobIsSigned(job);
   const timeline = (job.timeline || []).slice().sort((a,b)=>a.sort_order-b.sort_order);
 
   // Customer-facing description for the current status (editable by staff in
@@ -42821,15 +42829,26 @@ async function portalJobDetail(token, jobId, bundle) {
         </div>
       </div>` : ''}
 
-    ${job.estimate_signature && job.estimate_signature.signed_name ? `
+    ${job.estimate_signature && job.estimate_signature.signed_at ? `
       <div class="pec-card">
         <h3>Your signed estimate</h3>
-        <div style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:26px;border-bottom:1.5px solid #94a3b8;max-width:320px;padding:2px 6px">${esc(job.estimate_signature.signed_name)}</div>
-        <div style="color:var(--muted);font-size:.82rem;margin-top:8px">${job.estimate_signature.estimate_number ? `Estimate EST-${esc(String(job.estimate_signature.estimate_number))} signed` : 'Signed'} by ${esc(job.estimate_signature.signed_name)}${job.estimate_signature.signed_at ? ` on ${fmtDate(job.estimate_signature.signed_at)}` : ''}</div>
+        ${job.estimate_signature.signed_name ? `<div style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:26px;border-bottom:1.5px solid #94a3b8;max-width:320px;padding:2px 6px">${esc(job.estimate_signature.signed_name)}</div>` : ''}
+        <div style="color:var(--muted);font-size:.82rem;margin-top:8px">${job.estimate_signature.estimate_number ? `Estimate EST-${esc(String(job.estimate_signature.estimate_number))} signed` : 'Signed'}${job.estimate_signature.signed_name ? ` by ${esc(job.estimate_signature.signed_name)}` : ''} on ${fmtDate(job.estimate_signature.signed_at)}</div>
         ${job.estimate_signature.public_token ? `<a class="pec-btn ghost" style="margin-top:10px;display:inline-block" href="/e/${esc(job.estimate_signature.public_token)}" target="_blank" rel="noopener">View your signed estimate</a>` : ''}
       </div>` : ''}
 
-    ${!job.confirmed ? `
+    ${isSigned && !job.confirmed && catalogGridCount ? `
+      <div class="pec-card">
+        <h3>${job.colors_confirmed ? 'Your colors' : 'Choose your colors'}</h3>
+        <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">Your estimate is signed. Confirm the colors for each area below.</p>
+        <div id="pecPortalCatalog">${catalogHtml}</div>
+        <div style="margin-top:6px;font-size:.8rem;color:#b45309;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.3);border-radius:8px;padding:10px">
+          Changing colors after confirmation could result in project delays and additional charges.
+        </div>
+        <button class="pec-btn primary" id="pecColorsConfirm" style="margin-top:14px" disabled>Confirm colors</button>
+      </div>` : ''}
+
+    ${!isSigned ? `
       <div class="pec-card">
         <h3>Sign your project</h3>
         ${job.type === 'paint' ? `
@@ -42855,12 +42874,12 @@ async function portalJobDetail(token, jobId, bundle) {
           <button class="pec-btn ghost" id="pecSigClear">Clear signature</button>
           <button class="pec-btn primary" id="pecSigConfirm" disabled>Confirm & sign</button>
         </div>
-      </div>` : `
+      </div>` : job.confirmed ? `
       <div class="pec-card">
         <h3>Signed ✓</h3>
         <div style="color:var(--muted);font-size:.85rem">${fmtDate(job.confirmed_at)}</div>
         ${job.signature_data ? `<img src="${esc(job.signature_data)}" style="margin-top:10px;max-width:260px;background:#fff;padding:4px;border-radius:6px">` : ''}
-      </div>`}
+      </div>` : ''}
 
     ${job.status === 'completed' && !job.review ? `
       <div class="pec-card">
@@ -42877,13 +42896,16 @@ async function portalJobDetail(token, jobId, bundle) {
     ${portalFootHtml(bundle.customer && bundle.customer.company)}
   `;
 
-  // Color picker + signature canvas (only if not confirmed)
+  // Estimate signatures stay read-only. Color confirmation is a separate
+  // action; only legacy confirmed jobs lock the existing color write path.
   if (!job.confirmed) {
     const isPaint = job.type === 'paint';
     // Catalog-driven mode: one selectable swatch grid per area/color slot.
     const catalogMode = !isPaint && catalogGridCount > 0;
     const selections = new Map(); // `${areaId}|${slotId}` -> product_id
     let hasInk = false;
+    let saving = false;
+    const confirmBtn = document.getElementById(isSigned ? 'pecColorsConfirm' : 'pecSigConfirm');
 
     const allGridsPicked = () => {
       const grids = root.querySelectorAll('[data-pick-grid]');
@@ -42891,9 +42913,8 @@ async function portalJobDetail(token, jobId, bundle) {
       return grids.length > 0;
     };
     const updateConfirmEnabled = () => {
-      const btn = document.getElementById('pecSigConfirm');
-      if (!btn) return;
-      btn.disabled = !hasInk || (catalogMode && !allGridsPicked());
+      if (!confirmBtn) return;
+      confirmBtn.disabled = saving || job.confirmed || (!isSigned && (portalJobIsSigned(job) || !hasInk)) || (catalogMode && !allGridsPicked());
     };
 
     if (catalogMode) {
@@ -42902,6 +42923,7 @@ async function portalJobDetail(token, jobId, bundle) {
         const preset = grid.querySelector('[data-sel="1"]');
         if (preset) selections.set(key, preset.dataset.prod);
         grid.addEventListener('click', e => {
+          if (saving) return;
           const sw = e.target.closest('[data-prod]');
           if (!sw) return;
           selections.set(key, sw.dataset.prod);
@@ -42915,6 +42937,7 @@ async function portalJobDetail(token, jobId, bundle) {
     }
 
     const canvas = document.getElementById('pecPortalSig');
+    let drawing = false;
     if (canvas) {
       const ctx = canvas.getContext('2d');
       const resize = () => {
@@ -42926,30 +42949,47 @@ async function portalJobDetail(token, jobId, bundle) {
       };
       resize();
       window.addEventListener('resize', resize);
-      let drawing = false;
       const pos = e => {
         const r = canvas.getBoundingClientRect();
         const p = e.touches ? e.touches[0] : e;
         return { x: p.clientX - r.left, y: p.clientY - r.top };
       };
-      canvas.addEventListener('pointerdown', e => { drawing = true; const { x, y } = pos(e); ctx.beginPath(); ctx.moveTo(x, y); });
+      canvas.addEventListener('pointerdown', e => { if (saving) return; drawing = true; const { x, y } = pos(e); ctx.beginPath(); ctx.moveTo(x, y); });
       canvas.addEventListener('pointermove', e => {
-        if (!drawing) return;
+        if (saving || !drawing) return;
         const { x, y } = pos(e); ctx.lineTo(x, y); ctx.stroke();
         if (!hasInk) { hasInk = true; updateConfirmEnabled(); }
       });
       ['pointerup','pointerleave','pointercancel'].forEach(ev => canvas.addEventListener(ev, () => drawing = false));
       document.getElementById('pecSigClear').addEventListener('click', () => {
+        if (saving) return;
         ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
         hasInk = false; updateConfirmEnabled();
       });
-      document.getElementById('pecSigConfirm').addEventListener('click', async () => {
-        if (!hasInk) { alert('Please sign first'); return; }
+    }
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', async () => {
+        if (saving || job.confirmed || (!isSigned && portalJobIsSigned(job)) || !root.contains(confirmBtn)) return;
+        if (!isSigned && !hasInk) { alert('Please sign first'); return; }
         if (catalogMode && !allGridsPicked()) { alert('Please pick a color for each area first'); return; }
-        const dataUrl = canvas.toDataURL('image/png');
-        const btn = document.getElementById('pecSigConfirm');
-        btn.disabled = true; btn.textContent = 'Saving…';
+        const dataUrl = canvas ? canvas.toDataURL('image/png') : null;
+        saving = true;
+        drawing = false;
+        confirmBtn.disabled = true; confirmBtn.textContent = 'Saving…';
         try {
+          // Another tab may have accepted the estimate after this screen
+          // opened. Re-read before either legacy write; the RPC also guards
+          // acceptance at the database boundary against the remaining race.
+          const latest = await supabase.rpc('get_portal_data', { p_token: token });
+          if (latest.error) throw latest.error;
+          const currentJob = latest.data && (latest.data.jobs || []).find(j => j.id === jobId);
+          if (!currentJob) throw new Error('This project is no longer available. Please refresh your portal.');
+          if (!root.contains(confirmBtn)) return;
+          Object.assign(job, currentJob);
+          if (job.confirmed || (!isSigned && portalJobIsSigned(job))) {
+            await renderCustomerPortal(token);
+            return;
+          }
           if (catalogMode) {
             // Persist colors to the per-area catalog structure the CRM reads,
             // via the scoped RPC (server validates each product matches its slot).
@@ -42961,17 +43001,24 @@ async function portalJobDetail(token, jobId, bundle) {
             const setRes = await supabase.rpc('portal_set_area_colors', { p_token: token, p_job_id: jobId, p_picks: picks });
             if (setRes.error) throw setRes.error;
           }
-          // Signature + confirmed flag. p_colors null: colors are owned by the
-          // per-area path above now, not the legacy job_colors model.
-          const { error } = await supabase.rpc('portal_confirm_job', {
-            p_token: token, p_job_id: jobId, p_signature: dataUrl, p_colors: null,
-          });
-          if (error) throw error;
+          if (!isSigned) {
+            // Legacy signature + confirmed flag. Estimate-signed projects
+            // only save colors above and never record another signature.
+            const { error } = await supabase.rpc('portal_confirm_job', {
+              p_token: token, p_job_id: jobId, p_signature: dataUrl, p_colors: null,
+            });
+            if (error) throw error;
+            job.confirmed = true;
+            job.signature_data = dataUrl;
+          }
         } catch (err) {
-          btn.disabled = false; btn.textContent = 'Confirm & sign';
+          if (!root.contains(confirmBtn)) return;
+          saving = false;
+          updateConfirmEnabled(); confirmBtn.textContent = isSigned ? 'Confirm colors' : 'Confirm & sign';
           alert(err.message || String(err));
           return;
         }
+        if (!root.contains(confirmBtn)) return;
         location.hash = '#job/' + jobId;
         renderCustomerPortal(token);
       });
