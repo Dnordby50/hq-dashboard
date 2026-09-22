@@ -1,3 +1,16 @@
+## [2026-09-22 09:21 MST] release: booking prerequisite applied; portal scalar filter correction
+By: Codex
+
+Authorization: Dylan said "Push this", clearing the existing publication hold. Applied the exact previously rehearsed supabase/migrations/20260921171120_booking_rep_eligibility.sql through Supabase apply_migration as booking_rep_eligibility, live version 20260922161736. Verified bookable_online NOT NULL, Dylan alone eligible, Dusty still active, three intended settings, assignment trigger and RLS, staff read-only log grants, service-only booking RPC, and zero assignment rows. A nonexistent-rep request returns not_bookable without a write. The security advisor reports no finding on the new log or booking functions; existing public helper and infrastructure advisories remain.
+
+Release: npm run build passed (full test/posttest including 62 portal checks, source parsing, estimator TypeScript/Vite/PWA build and 21-file public asset build). Pushed main f116cd0..8d8a8e9. Production index.html then matched the checkout byte-for-byte and /book contained the new eligibility fallback. Live invalid portal token correctly returned 404. A valid customer-token read returned 503, caught before declaring release complete.
+
+Fix: Confirmed at the actual PostgREST endpoint with a nonexistent UUID and the published anonymous key: scalar customer_id=eq.UUID returns 200, but eq."UUID" returns 400/22P02. The new API incorrectly reused list-literal quoting for scalar equality. Corrected scalar values to URL encoding only; retained quoted literals for in-list legacy deal IDs. Updated the REST fixture to preserve scalar quote semantics and added explicit scalar UUID/brand/history regressions. Correction verification: full npm test/posttest passed with 63 portal cases; npm run check:source, both touched CJS syntax checks and git diff --check passed. No customer records or financial values changed. SCHEMA booking migration notes now reflect verified live state.
+
+Next steps: Publish the tested scalar-filter correction and verify a real token-scoped portal response, document links and booking availability. Record final live verification in a follow-up entry. Yelp links remain optional/unconfigured.
+Handoff to Cowork: None. The earlier prompt-105 migration blocker is resolved.
+Handoff to Dylan: Push authorized and underway; final production verification is in progress.
+
 ## [2026-09-22 09:18 MST] booking: prompt 105 migration booking_rep_eligibility APPLIED LIVE, then pushed and deployed
 By: Cowork
 Changed: Applied supabase/migrations/20260921171120_booking_rep_eligibility.sql (file md5 0d5c5191cd0e98952dab67b5dce35c39, unchanged since the prompt 105 commit) to production with Supabase apply_migration as booking_rep_eligibility, recorded in supabase_migrations.schema_migrations as 20260922161736 booking_rep_eligibility. Passed the file body byte for byte except the outer begin;/commit; lines (the tool runs its own transaction). No repo file other than this log changed.

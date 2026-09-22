@@ -12,7 +12,9 @@ const decodeLiteral = value => value.startsWith('"') ? JSON.parse(value) : value
 function matches(row, key, filter) {
   if (filter === 'is.null') return row[key] == null;
   if (filter === 'not.is.null') return row[key] != null;
-  if (filter.startsWith('eq.')) return String(row[key]) === decodeLiteral(filter.slice(3));
+  // PostgREST treats quotes in a scalar eq filter as part of the value.
+  // Its in-list grammar unquotes literals, but eq.UUID must remain unquoted.
+  if (filter.startsWith('eq.')) return String(row[key]) === filter.slice(3);
   if (filter.startsWith('in.(')) return (filter.slice(4, -1).match(/"(?:\\.|[^"\\])*"|[^,]+/g) || []).map(decodeLiteral).includes(String(row[key]));
   throw new Error('Unhandled fixture filter: ' + key + ' ' + filter);
 }
@@ -91,6 +93,19 @@ test('invalid/missing tokens and malformed requests never read customer records'
   const fx = fixture({ bundle: null });
   assert.equal((await fx.handler(event())).statusCode, 404);
   assert.equal(fx.calls.filter(call => call.method === 'GET').length, 0);
+});
+
+test('scalar UUID and brand filters use PostgREST equality without list-literal quotes', async () => {
+  const fx = fixture(), result = await body(fx);
+  assert.equal(result.jobs.length, 1);
+  assert.equal(result.estimates.length, 1);
+  assert.equal(result.invoices.length, 1);
+  assert.equal(result.brand.business_name, 'Fixture Epoxy');
+  const queries = fx.calls.filter(call => call.method === 'GET').map(call => new URL(call.path, 'https://database.invalid'));
+  for (const url of queries) {
+    if (url.searchParams.get('customer_id')?.startsWith('eq.')) assert.equal(url.searchParams.get('customer_id'), 'eq.' + id(1));
+    if (url.searchParams.has('brand')) assert.equal(url.searchParams.get('brand'), 'eq.prescott-epoxy');
+  }
 });
 
 test('GET and base64 POST retain the same token scope and ignore browser-selected identities', async () => {

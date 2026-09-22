@@ -16,7 +16,9 @@ const TOKEN = /^[A-Za-z0-9_-]{16,128}$/;
 const EPS = 0.005;
 const PAGE = 200;
 const round2 = value => Math.round((Number(value) || 0) * 100) / 100;
-const eq = value => 'eq.' + encodeURIComponent(postgrestLiteral(value));
+// Scalar equality takes a URL-encoded value. Quoting belongs to PostgREST's
+// in/or list grammar; quoting a scalar UUID instead makes its cast fail.
+const eq = value => 'eq.' + encodeURIComponent(String(value));
 const hash = value => crypto.createHash('sha256').update(String(value)).digest('hex');
 const validId = value => typeof value === 'string' && UUID.test(value);
 const text = value => value == null ? null : String(value);
