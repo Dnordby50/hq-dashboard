@@ -1,4 +1,5 @@
 // Private owner endpoint adapter. Public code only, no company data or caches.
+const {fetchSalesMetrics,salesWeek}=require('./sales-metrics.cjs');
 const DAY=86400000;
 const FIELDS=['leads','estimates','jobsBooked','bookedDollars','producedDollars','laborHours'];
 const day=value=>new Date(value).toISOString().slice(0,10);
@@ -33,7 +34,7 @@ async function fetchMbpLive({db,weekEndings,now=new Date(),enabled=true}){
   const queriedAt=new Date(now).toISOString(),today=phoenixDay(now),currentSunday=weekEnding(today);
   const calendar=weekEndings.filter(week=>week<=currentSunday),throughWeek=calendar.at(-1)||null;
   const warnings=[
-    'Estimates remain manual: first-send history is incomplete and re-sends change the estimate sent date.',
+    'Leads count each new contact once from its pipeline inquiry date. Estimates count each proposal once on its first successful email or text send; resends and status changes do not add another.',
     'Labor hours remain manual: some time is unassigned and legacy manual hours have no work date.',
     'Booked and produced dollars use current contract prices, so later contract changes can restate prior weeks. Produced means completed work, not cash collected.',
   ];
@@ -45,23 +46,21 @@ async function fetchMbpLive({db,weekEndings,now=new Date(),enabled=true}){
   // One paged yearly read per table, plus narrow earliest-date metadata reads.
   // A failed source remains unavailable; it must never turn into a confirmed 0.
   const responses=await Promise.allSettled([
-    allRows(db,`/leads?select=id,created_at&brand=eq.PEC&deleted_at=is.null&created_at=gte.${start}T07:00:00Z&created_at=lt.${until}`),
+    fetchSalesMetrics({db,start,until}),
     allRows(db,`/jobs?select=id,price,signed_date,completed_date,dripjobs_deal_id,${jobsBase}&or=(and(signed_date.gte.${start},signed_date.lt.${after}),and(completed_date.gte.${start},completed_date.lt.${after}))`),
-    db('/leads?select=created_at&brand=eq.PEC&deleted_at=is.null&order=created_at.asc&limit=1'),
     db(`/jobs?select=signed_date,${jobsBase}&signed_date=not.is.null&order=signed_date.asc&limit=1`),
     db(`/jobs?select=completed_date,${jobsBase}&completed_date=not.is.null&order=completed_date.asc&limit=1`),
   ]);
-  const ok=index=>responses[index].status==='fulfilled'&&Array.isArray(responses[index].value);
+  const ok=index=>responses[index].status==='fulfilled'&&(index===0||Array.isArray(responses[index].value));
   const rows=index=>ok(index)?responses[index].value:[];
-  const leads=uniqueRows(rows(0)),jobs=uniqueRows(rows(1)),duplicates=repeatedDeals(jobs);
-  const coverageStarts={...result.coverageStarts,
-    leads:firstFullMonday(sourceDate(rows(2)[0]?.created_at,true)),
-    jobsBooked:firstFullMonday(sourceDate(rows(3)[0]?.signed_date)),
-    bookedDollars:firstFullMonday(sourceDate(rows(3)[0]?.signed_date)),
-    producedDollars:firstFullMonday(sourceDate(rows(4)[0]?.completed_date)),
+  const sales=ok(0)?responses[0].value:null,jobs=uniqueRows(rows(1)),duplicates=repeatedDeals(jobs);
+  const coverageStarts={...result.coverageStarts,...sales?.coverageStarts,
+    jobsBooked:firstFullMonday(sourceDate(rows(2)[0]?.signed_date)),
+    bookedDollars:firstFullMonday(sourceDate(rows(2)[0]?.signed_date)),
+    producedDollars:firstFullMonday(sourceDate(rows(3)[0]?.completed_date)),
   };
-  if(!ok(0)||!ok(2))warnings.push('PEC lead data could not be refreshed. Existing entries were retained.');
-  if(!ok(1)||!ok(3)||!ok(4))warnings.push('Some PEC booking or completion data could not be refreshed. Existing entries were retained.');
+  warnings.push(...(sales?.warnings||['PEC sales sources could not be refreshed. Existing entries were retained.']));
+  if(!ok(1)||!ok(2)||!ok(3))warnings.push('Some PEC booking or completion data could not be refreshed. Existing entries were retained.');
   if(duplicates.size)warnings.push('Repeated DripJobs deal IDs need review; affected booking and revenue weeks are unavailable.');
   if(jobs.some(row=>row.price==null||!Number.isFinite(Number(row.price))))warnings.push('Some jobs have no valid contract price; affected dollar totals are unavailable.');
   warnings.push('Automatic coverage starts with the first full week after the earliest recorded activity for each source. Earlier blank weeks remain unknown.');
@@ -70,11 +69,13 @@ async function fetchMbpLive({db,weekEndings,now=new Date(),enabled=true}){
     const booked=jobs.filter(row=>bucket(sourceDate(row.signed_date))),produced=jobs.filter(row=>bucket(sourceDate(row.completed_date)));
     const containsDuplicate=rows=>rows.some(row=>duplicates.has(row.dripjobs_deal_id));
     const available=Object.fromEntries(FIELDS.map(field=>[field,false]));
-    available.leads=ok(0)&&ok(2)&&!!coverageStarts.leads&&monday>=coverageStarts.leads;
-    available.jobsBooked=ok(1)&&ok(3)&&!!coverageStarts.jobsBooked&&monday>=coverageStarts.jobsBooked&&!containsDuplicate(booked);
+    const counted=sales?salesWeek(sales,monday,week):null;
+    available.leads=counted?.available.leads===true;
+    available.estimates=counted?.available.estimates===true;
+    available.jobsBooked=ok(1)&&ok(2)&&!!coverageStarts.jobsBooked&&monday>=coverageStarts.jobsBooked&&!containsDuplicate(booked);
     available.bookedDollars=available.jobsBooked&&dollars(booked)!==null;
-    available.producedDollars=ok(1)&&ok(4)&&!!coverageStarts.producedDollars&&monday>=coverageStarts.producedDollars&&!containsDuplicate(produced)&&dollars(produced)!==null;
-    const measured={leads:leads.filter(row=>bucket(sourceDate(row.created_at,true))).length,estimates:null,jobsBooked:booked.length,bookedDollars:dollars(booked),producedDollars:dollars(produced),laborHours:null};
+    available.producedDollars=ok(1)&&ok(3)&&!!coverageStarts.producedDollars&&monday>=coverageStarts.producedDollars&&!containsDuplicate(produced)&&dollars(produced)!==null;
+    const measured={leads:counted?.leads.length??null,estimates:counted?.estimates.length??null,jobsBooked:booked.length,bookedDollars:dollars(booked),producedDollars:dollars(produced),laborHours:null};
     return {weekEnding:week,partial:week>=today,actual:Object.fromEntries(FIELDS.map(field=>[field,available[field]?measured[field]:null])),available};
   });
   if(weeks.some(row=>row.partial))warnings.push('The current week is in progress; its values reflect activity recorded so far.');

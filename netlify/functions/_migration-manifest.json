@@ -3734,6 +3734,42 @@
       "hasHeader": true,
       "none": "portal_confirm_job refuses a second project signature after estimate acceptance",
       "artifacts": []
+    },
+    {
+      "file": "20260922162337_sales_pipeline_and_first_send_truth.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": "Authorized intake RPC, contact-link triggers and immutable send evidence",
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_estimate_send_attempts"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_estimate_first_sends"
+        },
+        {
+          "kind": "index",
+          "name": "pec_estimate_send_attempts_estimate_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_estimate_send_attempts_pending_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_estimate_send_attempts_one_pending_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_estimate_first_sends_period_idx"
+        },
+        {
+          "kind": "index",
+          "name": "leads_customer_brand_truth_idx"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3776,7 +3812,9 @@
     "pec_email_log",
     "pec_email_senders",
     "pec_email_templates",
+    "pec_estimate_first_sends",
     "pec_estimate_line_templates",
+    "pec_estimate_send_attempts",
     "pec_estimate_views",
     "pec_followup_ranks",
     "pec_heartbeats",

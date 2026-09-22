@@ -421,18 +421,14 @@ function routeAnswers(questions, answers) {
 // the call site. Consent is implied by the inquiry (policy 2026-08-21), with the
 // exact disclosure stored on the lead event AND the booking request row.
 async function createBookingLead(db, f) {
-  let customerId = null;
-  try {
-    const c = await resolveOrCreateCustomer(db, {
-      name: f.name, firstName: f.firstName, lastName: f.lastName,
-      phone10: f.phone10, email: f.email,
-      address: f.address, city: f.city, state: f.state, zip: f.zip,
-      source: f.source, brand: 'PEC',
-    });
-    customerId = c.customer_id;
-  } catch (e) {
-    console.warn('pec-booking: customer resolve failed (non-fatal):', e && e.message);
-  }
+  const c = await resolveOrCreateCustomer(db, {
+    name: f.name, firstName: f.firstName, lastName: f.lastName,
+    phone10: f.phone10, email: f.email,
+    address: f.address, city: f.city, state: f.state, zip: f.zip,
+    source: f.source, brand: 'PEC',
+  });
+  const customerId = c.customer_id;
+  if (!customerId) throw new Error('Customer creation returned no linked record');
   // Policy 2026-08-21 (Dylan): booking IS consent; the disclosure the page
   // showed is stored as the record. STOP opts out.
   const consent = true;
@@ -766,6 +762,13 @@ async function processBook(deps, body, meta = {}) {
     const lastName = sp < 0 ? null : name.slice(sp + 1).trim() || null;
     const source = await resolveLeadSourceName(db, routed.leadSourceAnswer || 'topcoat_booking');
     let leadCreated = false;
+    if (!contact.lead_id && contact.customer_id) {
+      const leadId = await db('POST', '/rpc/ensure_sales_lead', {
+        p_customer_id: contact.customer_id, p_brand: 'PEC', p_stage: 'new', p_occurred_at: null,
+      });
+      if (typeof leadId !== 'string' || !leadId) throw new Error('Could not link the customer inquiry to the sales pipeline');
+      contact.lead_id = leadId;
+    }
     if (!contact.lead_id && !contact.customer_id) {
       try {
         const lead = await createBookingLead(db, {
@@ -776,9 +779,9 @@ async function processBook(deps, body, meta = {}) {
         contact.lead_id = lead.id;
         contact.customer_id = lead.customer_id || null;
         leadCreated = true;
-        await (deps.kickLeadAi || kickLeadAi)(lead.id);
+        await (deps.kickLeadAi || kickLeadAi)(lead.id).catch(e => console.warn('pec-booking: lead scoring skipped:', e && e.message));
       } catch (e) {
-        console.warn('pec-booking: lead create failed (non-fatal):', e && e.message);
+        throw new Error('Could not save the customer inquiry: ' + (e && e.message || 'pipeline unavailable'));
       }
     } else if (contact.lead_id) {
       if (!contact.lead_source) {
@@ -942,6 +945,12 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
 
     const contact = await resolveContact(db, phone10, email);
     let leadId = contact.lead_id;
+    if (!leadId && contact.customer_id) {
+      leadId = await db('POST', '/rpc/ensure_sales_lead', {
+        p_customer_id: contact.customer_id, p_brand: 'PEC', p_stage: 'new', p_occurred_at: null,
+      });
+      if (typeof leadId !== 'string' || !leadId) throw new Error('Could not link the customer inquiry to the sales pipeline');
+    }
     if (!leadId) {
       const lead = await createBookingLead(db, {
         name, firstName: sp < 0 ? name : name.slice(0, sp),

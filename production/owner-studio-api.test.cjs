@@ -33,6 +33,7 @@ function fixture(overrides={}) {
         }
       } else data=isLead?[{id:'lead-one'}]:overrides.jobs??[{id:'job-one',price:2500,dripjobs_deal_id:'deal-one'}];
     }
+    else if(['/customers?','/estimates?','/pec_estimate_first_sends?','/pec_email_log?','/pec_sms_log?','/pec_estimate_send_attempts?'].some(path=>url.includes(path))) data=[];
     else if(url.includes('/pec_owner_revisions?')) {
       const params=new URL(url).searchParams;
       data=(overrides.revisions??[]).filter(row=>(!row.auth_user_id||row.auth_user_id===params.get('auth_user_id')?.slice(3))&&(!params.has('doc_key')||row.doc_key===params.get('doc_key').slice(3))&&(!params.has('revision')||row.revision===Number(params.get('revision').slice(3)))&&(!params.has('request_id')||row.request_id===params.get('request_id').slice(3)));
@@ -239,15 +240,15 @@ test('AI sends only saved goals, KPI summaries and explicitly selected notes to 
   assert.ok(!denied.calls.some(c=>c.url.includes('anthropic')));
 });
 test('PEC CRM preview uses Phoenix weeks and distinct date definitions, leaves unsupported metrics unknown',async()=>{
-  const f=fixture(),e=event('crm-week');e.queryStringParameters.week='2026-09-06';
+  const f=await mbpFixture(),e=event('crm-week');e.queryStringParameters.week='2026-09-06';
   const r=await f.handler(e),body=JSON.parse(r.body);assert.equal(r.statusCode,200);
-  assert.equal(body.actual.leads,1);assert.equal(body.actual.bookedDollars,2500);assert.equal(body.actual.producedDollars,2500);
+  assert.equal(body.actual.leads,1);assert.equal(body.actual.bookedDollars,1100);assert.equal(body.actual.producedDollars,1100);
   assert.equal(body.actual.estimates,null);assert.equal(body.actual.laborHours,null);
   assert.ok(f.calls.some(c=>c.url.includes('2026-08-31T07:00:00Z')));
-  assert.ok(f.calls.some(c=>c.url.includes('signed_date=gte.2026-08-31')));
-  assert.ok(f.calls.some(c=>c.url.includes('completed_date=gte.2026-08-31')));
+  assert.ok(f.calls.some(c=>c.url.includes('signed_date.gte.2026-08-31')));
+  assert.ok(f.calls.some(c=>c.url.includes('completed_date.gte.2026-08-31')));
   assert.ok(f.calls.every(c=>c.opts.method!=='PATCH'&&!c.url.includes('pec_owner_save_document')));
-  const missing=await fixture({jobs:[{id:'job',price:null}]}).handler(e);assert.equal(JSON.parse(missing.body).actual.bookedDollars,null);
+  const missing=await (await mbpFixture({liveJobs:[{id:'start',signed_date:'2026-05-01',completed_date:'2026-05-01',price:100},{id:'job',signed_date:'2026-09-02',completed_date:'2026-09-02',price:null}]})).handler(e);assert.equal(JSON.parse(missing.body).actual.bookedDollars,null);
   for(const week of ['2026-09-13','2026-09-05','2026-02-30','bad']){e.queryStringParameters.week=week;assert.equal((await fixture().handler(e)).statusCode,400);}
 });
 
@@ -262,7 +263,7 @@ test('MBP live feed batches source reads, uses Phoenix weeks, and never fills un
   assert.equal(feed.weeks.find(w=>w.weekEnding==='2026-07-19').actual.leads,0);
   assert.equal(feed.coverageStarts.leads,'2026-07-13');assert.equal(feed.coverageStarts.jobsBooked,'2026-05-11');assert.equal(feed.coverageStarts.producedDollars,'2026-05-25');
   assert.ok(feed.weeks.every(w=>w.weekEnding<='2026-09-13'&&!w.available.estimates&&!w.available.laborHours));
-  assert.equal(f.calls.filter(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')).length,5);
+  assert.equal(f.calls.filter(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')).length,4);
   assert.ok(f.calls.some(c=>c.url.includes('created_at=gte.2025-12-29T07:00:00Z')));
   assert.ok(!f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
 });

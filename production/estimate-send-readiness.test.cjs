@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { estimatePricingSendBlockers: blockers } = require('./estimate-send-readiness.cjs');
 
 const snapshot = patch => ({ version: 1, combinedGpPct: .5, calcTotal: 5000, finalSell: 5000, isCustom: false, lines: [{ label: 'Garage', gpPct: .5 }], ...patch });
-const estimate = (snap = {}, rest = {}) => ({ id: '11111111-1111-4111-8111-111111111111', status: 'sent', sent_at: '2026-09-01T00:00:00Z', price: 5000, pricing_snapshot: { send_readiness: snapshot(snap) }, estimate_line_items: [{ label: 'Garage', total: 5000, qty: 1, unit_cost: 2500, estimate_area_id: 'area', is_optional: false }], ...rest });
+const estimate = (snap = {}, rest = {}) => ({ id: '11111111-1111-4111-8111-111111111111', brand: 'PEC', status: 'sent', sent_at: '2026-09-01T00:00:00Z', price: 5000, pricing_snapshot: { send_readiness: snapshot(snap) }, estimate_line_items: [{ label: 'Garage', total: 5000, qty: 1, unit_cost: 2500, estimate_area_id: 'area', is_optional: false }], ...rest });
 const dashboard = fs.readFileSync(require.resolve('../index.html'), 'utf8');
 
 test('browser mirror is identical to the executable server pricing policy', () => {
@@ -219,7 +219,11 @@ test('actual email, SMS and public signing handlers reject saved invalid pricing
   const writes = [];
   const originalFetch = global.fetch;
   const sb = async (method, path, payload) => {
-    if (method !== 'GET') { writes.push({ method, path, payload }); return [{ id: 'logged' }]; }
+    if (method !== 'GET') {
+      writes.push({ method, path, payload });
+      if (path.startsWith('/pec_estimate_send_attempts')) return [{ id: payload.id || new URLSearchParams(path.split('?')[1]).get('id').slice(3), ...payload }];
+      return [{ id: 'logged' }];
+    }
     if (path.startsWith('/estimates?')) return [structuredClone(current)];
     if (path.startsWith('/estimate_line_items?')) return structuredClone(current.estimate_line_items);
     if (path.startsWith('/settings?')) return [];

@@ -18,6 +18,7 @@ const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
 const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { emptySendError, choiceGroupSendError } = require('../../production/optional-lines.cjs');
 const { estimatePricingSendError, PRICING_SEND_COLUMNS, PRICING_LINE_COLUMNS } = require('./_pec-estimate-send.cjs');
+const { sendTrackedEstimate, trackingResponse } = require('./_pec-estimate-send-tracking.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -167,6 +168,7 @@ exports.handler = async (event) => {
   const composeMode = !!body_html;
   const logKeyOverride = (composeMode && typeof log_template_key === 'string' && /^[a-z0-9_]{1,40}$/.test(log_template_key)) ? log_template_key : null;
   const logTemplateKey = logKeyOverride || (composeMode ? 'compose' : template_key);
+  if (logTemplateKey === 'estimate' && !estimate_id) return jc(400, { ok: false, error: 'An estimate ID is required to send a proposal.' });
   if (!brand || !to_email) return jc(400, { ok: false, error: 'brand and to_email are required' });
   if (composeMode) {
     if (!subjectOverride) return jc(400, { ok: false, error: 'subject is required in compose mode' });
@@ -191,10 +193,12 @@ exports.handler = async (event) => {
     // (invoices, change orders, plain compose), and compose mode itself is
     // not restructured. Same rule + message as the client gate and the SMS
     // mirror; shared in production/optional-lines.cjs.
+    let trackedEstimate = null;
     if (estimate_id) {
-      const estRows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(estimate_id)}&deleted_at=is.null&select=${PRICING_SEND_COLUMNS},estimate_line_items(${PRICING_LINE_COLUMNS})&limit=1`);
+      const estRows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(estimate_id)}&deleted_at=is.null&select=${PRICING_SEND_COLUMNS},brand,estimate_line_items(${PRICING_LINE_COLUMNS})&limit=1`);
       const est = Array.isArray(estRows) ? estRows[0] : null;
       if (!est) return jc(400, { ok: false, error: 'Estimate not found for that id.' });
+      trackedEstimate = est;
       const emptyErr = emptySendError(est.estimate_line_items);
       if (emptyErr) return jc(400, { ok: false, error: emptyErr });
       // Prompt 106: a one-line choice group cannot be sent (after the
@@ -282,12 +286,17 @@ exports.handler = async (event) => {
     const payload = { from: fromAddr, to: [to_email], subject, html };
     if (ccList.length) payload.cc = ccList;
     if (sender.reply_to) payload.reply_to = sender.reply_to;
-    const res = await fetch('https://api.resend.com/emails', {
+    const send = () => fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const resBody = await res.json().catch(() => ({}));
+    const tracking = trackedEstimate ? await sendTrackedEstimate({ db: sb, estimateId: trackedEstimate.id, brand: trackedEstimate.brand, channel: 'email', recipient: to_email, send }) : null;
+    if (tracking && ['not_sent', 'unknown'].includes(tracking.state)) {
+      return jc(tracking.state === 'not_sent' ? 503 : 502, { ok: false, error: tracking.error, send_unknown: tracking.state === 'unknown', tracking_attempt_id: tracking.tracking_attempt_id });
+    }
+    const res = tracking ? tracking.response : await send();
+    const resBody = tracking ? tracking.body : await res.json().catch(() => ({}));
 
     if (!res.ok) {
       const msg = (resBody && (resBody.message || resBody.error)) || `Resend error ${res.status}`;
@@ -303,7 +312,7 @@ exports.handler = async (event) => {
       // row (logRow drops it and retries if the column is not migrated yet).
       body_html: html,
     });
-    return jc(200, { ok: true, log_id: logId, resend_id: resBody.id || null });
+    return jc(200, { ok: true, log_id: logId, resend_id: resBody.id || null, ...(tracking ? trackingResponse(tracking) : {}) });
   } catch (err) {
     console.error('pec-send-email error:', err.message);
     await logRow({ sent_by_user: user.id, job_id, customer_id, brand, template_key: (body_html ? 'compose' : template_key), to_email, status: 'failed', error_message: String(err.message).slice(0, 500) });

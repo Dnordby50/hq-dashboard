@@ -603,27 +603,21 @@ async function kickLeadAi(leadId) {
 // never became. Stage 'new' + a 'created' lead_event; apptBookingLeadEffects
 // does the stage advance afterwards, exactly like an in-app booking.
 // DELIBERATELY NOT nurture-enrolled (landmine 3); the AI score kick happens
-// at the call site (prompt 97, injectable for tests). Best-effort:
-// a failed create lands the appointment unlinked with the contact noted, it
-// never turns a good intake into a non-200.
+// at the call site (prompt 97, injectable for tests). A failed identity or
+// lead save must fail the booking visibly so a retry can recover its link.
 async function createRoutemizeLead(db, args) {
   // Customers are the source of truth (prompt 89): resolve-or-create the
   // customer row FIRST so the lead is born linked. The caller only reaches
   // here when resolveContact matched neither lead nor customer, so this is
-  // nearly always a create; the helper still re-matches for safety. A
-  // failure leaves customer_id null rather than losing the lead.
-  let customerId = null;
-  try {
-    const c = await resolveOrCreateCustomer(db, {
-      name: args.customerName, firstName: args.firstName, lastName: args.lastName,
-      businessName: args.businessName, phone10: args.phone10, email: args.email,
-      address: args.address, city: args.city, state: args.state, zip: args.zip,
-      source: args.source, brand: 'PEC',
-    });
-    customerId = c.customer_id;
-  } catch (e) {
-    console.warn('pec-appt-intake: customer resolve for new lead failed (non-fatal):', e && e.message);
-  }
+  // nearly always a create; the helper still re-matches for safety.
+  const c = await resolveOrCreateCustomer(db, {
+    name: args.customerName, firstName: args.firstName, lastName: args.lastName,
+    businessName: args.businessName, phone10: args.phone10, email: args.email,
+    address: args.address, city: args.city, state: args.state, zip: args.zip,
+    source: args.source, brand: 'PEC',
+  });
+  const customerId = c.customer_id;
+  if (!customerId) throw new Error('Customer creation returned no linked record');
   const base = {
     brand: 'PEC', // decision 7: FTP does not use Routemize
     customer_id: customerId,
@@ -870,6 +864,8 @@ async function processApptIntake(deps, body) {
     const email = cleanStr(body.email) ? cleanStr(body.email).toLowerCase() : null;
     const memberEmail = cleanStr(body.assigned_member_email);
     const memberName = cleanStr(body.assigned_member_name);
+    const existing = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=*&limit=1`);
+    const existingRow = Array.isArray(existing) && existing[0];
 
     const [contact, member] = [
       await resolveContact(db, phone10, email),
@@ -886,6 +882,13 @@ async function processApptIntake(deps, body) {
     // source (prompt 56 decision 10 stands: fill only when null).
     const rzSource = rz ? await resolveLeadSourceName(db, rz.leadSource) : null;
     let leadCreated = false;
+    if (!existingRow && !contact.lead_id && contact.customer_id && normApptType(body.appt_type) === 'on_site_estimate') {
+      const leadId = await db('POST', '/rpc/ensure_sales_lead', {
+        p_customer_id: contact.customer_id, p_brand: 'PEC', p_stage: 'new', p_occurred_at: null,
+      });
+      if (typeof leadId !== 'string' || !leadId) throw new Error('Could not link the customer inquiry to the sales pipeline');
+      contact.lead_id = leadId;
+    }
     if (rz && !contact.lead_id && !contact.customer_id && customerName && (phone10 || email)) {
       try {
         const lead = await createRoutemizeLead(db, {
@@ -900,11 +903,9 @@ async function processApptIntake(deps, body) {
         leadCreated = true;
         // Prompt 97: score the lead this booking just created (the door that
         // left 17 of 18 open leads unscored). Best-effort, never a non-200.
-        await (deps.kickLeadAi || kickLeadAi)(lead.id);
+        await (deps.kickLeadAi || kickLeadAi)(lead.id).catch(e => console.warn('pec-appt-intake: lead scoring skipped:', e && e.message));
       } catch (e) {
-        // The appointment still lands (unlinked, contact noted below); a
-        // non-200 here would just make Routemize retry a working intake.
-        console.warn('pec-appt-intake: routemize lead create failed (non-fatal):', e && e.message);
+        throw new Error('Could not save the customer inquiry: ' + (e && e.message || 'pipeline unavailable'));
       }
     }
     if (rz && contact.lead_id && !leadCreated) {
@@ -947,9 +948,6 @@ async function processApptIntake(deps, body) {
     if (timeMismatch) {
       alertLines.push(`Time cross-check mismatch: parsed ${startAt} but Routemize's own rendering says ${rz.wallClockText} Phoenix; kept the parsed value.`);
     }
-
-    const existing = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=*&limit=1`);
-    const existingRow = Array.isArray(existing) && existing[0];
 
     // Part B: never resurrect a cancelled appointment. A cancel goes through
     // its own branch above, so an update never needs to CHANGE status at all;

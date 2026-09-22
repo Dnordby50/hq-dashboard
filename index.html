@@ -5840,6 +5840,7 @@ async function openEstimateStartPicker(opts = {}) {
     </div>
   `, { onMount: modal => {
     const q = sel => modal.querySelector(sel);
+    let createdEstimateCustomer = null;
     const val = id => (q('#' + id) ? (q('#' + id).value || '').trim() : '');
     const setAddr = (a1, city, stt, zip) => {
       q('#espAddr1').value = a1 || ''; q('#espCity').value = city || '';
@@ -5977,20 +5978,26 @@ async function openEstimateStartPicker(opts = {}) {
       try {
         // company: 'prescott-epoxy' is the existing hardcode (FTP gap, noted
         // in the log; not fixed here).
-        const ins = await withDeadline(() => supabase.from('customers').insert({
-          token: randomToken(),
+        const customerProfile = {
           name: business || [first, last].filter(Boolean).join(' '),
-          first_name: first || null,
-          last_name: last || null,
-          company_name: business || null,
-          phone: val('espPhone') || null,
+          first_name: first || null, last_name: last || null,
+          company_name: business || null, phone: val('espPhone') || null,
           email: val('espEmail').toLowerCase() || null,
-          company: 'prescott-epoxy',
-          lead_source: val('espSource'),
-        }).select('id').single(), { label: 'estimate-start-new-customer' });
-        if (ins.error) throw ins.error;
+          company: 'prescott-epoxy', lead_source: val('espSource'),
+        };
+        if (!createdEstimateCustomer) {
+          const ins = await withDeadline(() => supabase.from('customers').insert({
+            ...customerProfile, token: randomToken(),
+          }).select('id,created_at').single(), { label: 'estimate-start-new-customer' });
+          if (ins.error) throw ins.error;
+          if (!ins.data) throw new Error('The customer could not be saved.');
+          createdEstimateCustomer = ins.data;
+        } else {
+          createdEstimateCustomer = await updateNewSalesCustomer(createdEstimateCustomer, customerProfile);
+        }
+        const salesLeadId = await ensureSalesLead(createdEstimateCustomer.id, { occurredAt: createdEstimateCustomer.created_at });
         closeModal();
-        createDraftEstimateNow({ customerId: ins.data.id, extras });
+        createDraftEstimateNow({ leadId: salesLeadId, customerId: createdEstimateCustomer.id, extras });
       } catch (err) {
         btn.disabled = false; btn.textContent = 'Start estimate';
         errEl.textContent = 'Could not create: ' + (err && err.message ? err.message : err);
@@ -7485,6 +7492,35 @@ async function renderCustomerDetail(id) {
   mountRecordEmailLog(root.querySelector('#pecCustEmailsCard'), { customerId: c.id });
 }
 
+// A customer identity and its qualifying inquiry share one canonical pipeline
+// lead. Only an explicitly new contact passes its just-created timestamp;
+// existing/imported customers qualify now, never on their import date.
+async function ensureSalesLead(customerId, { brand = 'PEC', stage = 'new', occurredAt = null } = {}) {
+  if (!customerId) throw new Error('Save the customer before adding the inquiry.');
+  const result = await withFreshWriteRetry(() => supabase.rpc('ensure_sales_lead', {
+    p_customer_id: customerId, p_brand: brand, p_stage: stage, p_occurred_at: occurredAt,
+  }), { label: 'ensure-sales-lead' });
+  if (result.error) throw result.error;
+  if (typeof result.data !== 'string' || !result.data) throw new Error('The inquiry could not be linked to the sales pipeline.');
+  return result.data;
+}
+
+// Only the row created by this still-open intake may be updated on retry.
+// Preserve its identity and first-contact time while saving the latest form.
+async function updateNewSalesCustomer(customer, profile) {
+  if (!customer || !customer.id || !customer.created_at) throw new Error('The newly saved customer could not be verified.');
+  if (customer.company && profile.company && customer.company !== profile.company) {
+    throw new Error('This customer was already saved under the original company. Finish linking the inquiry before changing the company.');
+  }
+  const { id, created_at, token, ...patch } = profile;
+  const saved = await withFreshWriteRetry(() => supabase.from('customers').update(patch)
+    .eq('id', customer.id).eq('created_at', customer.created_at)
+    .eq('company', customer.company || patch.company).select('*').single(), { label: 'new-sales-customer-retry' });
+  if (saved.error) throw saved.error;
+  if (!saved.data || saved.data.id !== customer.id) throw new Error('The customer changed before the updated details could be saved. Refresh before continuing.');
+  return saved.data;
+}
+
 async function openCustomerForm(c) {
   const isNew = !c;
   // Load lead sources + a deduped list of every tag in use for autocomplete.
@@ -7572,6 +7608,8 @@ async function openCustomerForm(c) {
     </form>
   `, { onMount: modal => {
     const tags = initialTags.slice();
+    let createdCustomer = null;
+    let savingCustomer = false;
     const tagsHost = modal.querySelector('#custTagsHost');
     const tagInput = modal.querySelector('#custTagInput');
     const renderTags = () => {
@@ -7604,6 +7642,7 @@ async function openCustomerForm(c) {
 
     modal.querySelector('#pecCustForm').addEventListener('submit', async e => {
       e.preventDefault();
+      if (savingCustomer) return;
       const fd = new FormData(e.target);
       const isBiz = fd.get('cust_type') === 'business';
       const first_name = (isBiz ? fd.get('first_name_biz') : fd.get('first_name')) || null;
@@ -7641,10 +7680,19 @@ async function openCustomerForm(c) {
         billing_zip: fd.get('billing_zip') || null,
       };
 
+      savingCustomer = true;
       try {
         let error;
         if (isNew) {
-          ({ error } = await supabase.from('customers').insert({ ...payload, token: randomToken() }));
+          if (!createdCustomer) {
+            const created = await supabase.from('customers').insert({ ...payload, token: randomToken() }).select('id,created_at').single();
+            if (created.error) throw created.error;
+            if (!created.data) throw new Error('The customer could not be saved.');
+            createdCustomer = { ...created.data, company: payload.company };
+          } else {
+            createdCustomer = await updateNewSalesCustomer(createdCustomer, payload);
+          }
+          await ensureSalesLead(createdCustomer.id, { brand: payload.company === 'finishing-touch' ? 'FTP' : 'PEC', occurredAt: createdCustomer.created_at });
         } else {
           ({ error } = await supabase.from('customers').update(payload).eq('id', c.id));
         }
@@ -7652,6 +7700,8 @@ async function openCustomerForm(c) {
       } catch (err) {
         alert('Save failed: ' + err.message);
         return; // do not close on error so user can retry
+      } finally {
+        savingCustomer = false;
       }
       closeModal();
       renderCustomers();
@@ -24207,10 +24257,15 @@ async function pecSendEmail(payload) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload),
+  }).catch(err => {
+    if (payload.estimate_id || payload.log_template_key === 'estimate') throw Object.assign(new Error('Email delivery could not be confirmed. Check provider history before sending again.'), { send_unknown: true });
+    throw err;
   });
   let body = {};
   try { body = await res.json(); } catch (_) {}
-  if (!res.ok || !body.ok) throw new Error(body.error || `Send failed (${res.status})`);
+  if (!res.ok || !body.ok) throw Object.assign(new Error(body.error || `Send failed (${res.status})`), {
+    send_unknown: !!body.send_unknown, tracking_attempt_id: body.tracking_attempt_id || null,
+  });
   return body;
 }
 
@@ -24231,10 +24286,15 @@ async function pecSendSms(payload) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload),
+  }).catch(err => {
+    if (payload.kind === 'estimate') throw Object.assign(new Error('Text delivery could not be confirmed. Check provider history before sending again.'), { send_unknown: true });
+    throw err;
   });
   let body = {};
   try { body = await res.json(); } catch (_) {}
-  if (!res.ok || !body.ok) throw new Error(body.error || `Send failed (${res.status})`);
+  if (!res.ok || !body.ok) throw Object.assign(new Error(body.error || `Send failed (${res.status})`), {
+    send_unknown: !!body.send_unknown, tracking_attempt_id: body.tracking_attempt_id || null,
+  });
   return body;
 }
 
@@ -28619,6 +28679,8 @@ async function openAppointmentForm(existing, prefill = {}) {
     // walk-in never forces a trip to the Customers page, and a hard-derived
     // title whenever a customer is linked.
     const custWrap = modal.querySelector('#afCustWrap');
+    let createdAppointmentCustomer = null;
+    let creatingAppointmentCustomer = false;
     const titleInput = modal.querySelector('#afTitle');
     const titleHint = modal.querySelector('#afTitleHint');
     let sourceLoading = false;
@@ -28756,6 +28818,7 @@ async function openAppointmentForm(existing, prefill = {}) {
       let tmr = null;
       q.addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(search, 220); });
       custWrap.querySelector('#afNewCustSave').addEventListener('click', async () => {
+        if (creatingAppointmentCustomer) return;
         const errN = custWrap.querySelector('#afNewCustErr');
         const first = (custWrap.querySelector('#afNewCustFirst').value || '').trim();
         const last = (custWrap.querySelector('#afNewCustLast').value || '').trim();
@@ -28770,19 +28833,28 @@ async function openAppointmentForm(existing, prefill = {}) {
         if (!pecEmailValid(em)) { errN.textContent = 'Enter a valid email address.'; return; }
         if (!source) { errN.textContent = 'Pick a lead source.'; return; }
         errN.textContent = '';
+        creatingAppointmentCustomer = true;
         try {
-          const ins = await withFreshWrite(() => supabase.from('customers').insert({
-            token: randomToken(), name: `${first} ${last}`,
-            first_name: first, last_name: last,
-            phone: ph.slice(-10),
-            email: em,
-            lead_source: source, company: 'prescott-epoxy',
-          }).select('id,name,email,lead_source').single(), { label: 'appt-new-customer' });
-          if (ins.error) throw ins.error;
-          pick({ id: ins.data.id, name: ins.data.name, email: ins.data.email || null, lead_source: ins.data.lead_source || source });
+          const customerProfile = {
+            name: `${first} ${last}`, first_name: first, last_name: last,
+            phone: ph.slice(-10), email: em, lead_source: source, company: 'prescott-epoxy',
+          };
+          if (!createdAppointmentCustomer) {
+            const ins = await withFreshWrite(() => supabase.from('customers').insert({
+              ...customerProfile, token: randomToken(),
+            }).select('id,name,email,lead_source,created_at').single(), { label: 'appt-new-customer' });
+            if (ins.error) throw ins.error;
+            if (!ins.data) throw new Error('The customer could not be saved.');
+            createdAppointmentCustomer = ins.data;
+          } else {
+            createdAppointmentCustomer = await updateNewSalesCustomer(createdAppointmentCustomer, customerProfile);
+          }
+          await ensureSalesLead(createdAppointmentCustomer.id, { occurredAt: createdAppointmentCustomer.created_at });
+          pick({ id: createdAppointmentCustomer.id, name: createdAppointmentCustomer.name, email: createdAppointmentCustomer.email || null, lead_source: createdAppointmentCustomer.lead_source || source });
           const emailEl = modal.querySelector('#afEmail');
           if (emailEl && !emailEl.value.trim() && em) emailEl.value = em;
         } catch (err) { errN.textContent = (err && err.message) || 'Could not create.'; }
+        finally { creatingAppointmentCustomer = false; }
       });
     };
     renderCustPicker(); syncTitle(); syncSource();
@@ -31249,6 +31321,7 @@ function openLeadNameModal(lead, onSaved) {
 // Manual lead entry. Same validation contract as the intake webhook (name
 // required, phone or email required) so a manual lead is never a lesser row.
 function openNewLeadModal(prefill) {
+  let savedLeadCustomer = null;
   const staffNames = (state.leadsData && state.leadsData.staffNames) || {};
   const sources = (state.leadsData && state.leadsData.sources) || ['manual'];
   const pfPhone = prefill && prefill.phone ? qoFmtPhone(prefill.phone) : '';
@@ -31334,45 +31407,45 @@ function openNewLeadModal(prefill) {
       save.disabled = true; save.textContent = 'Saving…';
       try {
         const smsYes = modal.querySelector('#nlSms').checked;
-        // Customers are the source of truth (prompt 89): resolve the person
-        // to a customer row first (same-human rule: last-10 phone or exact
-        // email, mirroring _pec-lead-match.cjs), creating one when nobody
-        // matches, so the lead is born linked. Best-effort: a resolve
-        // failure leaves customer_id null rather than blocking the add.
-        let custId = null;
-        try {
-          const p10 = phone ? phone.slice(-10) : null;
+        // Resolve one customer, then the canonical lead under the database
+        // lock. Keep the saved identity across retries after a partial save.
+        const p10 = phone ? phone.slice(-10) : null;
+        const customerProfile = {
+          name, first_name: firstName || null, last_name: lastName || null,
+          company_name: businessName || null, email: email || null, phone: p10,
+          billing_address_line1: val('nlAddress') || null, billing_city: val('nlCity') || null,
+          billing_state: val('nlState') || null, billing_zip: val('nlZip') || null,
+          lead_source: val('nlSource') || 'manual', company: 'prescott-epoxy',
+        };
+        let custId = savedLeadCustomer && savedLeadCustomer.id;
+        if (!custId) {
           const ors = [];
-          if (p10) ors.push(`phone.ilike.%${p10}`);
-          if (email) ors.push(`email.eq.${email}`);
+          if (p10) ors.push(`phone_norm.eq.${p10}`);
+          if (email) ors.push(`email.eq."${email.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
           if (ors.length) {
             const m = await supabase.from('customers').select('id').is('archived_at', null)
-              .or(ors.join(',')).order('created_at', { ascending: false }).limit(1);
-            if (!m.error && m.data && m.data[0]) custId = m.data[0].id;
+              .eq('company', 'prescott-epoxy').or(ors.join(',')).order('created_at', { ascending: true }).limit(1);
+            if (m.error) throw m.error;
+            if (m.data && m.data[0]) { custId = m.data[0].id; savedLeadCustomer = { id: custId }; }
           }
           if (!custId) {
             const ci = await supabase.from('customers').insert({
-              token: randomToken(),
-              name,
-              first_name: firstName || null,
-              last_name: lastName || null,
-              company_name: businessName || null,
-              email: email || null,
-              phone: p10,
-              billing_address_line1: val('nlAddress') || null,
-              billing_city: val('nlCity') || null,
-              billing_state: val('nlState') || null,
-              billing_zip: val('nlZip') || null,
-              lead_source: val('nlSource') || 'manual',
-              company: 'prescott-epoxy',
-            }).select('id').single();
-            if (!ci.error && ci.data) custId = ci.data.id;
-            else if (ci.error) console.warn('[leads] customer create for lead failed:', ci.error.message);
+              ...customerProfile, token: randomToken(),
+            }).select('id,created_at').single();
+            if (ci.error) throw ci.error;
+            if (!ci.data) throw new Error('The customer could not be saved.');
+            savedLeadCustomer = ci.data;
+            custId = ci.data.id;
           }
-        } catch (e) { console.warn('[leads] customer resolve failed (lead lands unlinked):', e && e.message); }
-        const ins = await withFreshWrite(() => supabase.from('leads').insert({
-          brand: 'PEC',
-          customer_id: custId,
+        } else if (savedLeadCustomer.created_at) {
+          savedLeadCustomer = await updateNewSalesCustomer(savedLeadCustomer, customerProfile);
+        }
+        const salesLeadId = await ensureSalesLead(custId, { occurredAt: savedLeadCustomer.created_at || null });
+        const existingLead = await supabase.from('leads').select('*').eq('id', salesLeadId).single();
+        if (existingLead.error) throw existingLead.error;
+        if (!existingLead.data) throw new Error('The saved lead could not be loaded.');
+        const lead = existingLead.data;
+        const proposed = {
           source: val('nlSource') || 'manual',
           first_name: firstName || null,
           last_name: lastName || null,
@@ -31387,21 +31460,17 @@ function openNewLeadModal(prefill) {
           campaign: val('nlCampaign') || null,
           owner_user_id: val('nlOwner') || null,
           notes: val('nlNotes') || null,
-          stage: 'new',
           created_by: (state.session && state.session.user && state.session.user.id) || null,
-          sms_consent: smsYes,
-          sms_consent_source: smsYes ? 'manual entry' : null,
-          sms_consent_at: smsYes ? new Date().toISOString() : null,
-        }).select('id').single(), { label: 'lead-manual-insert' });
-        if (ins.error) throw ins.error;
-        const evt = await supabase.from('lead_events').insert({
-          lead_id: ins.data.id,
-          event_type: 'created',
-          to_stage: 'new',
-          actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
-          payload: { source: 'manual' },
+        };
+        const patch = Object.fromEntries(Object.entries(proposed).filter(([key, value]) => value != null && !lead[key]));
+        if (smsYes && !lead.opted_out && !lead.sms_consent) Object.assign(patch, {
+          sms_consent: true, sms_consent_source: 'manual entry', sms_consent_at: new Date().toISOString(),
         });
-        if (evt.error) console.warn('[leads] created event failed:', evt.error.message);
+        if (Object.keys(patch).length) {
+          const updated = await withFreshWriteRetry(() => supabase.from('leads').update(patch).eq('id', salesLeadId).select('id').single(), { label: 'lead-manual-profile' });
+          if (updated.error) throw updated.error;
+          if (!updated.data) throw new Error('The lead details could not be saved.');
+        }
         // Prompt 97: every lead-creation door kicks the AI score. Same
         // endpoint the detail page's Refresh button uses (staff JWT auth);
         // deliberately not awaited, the browser finishes the request on its
@@ -31412,12 +31481,12 @@ function openNewLeadModal(prefill) {
           fetch('/.netlify/functions/pec-lead-ai', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session && session.access_token}` },
-            body: JSON.stringify({ lead_id: ins.data.id }),
+            body: JSON.stringify({ lead_id: salesLeadId }),
           }).catch((e) => console.warn('[leads] AI score kick failed (non-fatal):', e && e.message));
         } catch (e) { console.warn('[leads] AI score kick threw (non-fatal):', e && e.message); }
-        await enrollLeadInDrip(ins.data.id);   // best-effort; never blocks the add
+        if (!lead.archived_at && lead.stage === 'new') await enrollLeadInDrip(salesLeadId);
         closeModal();
-        showToast(`Added lead ${esc(name)}`, { ttl: 2500 });
+        showToast(`Saved lead ${esc(name)}`, { ttl: 2500 });
         renderLeads();
       } catch (err) {
         save.disabled = false; save.textContent = 'Add lead';
@@ -34974,14 +35043,16 @@ async function openPresentMode(est) {
 // stamp + lead bookkeeping the email send always did, or a texted estimate
 // would never go live and the conversion metrics + drip handoff would be
 // wrong. Mutates est in place so the caller's later reads see sent state.
-async function markEstimateSent(est) {
+async function markEstimateSent(est, { serverTracked = false } = {}) {
   const nowIso = new Date().toISOString();
   const upd = await withFreshWriteRetry(() => supabase.from('estimates')
     .update({ sent_at: nowIso, status: 'sent' })
     .eq('id', est.id)
-    .in('status', ['draft', 'sent', 'change_requested']), { label: 'estimate-sent' });
+    .in('status', ['draft', 'sent', 'change_requested']).select('id,lead_id').single(), { label: 'estimate-sent' });
   if (upd.error) throw upd.error;
-  estimateSentLeadEffects(est, nowIso); // best-effort, no await needed
+  if (!upd.data || upd.data.id !== est.id) throw new Error('The estimate changed before its sent state could be saved. Refresh it before continuing.');
+  if (upd.data.lead_id) est.lead_id = upd.data.lead_id;
+  estimateSentLeadEffects(est, nowIso, { serverTracked }); // best-effort, no await needed
   est.sent_at = nowIso; est.status = 'sent';
   // Prompt 83: freeze the CompanyCam snapshot at send (both channels funnel
   // through this flip, so one hook covers email, text, and combined sends).
@@ -35062,30 +35133,34 @@ async function pecCcSnapshotAtSend(est) {
 // "both" path already showed those gates; opts.skipFlip: the email leg of a
 // combined send already flipped sent state, never double-stamp in one op.
 async function sendEstimateText(est, opts = {}) {
+  if (est._sendUnknown) { showToast('Delivery needs to be checked in the provider history before sending this estimate again.', { ttl: 8000 }); return false; }
   if (!est.customer_phone) { showToast('No phone on file for this customer.', { ttl: 4000 }); return false; }
   if (!(await ensureEstimateToken(est))) return false;
   if (!opts.skipGate && !(await estimateSendGateOk(est))) return false;
   if (!opts.skipConfirm && !confirm(`Text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)}? They will get the review-and-sign link with a "Reply STOP to opt out" line.`)) return false;
+  let delivery;
   try {
-    await pecSendSms({ brand: 'prescott-epoxy', kind: 'estimate', estimate_token: est.public_token, to_number: est.customer_phone });
+    delivery = await pecSendSms({ brand: 'prescott-epoxy', kind: 'estimate', estimate_token: est.public_token, to_number: est.customer_phone });
   } catch (err) {
-    showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
+    if (err.send_unknown) est._sendUnknown = true;
+    showToast((err.send_unknown ? 'Text delivery needs review: ' : 'Text not sent: ') + esc(err.message || String(err)), { ttl: 9000 });
     return false;
   }
   if (!opts.skipFlip) {
-    try { await markEstimateSent(est); }
+    try { await markEstimateSent(est, { serverTracked: !delivery.tracking_pending }); }
     catch (err) {
       // The text went out but the estimate is not marked sent, so the link
       // in the customer's hands may still 404. Say so loudly.
-      showToast('Text sent, but the estimate could not be marked as sent: ' + esc(err.message || String(err)) + '. Open it and re-send so the link goes live.', { ttl: 9000 });
+      showToast('Text sent, but the estimate could not be marked as sent: ' + esc(err.message || String(err)) + '. Do not resend. Refresh the estimate and check its status.', { ttl: 9000 });
       return false;
     }
   }
-  showToast(`Estimate ${esc(estNumberLabel(est))} texted ✓`, { ttl: 3500 });
+  showToast(delivery && delivery.tracking_pending ? (delivery.warning || 'Text sent. Its reporting record is pending. Do not resend.') : `Estimate ${esc(estNumberLabel(est))} texted ✓`, { ttl: delivery && delivery.tracking_pending ? 9000 : 3500 });
   return true;
 }
 
 async function openEstimateSendModal(est, opts = {}) {
+  if (est._sendUnknown) { showToast('Delivery needs to be checked in the provider history before sending this estimate again.', { ttl: 8000 }); return; }
   if (!(await estimateSendGateOk(est))) return;
   if (!(await ensureEstimateToken(est))) return;
   await fetchBrandIdentity();
@@ -35161,23 +35236,29 @@ async function openEstimateSendModal(est, opts = {}) {
       // channels).
       if (!(await estimateSendGateOk(est))) return;
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+      let delivery = null;
       try {
         // log_template_key 'estimate' keeps these out of the Invoicing "Last
         // invoiced" counter (which keys on compose/invoice rows).
         // estimate_id (prompt 84): lets the server refuse an EMPTY estimate
         // even from a stale tab whose client gate predates the rule.
-        await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, log_template_key: 'estimate', estimate_id: est.id });
-        await markEstimateSent(est);
+        delivery = await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, log_template_key: 'estimate', estimate_id: est.id });
+        await markEstimateSent(est, { serverTracked: !delivery.tracking_pending });
         closeModal();
-        showToast(`Estimate ${esc(number)} sent to ${esc(to)} ✓`, { ttl: 4000 });
+        showToast(delivery.tracking_pending ? (delivery.warning || 'Email sent. Its reporting record is pending. Do not resend.') : `Estimate ${esc(number)} sent to ${esc(to)} ✓`, { ttl: delivery.tracking_pending ? 9000 : 4000 });
         // Combined "both" path: the pre-confirmed text leg runs only after
         // the email actually sent; its skipFlip keeps sent-state single-stamp.
         if (opts.afterSend) { try { await opts.afterSend(); } catch (_) { /* its own toast */ } }
         renderEstimateDetail(est.id);
       } catch (err) {
         console.error('[pec] estimate send failed', err);
-        sendBtn.disabled = false; sendBtn.textContent = est.sent_at ? 'Re-send estimate' : 'Send estimate';
-        errEl.textContent = isSessionStale(err) ? 'Session briefly stalled, try again.' : (err.message || String(err));
+        if (err.send_unknown) est._sendUnknown = true;
+        sendBtn.disabled = !!delivery || !!err.send_unknown;
+        sendBtn.textContent = sendBtn.disabled ? 'Check delivery and estimate status' : (est.sent_at ? 'Re-send estimate' : 'Send estimate');
+        errEl.textContent = delivery
+          ? 'Email sent, but the estimate status could not be saved. Do not resend. Refresh the estimate and check its status.'
+          : err.send_unknown ? (err.message || 'Delivery could not be confirmed. Check provider history before sending again.')
+          : isSessionStale(err) ? 'Session briefly stalled, try again.' : (err.message || String(err));
       }
     });
   } });
@@ -35188,8 +35269,14 @@ async function openEstimateSendModal(est, opts = {}) {
 // estimate_sent; presented or later never moves backward), and a timeline
 // event. Failures only warn: the
 // email already went out, so bookkeeping must never surface as a failed send.
-async function estimateSentLeadEffects(est, nowIso) {
+async function estimateSentLeadEffects(est, nowIso, { serverTracked = false } = {}) {
   if (!est.lead_id) return;
+  if (serverTracked) {
+    // Provider completion already advanced the lead and wrote its one send
+    // event atomically. Keep the existing nurture/follow-up handoff only.
+    enrollEstimateDripClient(est.lead_id).catch(() => {});
+    return;
+  }
   try {
     const { data: lead } = await supabase.from('leads').select('id,stage,estimate_sent_at').eq('id', est.lead_id).maybeSingle();
     if (!lead) return;

@@ -83,25 +83,10 @@ function createHandler({ fetchImpl = fetch, env = process.env, now = () => new D
           const endDate = new Date(`${week}T00:00:00Z`);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(week) || !Number.isFinite(endDate.getTime()) || endDate.toISOString().slice(0,10) !== week || endDate.getUTCDay() !== 0 || week > clock.priorWeekEnding) throw error(400, 'Choose a completed Sunday-ending week.');
           const start = new Date(endDate.getTime()-6*86400000).toISOString().slice(0,10);
-          const after = new Date(endDate.getTime()+86400000).toISOString().slice(0,10);
-          const all = async path => {
-            const rows=[];
-            for(let offset=0;offset<10000;offset+=1000) {
-              const batch=await db(`${path}&order=id&limit=1000&offset=${offset}`); rows.push(...batch);
-              if(batch.length<1000)return rows;
-            }
-            throw error(503,'This week exceeds the review limit. No partial totals were returned.');
-          };
-          const jobs = date => all(`/jobs?select=id,price,dripjobs_deal_id,customers!inner(company)&customers.company=eq.prescott-epoxy&archived_at=is.null&voided_at=is.null&${date}=gte.${start}&${date}=lt.${after}`);
-          const [leads,booked,produced]=await Promise.all([
-            all(`/leads?select=id&brand=eq.PEC&deleted_at=is.null&created_at=gte.${start}T07:00:00Z&created_at=lt.${after}T07:00:00Z`),jobs('signed_date'),jobs('completed_date'),
-          ]);
-          const total=rows=>rows.some(r=>r.price==null||!Number.isFinite(Number(r.price)))?null:rows.reduce((sum,r)=>sum+Number(r.price),0);
-          const warnings=['Estimates are unknown: resending overwrites the CRM sent date. Reconcile that count manually.','Hours are unknown until dated production labor and brand coverage are reconciled.','Booked and produced dollars use current contract prices, which can restate history. No cash-collected or bank-balance claim is made.'];
-          const duplicates=rows=>{const seen=new Set();return rows.some(r=>r.dripjobs_deal_id&& (seen.has(r.dripjobs_deal_id)||!seen.add(r.dripjobs_deal_id)));};
-          if(duplicates(booked)||duplicates(produced))warnings.push('Repeated DripJobs deal IDs found. Review duplicate jobs before using these totals.');
-          if(total(booked)===null||total(produced)===null)warnings.push('Some jobs have no price; affected dollar totals remain unknown.');
-          return reply(200,{week,start,queriedAt:now().toISOString(),description:'PEC new CRM opportunities by created date (Arizona); jobs booked by signed date; produced revenue by completion date. Archived/voided jobs are excluded. This is a read-only review, not an automatic import.',actual:{leads:new Set(leads.map(r=>r.id)).size,estimates:null,jobsBooked:booked.length,bookedDollars:total(booked),producedDollars:total(produced),laborHours:null},warnings});
+          const feed=await fetchMbpLive({db,weekEndings:[week],now:now()});
+          return reply(200,{week,start,queriedAt:feed.queriedAt,
+            description:'PEC new contacts by first pipeline inquiry date and proposals by first successful send, in Arizona time. Each contact/proposal counts once. Resends and later stages do not add counts. Missing evidence stays unavailable.',
+            actual:feed.weeks[0]?.actual,available:feed.weeks[0]?.available,warnings:feed.warnings});
         }
         if (action === 'status') {
           const focus = await read(`focus:${clock.day}`);

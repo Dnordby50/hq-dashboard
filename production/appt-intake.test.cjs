@@ -7,7 +7,9 @@
 'use strict';
 const assert = require('assert');
 const { processApptIntake, parseApptDate, normApptType } = require('../netlify/functions/pec-appt-intake.cjs');
-const { makeDb, makeChecker } = require('./_drip-test-kit.cjs');
+const { makeDb: baseDb, makeChecker } = require('./_drip-test-kit.cjs');
+const { withSalesLeadRpc } = require('./_sales-pipeline-test-kit.cjs');
+const makeDb = tables => withSalesLeadRpc(baseDb(tables), NOW);
 
 const { state, ok } = makeChecker();
 
@@ -206,7 +208,9 @@ const CREATED = {
     });
     ok(out.status === 200, '200');
     const appt = fx.db.pec_appointments[0];
-    ok(appt.lead_id == null && appt.customer_id === 'cust1', 'no lead, so the customer matched by phone links');
+    ok(appt.lead_id === 'canonical-cust1' && appt.customer_id === 'cust1', 'customer-only quote booking gets its canonical pipeline lead');
+    ok(fx.db.leads.find(row => row.id === appt.lead_id).stage === 'estimate_scheduled', 'customer-only booking automatically advances to Estimate Scheduled');
+    ok(fx.salesLeadCalls[0].p_occurred_at === null, 'a legacy customer import date is never used as this new inquiry date');
     ok(appt.sales_member_id === 'sm2', 'rep matched by name, case-insensitive');
     ok(appt.appt_type === 'on_site_estimate', 'missing appt_type defaults');
   }
@@ -387,7 +391,7 @@ const CREATED = {
     ok(fx2.db.leads[0].source === 'google', 'a blank source is filled from Routemize');
   }
 
-  console.log('# routemize native: customer fallback stores contactId, creates no lead');
+  console.log('# routemize native: customer fallback creates and links the canonical lead');
   {
     const fx = makeDb(baseTables());
     const { deps } = stubDeps(fx);
@@ -396,9 +400,9 @@ const CREATED = {
       contact: { contactId: 'rz-contact-bob', firstName: 'Bob', lastName: 'Builder', email: 'nomatch@example.com', phoneNumber: '928-555-9999', leadSource: null, leadSourceText: null },
     }));
     ok(out.status === 200, '200');
-    ok(fx.db.pec_appointments[0].customer_id === 'cust1' && fx.db.pec_appointments[0].lead_id == null, 'customer matched by phone, no lead');
-    ok(fx.db.leads.length === 1, 'a matched CUSTOMER suppresses lead creation (already in the pipeline)');
-    ok(fx.db.customers[0].routemize_contact_id === 'rz-contact-bob', 'contactId stored on the customer');
+    ok(fx.db.pec_appointments[0].customer_id === 'cust1' && fx.db.pec_appointments[0].lead_id === 'canonical-cust1', 'customer matched by phone and linked to its canonical lead');
+    ok(fx.db.leads.length === 2, 'customer-only inquiry enters the pipeline');
+    ok(fx.db.leads.find(row => row.id === 'canonical-cust1').routemize_contact_id === 'rz-contact-bob', 'contactId stored on the linked lead');
   }
 
   console.log('# routemize native: StatusChanged read defensively (landmine 5)');
@@ -612,6 +616,34 @@ const CREATED = {
     ok(appt.start_at === '2026-08-14T16:15:00.000Z', 'the parsed value is kept (never silently pick the other reading)');
     ok(/cross-check mismatch/.test(appt.notes || '') && /8:00 AM/.test(appt.notes || ''), 'both readings named in the internal notes');
     ok(fx.db.pec_notifications.some(n => n.type === 'appt_intake_stalled'), 'mismatch rings the alarm');
+  }
+
+  {
+    const fx = makeDb(baseTables());
+    const { deps, captured } = stubDeps(fx);
+    const base = deps.sb;
+    deps.sb = async (method, path, ...rest) => {
+      if (path === '/rpc/ensure_sales_lead') throw new Error('pipeline unavailable');
+      return base(method, path, ...rest);
+    };
+    const refused = await processApptIntake(deps, { ...CREATED, phone: '9285559999', email: 'bob@example.com', customer_name: 'Bob Builder' });
+    ok(refused.status === 500 && fx.db.pec_appointments.length === 0, 'customer-only intake fails visibly if canonical lead linkage fails');
+    ok(captured.kicks.length === 0, 'failed lead linkage sends no appointment confirmation');
+
+    const partial = makeDb(baseTables());
+    const recovering = stubDeps(partial);
+    const original = recovering.deps.sb;
+    let failLead = true;
+    recovering.deps.sb = async (method, path, ...rest) => {
+      if (method === 'POST' && path === '/leads' && failLead) { failLead = false; throw new Error('lead write failed'); }
+      return original(method, path, ...rest);
+    };
+    const first = await processApptIntake(recovering.deps, rzEnvelope());
+    ok(first.status === 500 && partial.db.pec_appointments.length === 0 && partial.db.customers.length === 2, 'Routemize lead failure keeps saved customer but refuses an unlinked appointment');
+    const second = await processApptIntake(recovering.deps, rzEnvelope());
+    await processApptIntake(recovering.deps, rzEnvelope());
+    ok(second.status === 200 && partial.db.customers.length === 2 && partial.db.leads.length === 2 && partial.db.pec_appointments.length === 1, 'Routemize retry recovers saved customer without duplicate lead or appointment');
+    ok(recovering.captured.kicks.length === 1, 'recovered Routemize appointment confirms only once');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

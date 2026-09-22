@@ -1,5 +1,17 @@
 [
   {
+    "id": "sales-pipeline-first-send-reporting",
+    "date": "2026-09-22",
+    "title": "New inquiries follow the sales pipeline.",
+    "summary": "New contact entry, estimate appointments and proposals now connect to one lead. PEC Sales Plan counts each proposal once, on its first successful email or text send.",
+    "howto": [
+      "Create the contact or schedule an estimate as usual. The lead appears in the sales pipeline and scheduling advances it to Estimate scheduled without moving later stages backward.",
+      "In Growth and Development, open Sales Plan and refresh PEC values. Resends and sending by both email and text count as one proposal.",
+      "Manual entries stay editable and marked. Choose Use TopCoat to return an overridden cell to an available source value.",
+      "If historical contacts are missing from the pipeline or a delivery outcome needs verification, TopCoat shows a reconciliation warning instead of confirming an incomplete total."
+    ]
+  },
+  {
     "id": "customer-portal-quotes-invoices-referrals",
     "date": "2026-09-22",
     "title": "A customer portal for quotes, payments and staying in touch.",

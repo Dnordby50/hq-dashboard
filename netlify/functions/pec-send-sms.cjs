@@ -21,6 +21,7 @@ const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { resolveCurrentAsk } = require('./_pec-installments.cjs');
 const { emptySendError, choiceGroupSendError } = require('../../production/optional-lines.cjs');
 const { estimatePricingSendError, PRICING_SEND_COLUMNS, PRICING_LINE_COLUMNS } = require('./_pec-estimate-send.cjs');
+const { sendTrackedEstimate, trackingResponse } = require('./_pec-estimate-send-tracking.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -170,6 +171,7 @@ exports.handler = async (event) => {
 
     // Build the message body for the kind.
     let messageBody = '';
+    let trackedEstimate = null;
     if (kind === 'invoice') {
       if (!job_id) return jc(400, { ok: false, error: 'job_id is required for an invoice text.' });
       // Pull the rolled-up AR row, same source the email invoice uses, incl. the
@@ -214,9 +216,10 @@ exports.handler = async (event) => {
       // kind stays 'estimate' in pec_sms_log so these never pollute the
       // Invoicing "Last invoiced" counter (which keys on kind 'invoice').
       if (!estimate_token) return jc(400, { ok: false, error: 'estimate_token is required for an estimate text.' });
-      const estRows = await sb('GET', `/estimates?public_token=eq.${encodeURIComponent(estimate_token)}&deleted_at=is.null&select=${PRICING_SEND_COLUMNS},estimate_number,customer_name,customer_first_name,customer_phone,lead_id,estimate_line_items(${PRICING_LINE_COLUMNS})&limit=1`);
+      const estRows = await sb('GET', `/estimates?public_token=eq.${encodeURIComponent(estimate_token)}&deleted_at=is.null&select=${PRICING_SEND_COLUMNS},brand,estimate_number,customer_name,customer_first_name,customer_phone,lead_id,estimate_line_items(${PRICING_LINE_COLUMNS})&limit=1`);
       const est = Array.isArray(estRows) ? estRows[0] : null;
       if (!est) return jc(400, { ok: false, error: 'Estimate not found for that token.' });
+      trackedEstimate = est;
       // Prompt 84 (Bug 2): server mirror of the empty-estimate hard block, so
       // a stale tab or a crafted POST cannot text a blank estimate's link
       // (EST-102075 went out exactly that way). Same rule + message as the
@@ -290,15 +293,20 @@ exports.handler = async (event) => {
     }
 
     // Send via Quo. NON-IDEMPOTENT: a timeout here is NOT retried automatically
-    // (same rule as payments). We surface the failure and let staff retry; the
-    // log is the dedupe record.
+    // (same rule as payments). Proposal attempts remain pending on an ambiguous
+    // response, so staff must verify provider history before another send.
     const payload = { content: messageBody, from: fromNumber, to: [recipient] };
-    const res = await fetch(QUO_MESSAGES_URL, {
+    const send = () => fetch(QUO_MESSAGES_URL, {
       method: 'POST',
       headers: { Authorization: QUO_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const resBody = await res.json().catch(() => ({}));
+    const tracking = trackedEstimate ? await sendTrackedEstimate({ db: sb, estimateId: trackedEstimate.id, brand: trackedEstimate.brand, channel: 'sms', recipient, send }) : null;
+    if (tracking && ['not_sent', 'unknown'].includes(tracking.state)) {
+      return jc(tracking.state === 'not_sent' ? 503 : 502, { ok: false, error: tracking.error, send_unknown: tracking.state === 'unknown', tracking_attempt_id: tracking.tracking_attempt_id });
+    }
+    const res = tracking ? tracking.response : await send();
+    const resBody = tracking ? tracking.body : await res.json().catch(() => ({}));
 
     if (!res.ok) {
       const msg = (resBody && (resBody.message || (resBody.error && (resBody.error.message || resBody.error)) || resBody.errors)) || `Quo error ${res.status}`;
@@ -313,7 +321,7 @@ exports.handler = async (event) => {
       customer_id: custId, job_id, body: messageBody, kind, status: 'sent',
       quo_message_id: quoId, sent_by_user: user.id,
     });
-    return jc(200, { ok: true, log_id: logId, quo_message_id: quoId });
+    return jc(200, { ok: true, log_id: logId, quo_message_id: quoId, ...(tracking ? trackingResponse(tracking) : {}) });
   } catch (err) {
     console.error('pec-send-sms error:', err.message);
     await logRow({ direction: 'out', brand, customer_id, job_id, kind, status: 'failed', sent_by_user: user.id, error_message: String(err.message).slice(0, 500) });

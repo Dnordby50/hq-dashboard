@@ -15,7 +15,9 @@ const {
   checkArea, routeAnswers,
 } = require('../netlify/functions/pec-booking.cjs');
 const { isBookableRep, resolveEligibility } = require('../netlify/functions/_pec-booking-reps.cjs');
-const { makeDb } = require('./_drip-test-kit.cjs');
+const { makeDb: baseDb } = require('./_drip-test-kit.cjs');
+const { withSalesLeadRpc } = require('./_sales-pipeline-test-kit.cjs');
+const makeDb = tables => withSalesLeadRpc(baseDb(tables), NOW);
 
 let passed = 0, failed = 0;
 function ok(cond, label) {
@@ -711,6 +713,47 @@ const goodBody = (over = {}) => ({
     const firstFree = modeFx('primary_first');
     await processBook(makeDeps(firstFree).deps, goodBody());
     ok(firstFree.db.pec_appointments[0].sales_member_id === REP, 'primary_first: when the primary is free the primary takes the booking');
+  }
+
+  {
+    const customer = { id: 'customer-only', name: 'Jane Doe', phone: '9285551212', email: 'jane@example.com', archived_at: null, created_at: '2025-01-01T00:00:00Z' };
+    const fx = makeDb(baseTables({ customers: [customer] }));
+    const { deps } = makeDeps(fx);
+    const result = await processBook(deps, goodBody());
+    ok(result.status === 200 && fx.db.pec_appointments[0].lead_id === 'canonical-customer-only', 'customer-only online booker enters the pipeline');
+    ok(fx.db.leads[0].stage === 'estimate_scheduled', 'customer-only booking advances the canonical lead automatically');
+    ok(fx.salesLeadCalls.length === 1 && fx.salesLeadCalls[0].p_occurred_at === null, 'booking uses current inquiry, not legacy customer import date');
+    await processBook(deps, goodBody());
+    ok(fx.db.leads.length === 1 && fx.db.pec_appointments.length === 1, 'duplicate booking does not inflate lead or appointment count');
+
+    const failed = makeDb(baseTables({ customers: [customer] }));
+    const base = failed.sb;
+    const failing = makeDeps(failed, { sb: async (method, path, ...rest) => {
+      if (path === '/rpc/ensure_sales_lead') throw new Error('pipeline unavailable');
+      return base(method, path, ...rest);
+    } });
+    const refused = await processBook(failing.deps, goodBody());
+    ok(refused.status === 500 && failed.db.pec_appointments.length === 0, 'pipeline-link failure cannot silently save a customer-only booking');
+    ok(failing.spies.reminded.length === 0, 'no booking confirmation on failed pipeline linkage');
+
+    const outside = makeDb(baseTables({ customers: [customer] }));
+    const captured = await processOutOfAreaLead(makeDeps(outside).deps, goodBody({ zip: '99999', city: 'Phoenix' }));
+    ok(captured.status === 200 && outside.db.leads.length === 1 && outside.db.leads[0].customer_id === customer.id, 'out-of-area request also links an existing customer to the canonical lead');
+
+    const partial = makeDb(baseTables());
+    const original = partial.sb;
+    let failLead = true;
+    const retrying = makeDeps(partial, { sb: async (method, path, ...rest) => {
+      if (method === 'POST' && path === '/leads' && failLead) { failLead = false; throw new Error('lead write failed'); }
+      return original(method, path, ...rest);
+    } });
+    const first = await processBook(retrying.deps, goodBody());
+    ok(first.status === 500 && partial.db.pec_appointments.length === 0 && partial.db.customers.length === 1, 'new booker lead failure preserves customer but refuses unlinked appointment');
+    ok(retrying.spies.reminded.length === 0, 'no confirmation on incomplete new booker intake');
+    const second = await processBook(retrying.deps, goodBody());
+    await processBook(retrying.deps, goodBody());
+    ok(second.status === 200 && partial.db.customers.length === 1 && partial.db.leads.length === 1 && partial.db.pec_appointments.length === 1, 'retry recovers partial customer through canonical RPC without duplicate booking');
+    ok(retrying.spies.reminded.length === 1, 'recovered booking confirms once, replay does not resend');
   }
 
   console.log(`booking: ${passed} passed, ${failed} failed`);
