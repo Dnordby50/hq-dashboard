@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.106.2",
+    "@supabase/supabase-js": "2.116.0",
     "prosemirror-commands": "1.7.2",
     "prosemirror-history": "1.5.0",
     "prosemirror-keymap": "1.2.3",
@@ -18,7 +18,7 @@
     "prosemirror-model": "1.25.11",
     "prosemirror-schema-list": "1.5.1",
     "prosemirror-state": "1.4.4",
-    "prosemirror-view": "1.42.3",
+    "prosemirror-view": "1.42.4",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
