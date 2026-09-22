@@ -2635,9 +2635,9 @@ Customer hub API (2026-09-22, live and verified): `POST /api/portal` accepts onl
 `pec-photos` stays public with existing URLs; uploads now have a 20 MiB limit and JPEG/PNG/WebP/GIF/HEIC/HEIF MIME allowlist. Public-schema TRUNCATE/REFERENCES/TRIGGER privileges were revoked from anon/authenticated. For future postgres-owned objects, automatic anon/authenticated table/sequence/function privileges and default PUBLIC function execution were removed; migrations must grant intended browser access explicitly. Existing application CRUD grants were preserved.
 
 
-## Pending sales source-of-truth schema (2026-09-22, NOT applied by this task)
+## Sales source-of-truth schema (verified live 2026-09-22)
 
-Source: `supabase/migrations/20260922162337_sales_pipeline_and_first_send_truth.sql`, rehearsed against isolated PostgreSQL with the existing estimate-status guard. This section describes a release prerequisite, not verified live schema.
+Source: exact `supabase/migrations/20260922162337_sales_pipeline_and_first_send_truth.sql` applied through Supabase as `20260922173603 sales_pipeline_and_first_send_truth`. Verified live: two RLS-protected tables, staff-read/service-write grants, five functions with invoker security and empty search paths, five triggers, five named indexes, and send-completion constraints. Both evidence tables were empty after apply. Before/after digests for customers, leads, lead_events, estimates and pec_appointments matched. Twenty-four isolated PostgreSQL rehearsal groups passed.
 
 - `ensure_sales_lead(p_customer_id uuid, p_brand text='PEC', p_stage text='new', p_occurred_at timestamptz=null) RETURNS uuid`: SECURITY INVOKER, empty search path, staff/service-only execution. Serializes creation per customer/brand; preserves existing inquiry dates and later/archived stages. Private implementation under `topcoat_sales_private`.
 - `trg_appointments_sales_contact_link`: BEFORE native on-site estimate appointment insertion or contact/type/status/source update. Fills lead linkage and advances early stages only when scheduled; Google imports do not create/advance leads.

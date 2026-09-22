@@ -1,6 +1,6 @@
 # Sales reporting and pipeline contract
 
-Prepared 2026-09-22. The migration and application changes are a single release dependency. The migration has been rehearsed locally, not applied by this task. Historical business records are not changed by deployment.
+Database migration applied and verified on 2026-09-22 as `20260922173603 sales_pipeline_and_first_send_truth`. The application release uses this schema. The schema migration itself changes no historical business records; any targeted reconciliation is separately recorded.
 
 ## Definitions
 

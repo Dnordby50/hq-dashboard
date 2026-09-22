@@ -1,3 +1,16 @@
+## [2026-09-22 10:36 MST] sales: apply and verify source-of-truth database migration
+By: Codex
+
+Authorization: Dylan asked Codex to run the prepared migration, then explicitly said "do it all for me", authorizing the remaining reconciliation and release. Applied the exact committed migration `supabase/migrations/20260922162337_sales_pipeline_and_first_send_truth.sql` to HQ Dashboard project `zdfpzmmrgotynrwkeakd` through Supabase apply_migration. Recorded version: `20260922173603`, name `sales_pipeline_and_first_send_truth`; file SHA-256 `b1d38240202f60d9af9e5803b723bc156bf1c6e13a05699553ff227ce0640935`. No SQL edits or transaction-wrapper changes during apply.
+
+Preflight: Every required column/function existed; new tables/RPC/history entry absent. Fifty-one nondeleted estimates and 46 native on-site estimate appointments had zero customer/company/brand/link/timestamp conflicts. Existing staff/service grants and service BYPASSRLS verified. The exact migration passed 24 isolated PostgreSQL groups again before applying.
+
+Live acceptance: Two tables with RLS and staff-read/service-write grants, five invoker functions with empty search_path, five triggers, five named indexes including unique pending sends, and completion/identity constraints verified. New tables empty. Anonymous PostgREST requests recognize both tables and RPC and reject access with 401/42501. Existing customer/lead/event/estimate/appointment row counts and content digests matched before and after, proving no historical data mutation during schema apply. Security-advisor findings unchanged. Private evidence: `/Users/dylannordby/Documents/Codex/TopCoat-Sales-Truth-2026-09-22/migration-live-verification.json`.
+
+Next steps: Complete the explicitly authorized seven-contact reconciliation using the reviewed dry-run and idempotent transaction, publish the tested application branch, and verify the authenticated Sales Plan. This entry records the database apply only; code is not yet published.
+Handoff to Cowork: None. Codex has direct access and owns the release.
+Handoff to Dylan: Database prerequisite is applied and verified; reconciliation and deployment are in progress.
+
 ## [2026-09-22 09:40 MST] sales: link quote inquiries to pipeline and record first proposal sends (prepared, not live)
 By: Codex
 
