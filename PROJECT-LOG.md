@@ -1,3 +1,12 @@
+## [2026-09-23 13:54 MST] estimates: verify staff contract acceptance live
+By: Codex
+
+Published application commit 1d155d83afdcdddf22bd2856b033d1a22fe6acef to origin/main. GitHub verify check succeeded. Live dashboard HTTP 200 matches the committed index.html byte-for-byte (SHA-256 0c26158a463ca29ba63ada74e86926283dc6af791c1ba47fc1f51432932e1225). The new accept_staff action returns 401 without a staff session; an invalid public acceptance token remains a generic 404. Database prerequisite was applied and verified before publication, as recorded below.
+
+Authenticated Dylan/Admin browser verification: Estimates > existing sent commercial proposal > More > Mark accepted opened the new Accept on behalf of customer form with both existing lines and the correct $5,925 total, Date accepted, Contract reference or acceptance note, staff-login disclosure and Accept and create job. Canceled without editing or submitting. The new What's New entry is live. End-to-end mutation/job creation was tested with synthetic fixtures only; no real proposal was accepted and no customer messages were sent for testing. Desktop/mobile layout and full test/posttest checks are recorded below.
+
+Handoff to Dylan: Complete and live. Use the existing More > Mark accepted button, enter the actual acceptance date and contract reference, and choose Accept and create job. No remaining release blocker.
+
 ## [2026-09-23 13:50 MST] estimates: accept commercial proposals under the customer's contract
 By: Codex
 
