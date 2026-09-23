@@ -1,6 +1,6 @@
 # Draft: reliable sales reporting from the first contact onward
 
-Prepared September 23, 2026. **Design and executable policy draft, not a production change.** The companion policy has no database connection and is not imported by the application. Historical corrections already verified in production remain separate from this draft.
+Prepared September 23, 2026; implementation authorized the same day. This document preserves the original design. The companion policy remains an isolated prototype; the application implementation is documented in [the source-of-truth contract](../../docs/sales/source-of-truth.md) and the September 23 migrations. Historical audit exceptions remain open. Native proposal acceptance retains its existing signature compare-and-set and recoverable job-creation workflow; completion and external acceptance use the new transactional operations. No additional scheduled alert automation was installed.
 
 ## The operating result
 
@@ -106,4 +106,4 @@ Still requiring evidence: conflicting job amounts/dates and ambiguous duplicate 
 
 Pending classification decision: whether material-only sales contribute revenue without increasing the jobs-booked count. Preserve these records and current reporting until that decision is confirmed; use an explicit sale type instead of inferring it from price or description at report time.
 
-Recommended dollar policy for approval before implementation: freeze original booked value on acceptance, report signed change-order adjustments on their own acceptance dates, and record final completed value on completion. Cancellations/credits need explicit adjustment events as well. Until approved and implemented, current contract-price-based dollar reporting remains unchanged and labeled accordingly.
+Approved dollar policy now implemented prospectively: freeze original booked value on acceptance, report signed change-order adjustments on their own acceptance dates, and record completed value on completion. Price and void changes append adjustment events. Legacy records without event snapshots retain clearly labeled current-price provenance; historical amounts are not automatically certified or restated.

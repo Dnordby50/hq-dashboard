@@ -47,7 +47,8 @@
 
 const crypto = require('crypto');
 const { sb, json: rawJson, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
-const { normPhone, postgrestLiteral, findRecentLiveLead, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
+const { recordInquiry } = require('./_pec-sales-inquiry.cjs');
+const { normPhone, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 const { enrollLead, sendInstantTouch } = require('./_pec-drip.cjs');
 const { notifyLeadSlack, notifyLeadBell } = require('./_pec-lead-notify.cjs');
@@ -162,75 +163,35 @@ async function kickLeadAi(leadId) {
   } catch (e) { console.warn('pec-pricing: AI trigger threw:', e && e.message); }
 }
 
-// Returns { lead_id, customer_id, deduped } and never throws: a lead-pipeline
-// failure logs and returns nulls so the audit row still lands (the visitor
-// still gets their price; the miss is visible in the request row).
+// Returns the canonical inquiry link. A failed save returns nulls so the
+// caller refuses success and the same request key can safely retry.
 async function captureLead(db, f, hooks = {}) {
   const ai = hooks.kickLeadAi || kickLeadAi;
   try {
     const source = await resolveLeadSourceName(db, 'instant_pricing');
     const projectLine = `${f.typeName}${f.sqft ? `, about ${f.sqft} sqft` : ''}${f.priceLow != null ? `, quoted ${fmtMoney(f.priceLow)} to ${fmtMoney(f.priceHigh)}` : ''}`;
 
-    // Same-human dedupe (90-day window, shared rule): the repeat inquiry
-    // lands on the existing lead's timeline as a note; no second lead, no
-    // re-enroll, no re-bill of the AI read. Same posture as the intake.
-    const dupHuman = await findRecentLiveLead(db, { phone10: f.phone10, email: f.email });
-    if (dupHuman) {
-      await db('POST', '/lead_events', {
-        lead_id: dupHuman.id,
-        event_type: 'note',
-        payload: {
-          text: `Requested instant pricing again: ${projectLine}.`,
-          via: 'instant_pricing',
-          project_type: f.typeName, sqft: f.sqft,
-          price_low: f.priceLow, price_high: f.priceHigh, in_area: f.inArea,
-        },
-      }).catch(e => console.warn('pec-pricing: dedupe note failed (non-fatal):', e && e.message));
-      return { lead_id: dupHuman.id, customer_id: dupHuman.customer_id || null, deduped: true };
-    }
-
-    let customer = { customer_id: null, created: false };
-    try {
-      customer = await resolveOrCreateCustomer(db, {
-        name: f.name, firstName: f.firstName, lastName: f.lastName,
-        phone10: f.phone10, email: f.email,
-        address: f.address, city: f.city, state: f.state, zip: f.zip,
-        source, brand: 'PEC',
-      });
-    } catch (e) {
-      console.warn('pec-pricing: customer resolve failed (lead lands unlinked):', e && e.message);
-    }
-
-    const created = await db('POST', '/leads', {
-      brand: 'PEC',
-      customer_id: customer.customer_id,
-      source,
-      first_name: f.firstName,
-      last_name: f.lastName,
-      full_name: f.name,
-      email: f.email,
-      phone: f.phone10 || null,
+    const customer = await resolveOrCreateCustomer(db, {
+      name: f.name, firstName: f.firstName, lastName: f.lastName,
+      phone10: f.phone10, email: f.email,
       address: f.address, city: f.city, state: f.state, zip: f.zip,
-      stage: 'new',
-      notes: `Instant pricing request: ${projectLine}.`,
-      sms_consent: true,
-      sms_consent_source: 'instant pricing form (implied consent policy 2026-08-21)',
-      sms_consent_at: new Date().toISOString(),
-    }, true);
-    const lead = Array.isArray(created) && created[0];
-    if (!lead) throw new Error('lead insert returned no row');
-
-    await db('POST', '/lead_events', {
-      lead_id: lead.id,
-      event_type: 'created',
-      to_stage: 'new',
-      payload: {
-        source, via: 'instant_pricing',
-        project_type: f.typeName, sqft: f.sqft,
-        price_low: f.priceLow, price_high: f.priceHigh, in_area: f.inArea,
-        ...(f.disclosure ? { sms_consent_disclosure: f.disclosure } : {}),
-      },
-    }).catch(e => console.warn('pec-pricing: created lead_event failed (non-fatal):', e && e.message));
+      source, brand: 'PEC',
+    });
+    const id = await recordInquiry(db, { customerId: customer.customer_id,
+      key: 'pricing:' + f.requestKey, mode: 'new' });
+    const previous = await db('GET', `/pec_pricing_requests?lead_id=eq.${encodeURIComponent(id)}&status=in.(priced,out_of_area,call_us)&select=*&limit=1`);
+    if (previous[0]) return { lead_id: id, customer_id: customer.customer_id, deduped: true, request_id: previous[0].id, previous: previous[0] };
+    await db('PATCH', `/leads?id=eq.${encodeURIComponent(id)}&sms_consent=eq.false&opted_out=eq.false`, {
+      sms_consent: true, sms_consent_source: 'instant pricing form (implied consent policy 2026-08-21)', sms_consent_at: new Date().toISOString(),
+    });
+    const rows = await db('GET', `/leads?id=eq.${encodeURIComponent(id)}&select=*&limit=1`);
+    const lead = rows[0];
+    if (!lead) throw new Error('Saved inquiry unavailable');
+    await db('POST', '/lead_events', { lead_id: id, event_type: 'note', payload: {
+      text: `Instant pricing request: ${projectLine}.`, via: 'instant_pricing',
+      project_type: f.typeName, sqft: f.sqft, price_low: f.priceLow, price_high: f.priceHigh, in_area: f.inArea,
+      ...(f.disclosure ? { sms_consent_disclosure: f.disclosure } : {}),
+    }});
 
     await ai(lead.id);
 
@@ -258,7 +219,7 @@ async function captureLead(db, f, hooks = {}) {
 
     return { lead_id: lead.id, customer_id: customer.customer_id, deduped: false };
   } catch (e) {
-    console.warn('pec-pricing: lead capture failed (quote still answered):', e && e.message);
+    console.warn('pec-pricing: lead capture failed:', e && e.message);
     return { lead_id: null, customer_id: null, deduped: false };
   }
 }
@@ -444,35 +405,8 @@ async function processQuote(deps, body, meta = {}) {
     return { status: 503, body: { ok: false, error: 'Instant pricing is not available right now. Please call us.' } };
   }
 
-  // Duplicate window: the same person re-asking inside the window gets the
-  // SAME stored answer (idempotency beats rate freshness inside 24h): no
-  // second lead, no second drip enrollment, and the funnel is not inflated.
-  const dupWindowH = numSetting(settings, 'pricing_duplicate_window_hours', 24);
-  try {
-    const ors = [];
-    if (phone10) ors.push(`phone.eq.${phone10}`);
-    if (email) ors.push(`email.eq.${postgrestLiteral(email)}`);
-    if (ors.length && dupWindowH > 0) {
-      const since = new Date(Date.now() - dupWindowH * 3600 * 1000).toISOString();
-      // The whole or-expression is percent-encoded as one unit, the
-      // sameHumanOr convention (PostgREST parses it after decoding).
-      const prior = await db('GET',
-        `/pec_pricing_requests?or=(${encodeURIComponent(ors.join(','))})&status=in.(priced,out_of_area,call_us)&project_type_id=eq.${encodeURIComponent(type.id)}&created_at=gte.${encodeURIComponent(since)}&select=id,price_low,price_high,lead_id,in_area&order=created_at.desc&limit=1`);
-      const p = Array.isArray(prior) && prior[0];
-      if (p) {
-        await writeRequestRow(db, { ...baseRow, status: 'rejected', error_text: 'duplicate', lead_id: p.lead_id });
-        await log({ endpoint: ENDPOINT, customer_name: name, outcome: 'ok', status_code: 200, message: `duplicate window; answered with request ${p.id}`, payload: body });
-        const stored = { ...okBody(p.id, true) };
-        if (p.price_low != null) {
-          stored.price_low = Number(p.price_low); stored.price_high = Number(p.price_high);
-          stored.price_low_label = fmtMoney(p.price_low); stored.price_high_label = fmtMoney(p.price_high);
-          stored.copy = renderRevealCopy(cleanStr(settings.pricing_reveal_copy) || DEFAULT_REVEAL, p.price_low, p.price_high);
-        }
-        return { status: 200, body: stored };
-      }
-    }
-  } catch (e) {
-    console.warn('pec-pricing: duplicate-window read failed (continuing):', e && e.message);
+  if (!/^[a-zA-Z0-9_-]{16,100}$/.test(String(body.request_key || ''))) {
+    return { status: 400, body: { ok: false, error: 'Please refresh the pricing form before submitting.' } };
   }
 
   // THE capture: lead first (never lost to a later failure), then the audit
@@ -482,9 +416,21 @@ async function processQuote(deps, body, meta = {}) {
     address: address1, city, state, zip,
     typeName: type.name, sqft: sqftNum,
     priceLow: range ? range.low : null, priceHigh: range ? range.high : null,
-    inArea, disclosure,
+    inArea, disclosure, requestKey: body.request_key,
     instantDelayMinutes: numSetting(settings, 'pricing_instant_touch_delay_minutes', 10),
   }, { kickLeadAi: deps.kickLeadAi });
+
+  if (!lead.lead_id) return { status: 503, body: { ok: false, error: 'We could not save your request. Please try again or call us.' } };
+  if (lead.deduped) {
+    const prior = lead.previous, answer = okBody(lead.request_id, true);
+    answer.price_low = prior.price_low; answer.price_high = prior.price_high;
+    answer.price_low_label = prior.price_low == null ? null : fmtMoney(prior.price_low);
+    answer.price_high_label = prior.price_high == null ? null : fmtMoney(prior.price_high);
+    answer.priceable = prior.status !== 'call_us'; answer.in_area = prior.in_area;
+    answer.booking.open = booking.open && prior.in_area;
+    answer.copy = answer.priceable ? renderRevealCopy(cleanStr(settings.pricing_reveal_copy) || DEFAULT_REVEAL, prior.price_low, prior.price_high) : callUsCopy;
+    return { status: 200, body: answer };
+  }
 
   const status = isCallUs ? 'call_us' : (inArea ? 'priced' : 'out_of_area');
   const row = await writeRequestRow(db, {
@@ -822,8 +768,9 @@ ${!preview && (brand.phone || brand.license_number) ? `<div class="underline-not
 var CFG=window.__PR, S={type:null, sqft:null, addr:null, contact:null, quote:null, start:null, days:[], showAllDays:false, dayLabel:'', slotLabel:'', t0:Date.now()};
 var $=function(id){return document.getElementById(id)};
 function show(id,on){$(id).style.display=on?'':'none'}
-function apiP(path,body){return fetch('/api/pricing/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
-function apiB(path,body){return fetch('/api/booking/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
+var pricingRequestKey=crypto.randomUUID();
+function apiP(path,body){if(path==='quote')body.request_key=pricingRequestKey;return fetch('/api/pricing/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
+function apiB(path,body){if(path==='book'||path==='lead'){body.request_key=pricingRequestKey;body.pricing_request_key=pricingRequestKey;}return fetch('/api/booking/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
 
 if(CFG.disclosure){$('prConsentText').textContent=CFG.disclosure}
 

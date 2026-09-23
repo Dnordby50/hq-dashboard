@@ -7,8 +7,8 @@
 // Header: x-webhook-secret: <PEC_WEBHOOK_SECRET>   (same secret the DripJobs
 //         webhooks use; already set in Netlify env)
 //
-// Body (all optional except one of name/full_name/first_name and one of
-// phone/email; Zapier maps platform fields to these):
+// Body requires a name, phone/email, stable source_ref/event_id, and original
+// inquiry_date/submitted_at/created_at; Zapier maps platform fields to these:
 //   {
 //     source: 'meta' | 'google_lsa' | 'angi' | 'webform' | ...   (default 'webform')
 //     source_ref: platform lead id, for idempotent retries
@@ -21,24 +21,23 @@
 // Behavior:
 //   - Dedupe 1 (idempotency): same source + source_ref already ingested -> 200,
 //     deduped, no new row. Zapier retries and double-fires are harmless.
-//   - Dedupe 2 (same human): live lead with the same normalized phone (last 10
-//     digits) or same email, created in the last 90 days -> no new lead; a
-//     'duplicate_intake' lead_event is appended to the existing lead so the
-//     rep sees the person reached out again (that is a buying signal, not noise).
-//   - Otherwise insert the lead (stage 'new') + a 'created' lead_event carrying
-//     the full raw payload.
+//   - Distinct source IDs create distinct requests for returning customers.
+//     Original submission date and stable event identity are required; missing
+//     evidence stays in the review queue instead of becoming today's activity.
+//   - Save the customer-linked inquiry, normalized metadata, and created
+//     evidence event in one transaction.
 //   - Every attempt writes pec_webhook_ingest_log (endpoint 'lead-intake') so
 //     the Sync Health view can answer "did the Zap fire?".
 //
-// SMS consent is NOT inferred: sms_consent stays false unless the payload
-// explicitly says sms_consent true (Meta forms can carry a consent checkbox;
-// map it in Zapier). TCPA is not a place to guess.
+// Preserve the owner-approved inquiry consent policy below; a customer STOP
+// overrides incoming consent in the database and every delivery path.
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { enrollLead, sendInstantTouch, SITE_URL } = require('./_pec-drip.cjs');
 // Same-human matching lives in _pec-lead-match.cjs (prompt 56) so this
 // intake and the Routemize appointment intake share ONE dedupe rule.
-const { normPhone, findRecentLiveLead, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
+const { normPhone, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
+const { originalInquiryDate, stageInquiryReview } = require('./_pec-sales-inquiry.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 // Office alerts (Slack + bell) moved to _pec-lead-notify.cjs so the Instant
 // Pricing funnel shares them; behavior unchanged.
@@ -103,13 +102,15 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || '{}'); }
   catch { return json(400, { success: false, error: 'Invalid JSON' }); }
 
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { success: false, error: 'Expected a JSON object' });
+
   // Prompt 61 Part D: the raw feed token maps to the managed
   // pec_lead_sources NAME here, BEFORE the source+source_ref dedupe query
   // below (landmine 9): stored rows are canonical names now, so deduping on
   // the raw token would miss every prior row and turn each Zapier retry into
   // a duplicate lead. Map first, then dedupe.
   const source = await resolveLeadSourceName(sb, cleanStr(body.source) || 'webform');
-  const sourceRef = cleanStr(body.source_ref);
+  const sourceRef = cleanStr(body.source_ref) || cleanStr(body.event_id);
   const firstName = cleanStr(body.first_name);
   const lastName = cleanStr(body.last_name);
   // Prompt 62 Part B: a company / business / organization field maps onto
@@ -144,43 +145,22 @@ exports.handler = async (event) => {
       }
     }
 
-    // Dedupe 2: same person reaching out again inside the window.
-    const dupHuman = await findRecentLiveLead(sb, { phone10, email });
-    if (dupHuman) {
-      await sb('POST', '/lead_events', {
-        lead_id: dupHuman.id,
-        event_type: 'duplicate_intake',
-        payload: { source, raw: body },
-      });
-      await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `deduped onto existing lead ${dupHuman.id} (stage ${dupHuman.stage})`, payload: body });
-      return json(200, { success: true, deduped: true, lead_id: dupHuman.id });
+    const inquiryDate = originalInquiryDate(body.inquiry_date || body.submitted_at || body.created_at);
+    if (!sourceRef || !inquiryDate) {
+      await stageInquiryReview(sb, { key: sourceRef ? source + ':' + sourceRef : null, endpoint: ENDPOINT,
+        reason: !sourceRef ? 'missing_source_event_id' : 'missing_inquiry_date', payload: body });
+      return json(202, { success: true, review_required: true, message: 'Saved for review: original inquiry date and source event identifier are required.' });
     }
-
-    // Customers are the source of truth (prompt 89): the person exists ONCE
-    // as a customer row and the lead hangs off it. Same-human match first
-    // (shared rule), create when nobody matches. Best-effort ONLY in the
-    // sense that a resolution failure logs and leaves customer_id null (the
-    // lead must still land; the backfill posture reclaims strays), never in
-    // the sense of guessing a link.
-    let customer = { customer_id: null, created: false };
-    try {
-      customer = await resolveOrCreateCustomer(sb, {
-        name: fullName, firstName, lastName, businessName,
-        phone10, phone: phoneRaw, email,
-        address: cleanStr(body.address), city: cleanStr(body.city),
-        state: cleanStr(body.state), zip: cleanStr(body.zip),
-        source, brand: 'PEC',
-      });
-    } catch (e) {
-      console.warn('pec-lead-intake: customer resolve failed (lead lands unlinked):', e && e.message);
-    }
-
+    const customer = await resolveOrCreateCustomer(sb, {
+      name: fullName, firstName, lastName, businessName, phone10, phone: phoneRaw, email,
+      address: cleanStr(body.address), city: cleanStr(body.city), state: cleanStr(body.state), zip: cleanStr(body.zip), source, brand: 'PEC',
+    });
     // Insert the lead.
     const adMeta = {};
     for (const k of ['adset', 'ad_name', 'form_name', 'form_id', 'ad_id', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content']) {
       if (cleanStr(body[k])) adMeta[k] = cleanStr(body[k]);
     }
-    const created = await sb('POST', '/leads', {
+    const details = {
       brand: 'PEC',
       customer_id: customer.customer_id,
       source,
@@ -195,7 +175,6 @@ exports.handler = async (event) => {
       city: cleanStr(body.city),
       state: cleanStr(body.state),
       zip: cleanStr(body.zip),
-      stage: 'new',
       campaign: cleanStr(body.campaign) || cleanStr(body.utm_campaign),
       ad_meta: Object.keys(adMeta).length ? adMeta : null,
       notes,
@@ -207,21 +186,14 @@ exports.handler = async (event) => {
       sms_consent: true,
       sms_consent_source: parseSmsConsent(body.sms_consent) ? `${source} form` : 'implied by inquiry (policy 2026-08-21)',
       sms_consent_at: new Date().toISOString(),
-    }, true);
-    const lead = created[0];
-
-    await sb('POST', '/lead_events', {
-      lead_id: lead.id,
-      event_type: 'created',
-      to_stage: 'new',
-      // sms_consent_disclosure: the exact text the customer agreed to, when
-      // the form passes it (prompt 73 E3: makes the consent record
-      // defensible). Also inside raw, but surfaced here for queryability.
-      payload: {
-        source, raw: body,
-        ...(cleanStr(body.sms_consent_disclosure) ? { sms_consent_disclosure: cleanStr(body.sms_consent_disclosure) } : {}),
-      },
+    };
+    const leadId = await sb('POST', '/rpc/record_sales_inquiry', {
+      p_customer_id: customer.customer_id, p_request_key: 'lead:' + source + ':' + sourceRef,
+      p_brand: 'PEC', p_mode: 'new', p_inquiry_date: inquiryDate, p_origin: 'source_event', p_evidence: source + ':' + sourceRef, p_details: details,
     });
+    if (typeof leadId !== 'string' || !leadId) throw new Error('Inquiry was not saved');
+
+    const lead = { ...details, id: leadId };
 
     // NEW leads only: both dedupe paths return above, so a Zapier retry or a
     // repeat inquiry never re-runs (and re-bills) the analysis.
@@ -249,7 +221,8 @@ exports.handler = async (event) => {
     await notifyLeadSlack(lead, notes, instant);
     await notifyLeadBell(sb, lead, instant);
 
-    await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source}); customer ${customer.created ? 'created' : (customer.customer_id ? 'matched' : 'unresolved')}${instant.sent.length ? `; instant touch sent (${instant.sent.join('+')})` : `; instant touch: ${instant.reason || 'none'}`}`, payload: body });
+    await sb('PATCH', '/pec_sales_integrity_exceptions?source=eq.' + ENDPOINT + '&source_event_key=eq.' + encodeURIComponent(source + ':' + sourceRef) + '&event_type=eq.inquiry&state=eq.open', { state: 'resolved', resolved_at: new Date().toISOString(), resolution_note: 'Original inquiry date verified and linked to pipeline' });
+    await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source}); customer identity resolved${instant.sent.length ? `; instant touch sent (${instant.sent.join('+')})` : `; instant touch: ${instant.reason || 'none'}`}`, payload: body });
     return json(200, { success: true, deduped: false, lead_id: lead.id, instant_touch: { sent: instant.sent, skipped: instant.skipped, reason: instant.reason } });
   } catch (err) {
     console.error('pec-lead-intake failed:', err);

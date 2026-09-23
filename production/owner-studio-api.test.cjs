@@ -34,7 +34,7 @@ function fixture(overrides={}) {
         }
       } else data=isLead?[{id:'lead-one'}]:overrides.jobs??[{id:'job-one',price:2500,dripjobs_deal_id:'deal-one'}];
     }
-    else if(['/customers?','/estimates?','/pec_estimate_first_sends?','/pec_email_log?','/pec_sms_log?','/pec_estimate_send_attempts?'].some(path=>url.includes(path))) data=[];
+    else if(['/customers?','/estimates?','/pec_estimate_first_sends?','/pec_email_log?','/pec_sms_log?','/pec_estimate_send_attempts?','/pec_estimate_first_send_confirmations?','/pec_job_business_events?','/pec_sales_integrity_exceptions?','/pec_prod_jobs?'].some(path=>url.includes(path))) data=[];
     else if(url.includes('/pec_owner_revisions?')) {
       const params=new URL(url).searchParams;
       data=(overrides.revisions??[]).filter(row=>(!row.auth_user_id||row.auth_user_id===params.get('auth_user_id')?.slice(3))&&(!params.has('doc_key')||row.doc_key===params.get('doc_key').slice(3))&&(!params.has('revision')||row.revision===Number(params.get('revision').slice(3)))&&(!params.has('request_id')||row.request_id===params.get('request_id').slice(3)));
@@ -245,7 +245,7 @@ test('PEC CRM preview uses Phoenix weeks and distinct date definitions, leaves u
   const r=await f.handler(e),body=JSON.parse(r.body);assert.equal(r.statusCode,200);
   assert.equal(body.start,'2026-08-30');assert.equal(body.end,'2026-09-05');assert.equal(body.actual.leads,1);assert.equal(body.actual.bookedDollars,1100);assert.equal(body.actual.producedDollars,1100);
   assert.equal(body.actual.estimates,null);assert.equal(body.actual.laborHours,null);
-  assert.ok(f.calls.some(c=>c.url.includes('2026-08-30T07:00:00Z')));
+  assert.ok(f.calls.some(c=>c.url.includes('/leads?')&&c.url.includes('inquiry_date')&&!c.url.includes('created_at=gte.')));
   assert.ok(f.calls.some(c=>c.url.includes('signed_date.gte.2026-08-30')));
   assert.ok(f.calls.some(c=>c.url.includes('completed_date.gte.2026-08-30')));
   assert.ok(f.calls.every(c=>c.opts.method!=='PATCH'&&!c.url.includes('pec_owner_save_document')));
@@ -265,7 +265,7 @@ test('MBP live feed batches source reads, uses Phoenix weeks, and never fills un
   assert.equal(feed.coverageStarts.leads,'2026-07-12');assert.equal(feed.coverageStarts.jobsBooked,'2026-05-10');assert.equal(feed.coverageStarts.producedDollars,'2026-05-24');
   assert.ok(feed.weeks.every(w=>w.weekEnding<='2026-09-13'&&!w.available.estimates&&!w.available.laborHours));
   assert.equal(f.calls.filter(c=>c.url.includes('/leads?')||c.url.includes('/jobs?')).length,5);
-  assert.ok(f.calls.some(c=>c.url.includes('created_at=gte.2025-12-28T07:00:00Z')));
+  assert.ok(f.calls.some(c=>c.url.includes('/customers?')&&!c.url.includes('created_at=gte.')));
   assert.ok(!f.calls.some(c=>c.url.endsWith('/rpc/pec_owner_save_document')));
 });
 
@@ -413,4 +413,66 @@ test('undated jobs never silently disappear from certified booking or completed-
   assert.ok(feed.weeks.every(row=>row.actual.jobsBooked===null&&row.actual.bookedDollars===null&&row.actual.producedDollars===null));
   assert.ok(feed.warnings.some(w=>w.includes('no verified booking date')));
   assert.ok(feed.warnings.some(w=>w.includes('no verified completion date')));
+});
+
+test('event amounts preserve original weeks and count later adjustments without another booking',async()=>{
+  const events=[
+    {id:'booked',job_id:'job-prior',event_type:'booked',business_date:'2026-09-03',amount_snapshot:1000,source:'native_acceptance',evidence_ref:'proposal:synthetic'},
+    {id:'change',job_id:'job-prior',event_type:'booked_adjusted',business_date:'2026-09-07',amount_snapshot:100,source:'job_price_amendment'},
+    {id:'completed',job_id:'job-prior',event_type:'completed',business_date:'2026-09-04',amount_snapshot:1000,source:'staff_completion'},
+    {id:'change-completed',job_id:'job-prior',event_type:'completed_adjusted',business_date:'2026-09-07',amount_snapshot:100,source:'job_price_amendment'},
+  ];
+  const f=await mbpFixture({respond:async url=>url.includes('/pec_job_business_events?')?{ok:true,json:async()=>events}:null});
+  const feed=JSON.parse((await f.handler(liveEvent(2026))).body),prior=feed.weeks.find(row=>row.weekEnding==='2026-09-06'),current=feed.weeks.at(-1);
+  assert.equal(prior.actual.bookedDollars,1000);assert.equal(prior.actual.producedDollars,1000);assert.equal(prior.actual.jobsBooked,1);
+  assert.equal(current.actual.bookedDollars,1300);assert.equal(current.actual.producedDollars,100);assert.equal(current.actual.jobsBooked,1);
+  assert.equal(prior.sources.bookedDollars[0].basis,'booked');assert.equal(prior.sources.bookedDollars[0].evidence,'proposal:synthetic');
+  assert.ok(current.sources.bookedDollars.some(row=>row.basis==='booked_adjusted'&&row.amount===100));
+  assert.ok(current.sources.bookedDollars.some(row=>row.basis==='legacy_current_contract'));
+});
+test('completion amendments replace superseded event dates across report weeks',async()=>{
+ const events=[{id:'old-completion',job_id:'job-prior',event_type:'completed',business_date:'2026-09-04',amount_snapshot:1100}, {id:'correction',job_id:'job-prior',event_type:'completion_amended',business_date:'2026-09-07',amount_snapshot:1100,supersedes_event_id:'old-completion'}];
+ const f=await mbpFixture({respond:async url=>url.includes('/pec_job_business_events?')?{ok:true,json:async()=>events}:null});
+ const feed=JSON.parse((await f.handler(liveEvent(2026))).body);assert.equal(feed.weeks.find(row=>row.weekEnding==='2026-09-06').actual.producedDollars,0);assert.equal(feed.weeks.at(-1).actual.producedDollars,1100);
+});
+test('source-event exceptions block affected totals and expose a safe actionable audit entry',async()=>{
+ const exception={id:'exception',source:'dripjobs',source_event_key:'event-123',event_type:'accepted',entity_ref:'proposal-12',reason:'Original source acceptance date is missing.',recorded_at:'2026-09-07T15:00:00Z',payload:{secret:'must-not-return'}};
+ const f=await mbpFixture({respond:async url=>url.includes('/pec_sales_integrity_exceptions?')?{ok:true,json:async()=>[exception]}:null});
+ const feed=JSON.parse((await f.handler(liveEvent(2026))).body),current=feed.weeks.at(-1);
+ assert.equal(current.actual.jobsBooked,null);assert.equal(current.actual.bookedDollars,null);assert.equal(current.available.producedDollars,true);
+ assert.ok(feed.exceptions.some(row=>row.recordId==='proposal-12'&&row.action.includes('original date')));assert.ok(current.exceptionIds.includes('event:exception'));
+ assert.ok(!JSON.stringify(feed).includes('must-not-return'));assert.ok(!f.calls.find(row=>row.url.includes('/pec_sales_integrity_exceptions?')).url.includes('payload'));
+});
+test('event-table failure and invalid preserved amounts never certify zero or use mutable price instead',async()=>{
+ const failed=await mbpFixture({fail:'/pec_job_business_events?'}),feed=JSON.parse((await failed.handler(liveEvent(2026))).body);
+ assert.equal(feed.weeks.at(-1).actual.jobsBooked,null);assert.equal(feed.weeks.at(-1).actual.producedDollars,null);
+ const bad=await mbpFixture({respond:async url=>url.includes('/pec_job_business_events?')?{ok:true,json:async()=>[{id:'bad',job_id:'job-current',event_type:'booked',business_date:'2026-09-07',amount_snapshot:null}]}:null});
+ const current=JSON.parse((await bad.handler(liveEvent(2026))).body).weeks.at(-1);assert.equal(current.actual.jobsBooked,1);assert.equal(current.actual.bookedDollars,null);
+});
+
+test('voided and archived event history retains the booking week and records cancellation separately',async()=>{
+ const events=[{id:'original',job_id:'archived-job',event_type:'booked',business_date:'2026-09-03',amount_snapshot:700,jobs:{archived_at:'2026-09-07T15:00:00Z',voided_at:'2026-09-07T15:00:00Z'}},{id:'cancelled',job_id:'archived-job',event_type:'booked_adjusted',business_date:'2026-09-07',amount_snapshot:-700}];
+ const f=await mbpFixture({respond:async url=>url.includes('/pec_job_business_events?')?{ok:true,json:async()=>events}:null});
+ const feed=JSON.parse((await f.handler(liveEvent(2026))).body),prior=feed.weeks.find(row=>row.weekEnding==='2026-09-06');
+ assert.equal(prior.actual.bookedDollars,1800);assert.equal(prior.actual.jobsBooked,2);assert.equal(feed.weeks.at(-1).actual.bookedDollars,500);
+ const request=f.calls.find(row=>row.url.includes('/pec_job_business_events?')).url;assert.doesNotMatch(request,/archived_at=is.null|voided_at=is.null|business_date=lt/);
+});
+
+test('unlinked scheduled production exposes a link task and cannot silently certify bookings',async()=>{
+ const prod={id:'prod-unlinked',customer_name:'Synthetic customer',proposal_number:'123',status:'scheduled',install_date:'2026-09-10',customers:{company:'prescott-epoxy'}};
+ const f=await mbpFixture({respond:async url=>url.includes('/pec_prod_jobs?')?{ok:true,json:async()=>[prod]}:null});
+ const feed=JSON.parse((await f.handler(liveEvent(2026))).body),week=feed.weeks.at(-1);
+ assert.equal(week.actual.jobsBooked,null);assert.equal(week.actual.bookedDollars,null);assert.equal(week.available.producedDollars,true);
+ const issue=feed.exceptions.find(row=>row.id==='production-booking:prod-unlinked');assert.match(issue.label,/Synthetic customer.*123/);assert.match(issue.reason,/not an acceptance or completion date/);assert.match(issue.action,/Do not match by name alone/);
+});
+test('unscheduled unlinked production needs classification without inventing a booked sale',async()=>{
+ const f=await mbpFixture({respond:async url=>url.includes('/pec_prod_jobs?')?{ok:true,json:async()=>[{id:'unscheduled',customer_name:'Synthetic pending work',status:'unscheduled',created_at:'2026-09-07T15:00:00Z'}]}:null});
+ const feed=JSON.parse((await f.handler(liveEvent(2026))).body);assert.equal(feed.weeks.at(-1).actual.jobsBooked,1);assert.equal(feed.weeks.at(-1).actual.bookedDollars,1200);assert.equal(feed.exceptions.find(row=>row.id==='production-booking:unscheduled').blocksTotal,false);
+});
+test('known orphan production completion affects its week, while callbacks, FTP, archived and linked records do not',async()=>{
+ const rows=[{id:'completed',status:'completed',completed_date:'2026-09-04'}, {id:'callback',status:'completed',is_callback:true}, {id:'ftp',status:'completed',customers:{company:'finishing-touch'}}, {id:'archive',status:'completed',archived_at:'2026-09-01T15:00:00Z'}, {id:'linked',status:'completed',crm_job_id:'crm'}, {id:'excluded',status:'completed',reporting_excluded_at:'2026-09-07T15:00:00Z',reporting_exclusion_reason:'Owner-reviewed non-sales workshop sample'}];
+ const f=await mbpFixture({respond:async url=>url.includes('/pec_prod_jobs?')?{ok:true,json:async()=>rows}:null});
+ const feed=JSON.parse((await f.handler(liveEvent(2026))).body);assert.equal(feed.weeks.find(row=>row.weekEnding==='2026-09-06').actual.producedDollars,null);assert.equal(feed.weeks.at(-1).actual.producedDollars,0);assert.equal(feed.weeks.at(-1).actual.jobsBooked,1);
+ assert.equal(feed.exceptions.filter(row=>row.id.startsWith('production-')).length,2);
+ const unavailable=await mbpFixture({fail:'/pec_prod_jobs?'}),failed=JSON.parse((await unavailable.handler(liveEvent(2026))).body);assert.equal(failed.weeks.at(-1).actual.jobsBooked,null);assert.equal(failed.weeks.at(-1).actual.producedDollars,null);
 });

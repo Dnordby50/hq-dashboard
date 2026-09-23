@@ -17,7 +17,7 @@ const {
 const { isBookableRep, resolveEligibility } = require('../netlify/functions/_pec-booking-reps.cjs');
 const { makeDb: baseDb } = require('./_drip-test-kit.cjs');
 const { withSalesLeadRpc } = require('./_sales-pipeline-test-kit.cjs');
-const makeDb = tables => withSalesLeadRpc(baseDb(tables), NOW);
+const makeDb = tables => withSalesLeadRpc(baseDb({...tables, customers: tables.customers.map(c=>({company:'prescott-epoxy',...c}))}), NOW);
 
 let passed = 0, failed = 0;
 function ok(cond, label) {
@@ -153,7 +153,7 @@ function makeDeps(fx, over = {}) {
 }
 
 const goodBody = (over = {}) => ({
-  form: 'pec', start: SLOT_TUE_10,
+  form: 'pec', request_key: 'fixture-booking-request-01', start: SLOT_TUE_10,
   name: 'Jane Doe', phone: '(928) 555-1212', email: 'jane@example.com',
   address1: '123 N Test St', city: 'Prescott', zip: '86301',
   answers: { quote_type: 'Garage floor', sqft: '450', project: 'Two car garage', how_heard: 'Google' },
@@ -208,7 +208,7 @@ const goodBody = (over = {}) => ({
     ok(!!req && req.appointment_id === appt.id && req.sms_consent === true
       && /TEST DISCLOSURE/.test(req.sms_consent_disclosure || ''),
       'book: booked request row with the exact disclosure stored');
-    ok(fx.db.lead_events.some(e => e.event_type === 'created'
+    ok(fx.db.lead_events.some(e => e.event_type === 'note'
       && e.payload && /TEST DISCLOSURE/.test(e.payload.sms_consent_disclosure || '')),
       'book: disclosure stored on the lead event too');
     ok(fx.db.pec_notifications.some(n => n.type === 'appointment_booked' && /Online booking/.test(n.body)), 'book: bell rang');
@@ -292,14 +292,14 @@ const goodBody = (over = {}) => ({
   {
     const fx = makeDb(baseTables());
     const { deps } = makeDeps(fx);
-    const slots = await processSlots(deps, { form: 'pec', address1: '9 Far Away Rd', city: 'Phoenix', zip: '85001' });
+    const slots = await processSlots(deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '9 Far Away Rd', city: 'Phoenix', zip: '85001' });
     ok(slots.status === 200 && slots.body.in_area === false && !slots.body.days,
       'out of area: slots endpoint shows NO slots');
     const book = await processBook(deps, goodBody({ zip: '85001', city: 'Phoenix' }), { ipHash: 'ip5' });
     ok(book.status === 400 && book.body.out_of_area === true && fx.db.pec_appointments.length === 0,
       'out of area: server-side re-check refuses the write even if the client lied');
     const lead = await processOutOfAreaLead(deps, {
-      form: 'pec', name: 'Far Guy', phone: '928 555 0000', email: 'far@example.com',
+      form: 'pec', request_key: 'fixture-booking-request-01', name: 'Far Guy', phone: '928 555 0000', email: 'far@example.com',
       address1: '9 Far Away Rd', city: 'Phoenix', zip: '85001', project: 'Warehouse floor',
       answers: { how_heard: 'Referral' }, sms_consent: 'true',
     }, { ipHash: 'ip5' });
@@ -318,7 +318,7 @@ const goodBody = (over = {}) => ({
       { id: 'bd1', start_date: '2026-08-25', end_date: '2026-08-25', sales_member_id: null, reason: 'Off' },
     ] }));
     const { deps } = makeDeps(fx);
-    const slots = await processSlots(deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    const slots = await processSlots(deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
     ok(slots.status === 200 && !slots.body.days.some(d => d.date === '2026-08-25'), 'blocked day: Tuesday is not offered');
     ok(slots.body.days.some(d => d.date === '2026-08-26'), 'blocked day: Wednesday still offers');
     const book = await processBook(deps, goodBody(), { ipHash: 'ipBD' });
@@ -328,14 +328,14 @@ const goodBody = (over = {}) => ({
   {
     const fx = makeDb(baseTables({ pec_prod_holidays: [{ id: 'h1', holiday_date: '2026-08-25', name: 'Test holiday' }] }));
     const { deps } = makeDeps(fx);
-    const slots = await processSlots(deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    const slots = await processSlots(deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
     ok(slots.status === 200 && !slots.body.days.some(d => d.date === '2026-08-25'), 'crew holiday: the day is closed for online booking by default');
     // The switch off: holidays stop mattering, the blocked-days table still does.
     const fx2 = makeDb(baseTables({
       pec_prod_holidays: [{ id: 'h1', holiday_date: '2026-08-25', name: 'Test holiday' }],
       settings: baseTables().settings.concat([{ key: 'booking_block_crew_holidays', value: 'false' }]),
     }));
-    const slots2 = await processSlots(makeDeps(fx2).deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    const slots2 = await processSlots(makeDeps(fx2).deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
     ok(slots2.body.days.some(d => d.date === '2026-08-25'), 'crew holiday: booking_block_crew_holidays=false reopens the day');
   }
   {
@@ -344,10 +344,10 @@ const goodBody = (over = {}) => ({
     const fx = makeDb(baseTables({ pec_appointment_blocked_days: [
       { id: 'bd2', start_date: '2026-08-25', end_date: '2026-08-26', sales_member_id: REP, reason: 'PTO' },
     ] }));
-    const slots = await processSlots(makeDeps(fx).deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    const slots = await processSlots(makeDeps(fx).deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
     ok(!slots.body.days.some(d => d.date === '2026-08-25' || d.date === '2026-08-26'), 'rep day off: both days in the range are closed');
     const t = baseTables(); delete t.pec_appointment_blocked_days; delete t.pec_prod_holidays;
-    const slotsNoTable = await processSlots(makeDeps(makeDb(t)).deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    const slotsNoTable = await processSlots(makeDeps(makeDb(t)).deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
     ok(slotsNoTable.status === 200 && slotsNoTable.body.days.some(d => d.date === '2026-08-25'), 'missing tables (pre-migration): slots still compute');
   }
 
@@ -355,7 +355,7 @@ const goodBody = (over = {}) => ({
   {
     const fx = makeDb(baseTables({ pec_booking_service_areas: [] }));
     const { deps } = makeDeps(fx);
-    const slots = await processSlots(deps, { form: 'pec', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
+    const slots = await processSlots(deps, { form: 'pec', request_key: 'fixture-booking-request-01', address1: '123 N Test St', city: 'Prescott', zip: '86301' });
     ok(slots.status === 200 && slots.body.open === false, 'empty allowlist: booking reads closed, not out-of-area');
     const book = await processBook(deps, goodBody(), { ipHash: 'ip6' });
     ok(book.status === 503 && book.body.closed === true, 'empty allowlist: the write path refuses as closed');
@@ -634,7 +634,7 @@ const goodBody = (over = {}) => ({
       && nobodySpies.pushed.length === 0 && nobodySpies.reminded.length === 0
       && nobody.db.pec_booking_requests.some(r => r.status === 'rejected' && r.error_text === 'no_bookable_reps'),
       'fail closed: a direct /book submission is refused with no appointment effects and an audited request row');
-    const lead = await processOutOfAreaLead(nobodyDeps, { form: 'pec', name: 'Pat Lead', phone: '(928) 555-9999', email: 'pat@example.com',
+    const lead = await processOutOfAreaLead(nobodyDeps, { form: 'pec', request_key: 'fixture-booking-request-01', name: 'Pat Lead', phone: '(928) 555-9999', email: 'pat@example.com',
       address1: '123 N Test St', city: 'Prescott', zip: '86301', project: 'Garage', reason: 'no_reps', fill_ms: 9000 });
     ok(lead.status === 200 && lead.body.ok && nobody.db.leads.length === 1 && nobody.db.pec_appointments.length === 0,
       'fail closed: the leave-your-details submission lands as a lead with no appointment');
@@ -644,7 +644,7 @@ const goodBody = (over = {}) => ({
       'fail closed: the note, request row and bell say "nobody bookable", not "out of area"');
     // The client cannot forge the no-reps story when someone IS bookable.
     const forged = makeDb(baseTables());
-    await processOutOfAreaLead(makeDeps(forged).deps, { form: 'pec', name: 'Forge Try', phone: '(928) 555-9998', address1: '1 Far Rd', city: 'Nowhere', zip: '00000', reason: 'no_reps', fill_ms: 9000 });
+    await processOutOfAreaLead(makeDeps(forged).deps, { form: 'pec', request_key: 'fixture-booking-request-01', name: 'Forge Try', phone: '(928) 555-9998', address1: '1 Far Rd', city: 'Nowhere', zip: '00000', reason: 'no_reps', fill_ms: 9000 });
     ok(forged.db.lead_events.some(e => /OUTSIDE the service area/.test((e.payload || {}).text || '')),
       'fail closed: reason=no_reps is ignored when a rep is bookable (server re-derives it)');
 
@@ -722,14 +722,14 @@ const goodBody = (over = {}) => ({
     const result = await processBook(deps, goodBody());
     ok(result.status === 200 && fx.db.pec_appointments[0].lead_id === 'canonical-customer-only', 'customer-only online booker enters the pipeline');
     ok(fx.db.leads[0].stage === 'estimate_scheduled', 'customer-only booking advances the canonical lead automatically');
-    ok(fx.salesLeadCalls.length === 1 && fx.salesLeadCalls[0].p_occurred_at === null, 'booking uses current inquiry, not legacy customer import date');
+    ok(fx.salesLeadCalls.length === 1 && fx.salesLeadCalls[0].p_inquiry_date === null, 'booking uses current inquiry, not legacy customer import date');
     await processBook(deps, goodBody());
     ok(fx.db.leads.length === 1 && fx.db.pec_appointments.length === 1, 'duplicate booking does not inflate lead or appointment count');
 
     const failed = makeDb(baseTables({ customers: [customer] }));
     const base = failed.sb;
     const failing = makeDeps(failed, { sb: async (method, path, ...rest) => {
-      if (path === '/rpc/ensure_sales_lead') throw new Error('pipeline unavailable');
+      if (path === '/rpc/record_sales_inquiry') throw new Error('pipeline unavailable');
       return base(method, path, ...rest);
     } });
     const refused = await processBook(failing.deps, goodBody());
@@ -744,7 +744,7 @@ const goodBody = (over = {}) => ({
     const original = partial.sb;
     let failLead = true;
     const retrying = makeDeps(partial, { sb: async (method, path, ...rest) => {
-      if (method === 'POST' && path === '/leads' && failLead) { failLead = false; throw new Error('lead write failed'); }
+      if (method === 'POST' && path === '/rpc/record_sales_inquiry' && failLead) { failLead = false; throw new Error('lead write failed'); }
       return original(method, path, ...rest);
     } });
     const first = await processBook(retrying.deps, goodBody());
@@ -754,6 +754,23 @@ const goodBody = (over = {}) => ({
     await processBook(retrying.deps, goodBody());
     ok(second.status === 200 && partial.db.customers.length === 1 && partial.db.leads.length === 1 && partial.db.pec_appointments.length === 1, 'retry recovers partial customer through canonical RPC without duplicate booking');
     ok(retrying.spies.reminded.length === 1, 'recovered booking confirms once, replay does not resend');
+  }
+
+  // New work is distinct from identity; retries and consent retain their history.
+  {
+    const customer={id:'returning',name:'Jane Doe',phone:'9285551212',email:'jane@example.com',company:'prescott-epoxy',archived_at:null};
+    const old={id:'closed',customer_id:'returning',brand:'PEC',full_name:'Jane Doe',phone:'9285551212',email:'jane@example.com',stage:'accepted',deleted_at:null,archived_at:null,sms_consent:false,opted_out:true};
+    const fx=makeDb(baseTables({customers:[customer],leads:[old]}));
+    const result=await processBook(makeDeps(fx).deps,goodBody());
+    ok(result.status===200&&fx.db.leads.length===2,'returning customer with a closed proposal gets a new inquiry');
+    ok(fx.db.leads[0].stage==='accepted'&&fx.db.leads[0].opted_out===true,'old inquiry stage and opt-out remain untouched');
+    const multi=makeDb(baseTables({customers:[customer],leads:[{...old,id:'one',stage:'new'},{...old,id:'two',stage:'contacted'}]}));
+    const ambiguous=await processBook(makeDeps(multi).deps,goodBody());
+    ok(ambiguous.status===409&&ambiguous.body.inquiry_selection_required&&multi.db.pec_appointments.length===0,'multiple active requests do not pick an arbitrary inquiry');
+    const explicit=await processBook(makeDeps(multi).deps,goodBody({inquiry_mode:'new'}));
+    ok(explicit.status===200&&multi.db.leads.length===3,'explicit separate project creates a distinct inquiry');
+    const retry=await processBook(makeDeps(multi).deps,goodBody({inquiry_mode:'new'}));
+    ok(retry.body.duplicate&&multi.db.leads.length===3&&multi.db.pec_appointments.length===1,'new-project retry remains one inquiry and appointment');
   }
 
   console.log(`booking: ${passed} passed, ${failed} failed`);

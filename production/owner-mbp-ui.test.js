@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {ownerFixture} from './owner-test-fixture.js';
 import {calculateMbp} from './owner-mbp.js';
 import {applyMbpEdits,applyMbpLive,mbpInputFields} from './owner-mbp-inputs.js';
-import {renderMbpGrid} from './owner-studio.js';
+import {renderMbpGrid,renderSalesIntegrity} from './owner-studio.js';
 import {mbpInputValue,parseMbpInput,renderMbpInput} from './owner-mbp-ui.js';
 
 test('working grids expose original actuals and weights while calculated cells and source copies stay locked',()=>{
@@ -39,4 +39,11 @@ test('input names and labels are escaped before rendering',()=>{
   const body={mbp:ownerFixture()},field=mbpInputFields(body)[0];
   assert.doesNotMatch(renderMbpInput(body,{...field,label:'<img onerror="bad">'},{label:true}),/<img/);
   assert.match(renderMbpInput(body,{...field,label:'<img onerror="bad">'},{label:true}),/&lt;img/);
+});
+
+test('reporting health exposes actionable records, preserves unavailable totals, and escapes source content',()=>{
+ const feed={weeks:[{start:'2026-09-13',end:'2026-09-19',actual:{leads:null,estimates:1},available:{leads:false,estimates:true},sources:{leads:[{id:'inquiry',label:'<script>bad</script>',date:'2026-09-16',basis:'legacy_record_created'}],estimates:[{id:'proposal',label:'Proposal 12',date:'2026-09-17',basis:'first_send_record'}]}}],exceptions:[{id:'missing',metric:'leads',recordId:'contact',label:'Customer',reason:'Original date missing.',action:'Find the original request.',from:null,through:null}]};
+ const html=renderSalesIntegrity(feed);assert.match(html,/1 item needs review/);assert.match(html,/Find the original request/);assert.match(html,/Leads: Unverified/);assert.match(html,/Legacy record date/);assert.match(html,/First successful delivery/);assert.doesNotMatch(html,/<script>/);assert.match(html,/&lt;script&gt;/);
+ assert.doesNotMatch(renderSalesIntegrity(feed,{kind:'revenue'}),/Find the original request/);
+ assert.equal(renderSalesIntegrity({...feed,disabled:true}),'');
 });

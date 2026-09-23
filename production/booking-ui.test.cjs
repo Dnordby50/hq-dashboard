@@ -124,7 +124,7 @@ async function fixture(options = {}) {
   const window = new Element('window'); window.parent = window; window.location = { origin: 'http://booking.test' };
   const requests = [];
   const responses = { slots: [], book: [], lead: [], quote: [], booked: [] };
-  const context = vm.createContext({ window, document, console, URL, Date,
+  const context = vm.createContext({ window, document, console, URL, Date, crypto: require('node:crypto').webcrypto,
     setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
     MutationObserver: class { observe() {} },
     fetch: async (url, init) => {
@@ -461,4 +461,31 @@ test('builder preview disables navigation and submissions while accepting live f
   assert.match(f.$('bkChosen').textContent, /Walkthrough.*30/);
   assert.ok(f.$('q_new_question'));
   assert.equal(f.$('bkQuestions').querySelector('#q_source'), null);
+});
+
+test('booking carries a stable inquiry key and the separate-project choice across retries', async () => {
+  const f = await fixture();
+  await f.details();
+  f.$('bkNewRequest').checked = true;
+  f.responses.book.push({ ok: false, error: 'Temporary connection issue' });
+  await f.click('bkBook');
+  f.responses.book.push({ ok: false, error: 'Temporary connection issue' });
+  await f.click('bkBook');
+  const sent = f.requests.filter(r => r.path === 'book');
+  assert.equal(sent.length, 2);
+  assert.match(sent[0].body.request_key, /^[a-zA-Z0-9_-]{16,100}$/);
+  assert.equal(sent[0].body.request_key, sent[1].body.request_key);
+  assert.equal(sent[1].body.inquiry_mode, 'new');
+});
+
+test('pricing continuation carries the original request identity into booking', async () => {
+  const f = await fixture({ pricing: true });
+  await f.pricingDetails();
+  const quote = f.requests.find(r => r.path === 'quote');
+  assert.match(quote.body.request_key, /^[a-zA-Z0-9_-]{16,100}$/);
+  f.responses.book.push({ ok: false, error: 'Temporary connection issue' });
+  await f.click('prBookIt');
+  const booking = f.requests.find(r => r.path === 'book');
+  assert.equal(booking.body.pricing_request_key, quote.body.request_key);
+  assert.equal(booking.body.request_key, quote.body.request_key);
 });

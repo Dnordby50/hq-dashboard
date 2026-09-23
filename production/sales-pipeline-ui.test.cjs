@@ -10,6 +10,7 @@ const NOW = '2026-09-22T17:00:00.000Z';
 
 function fixture({ customer = null, lead = null, rpcError = false } = {}) {
   const rows = { customers: customer ? [customer] : [], leads: lead ? [lead] : [], pec_lead_sources: [] };
+  const requests = new Map();
   const calls = { rpc: [], insert: [], update: [], toasts: [], closes: 0 };
   const elements = new Map();
   function element(selector) {
@@ -23,13 +24,26 @@ function fixture({ customer = null, lead = null, rpcError = false } = {}) {
     auth: { getSession: async () => ({ data: { session: { access_token: 'test-only' } } }) },
     async rpc(name, payload) {
       calls.rpc.push({ name, payload });
+      if (name === 'resolve_sales_customer') {
+        const profile = payload.p_profile;
+        const matches = rows.customers.filter(row => row.company === profile.company && !row.archived_at &&
+          ((row.phone && row.phone === profile.phone) || (row.email && row.email === profile.email)));
+        if (matches.length > 1) return { error: new Error('Several customers match; review the identity') };
+        if (matches.length) return { data: matches[0].id };
+        const created = { ...profile, id: profile._new_customer_id, created_at: NOW };
+        delete created._new_customer_id;
+        rows.customers.push(created); calls.insert.push({ table: 'customers', insert: created });
+        return { data: created.id };
+      }
       if (rpcError) { rpcError = false; return { error: new Error('pipeline unavailable') }; }
-      let found = rows.leads.find(row => row.customer_id === payload.p_customer_id && row.brand === payload.p_brand);
+      let found = requests.get(payload.p_request_key);
+      if (!found && payload.p_mode !== 'new') found = rows.leads.find(row => row.customer_id === payload.p_customer_id && row.brand === payload.p_brand && !['accepted','lost'].includes(row.stage));
       if (!found) {
         const c = rows.customers.find(row => row.id === payload.p_customer_id);
-        found = { id: 'canonical', brand: payload.p_brand, customer_id: c.id, full_name: c.name, stage: 'new', created_at: payload.p_occurred_at || NOW };
+        found = { id: 'inquiry-' + rows.leads.length, brand: payload.p_brand, customer_id: c.id, full_name: c.name, stage: 'new', created_at: payload.p_occurred_at || NOW };
         rows.leads.push(found);
       }
+      requests.set(payload.p_request_key, found);
       return { data: found.id, error: null };
     },
     from(table) {
@@ -51,7 +65,7 @@ function fixture({ customer = null, lead = null, rpcError = false } = {}) {
     },
   };
   const context = vm.createContext({
-    console, Date, supabase: db, state: { session: { user: { id: 'staff' } }, leadsData: { sources: ['Google'] } },
+    console, Date, crypto: require('node:crypto'), mstTodayIso: () => '2026-09-23', supabase: db, state: { session: { user: { id: 'staff' } }, leadsData: { sources: ['Google'] } },
     withFreshWrite: fn => fn(), withFreshWriteRetry: fn => fn(), randomToken: () => 'test-token',
     openModal: (_body, options) => options.onMount(modal), closeModal: () => calls.closes++,
     showToast: text => calls.toasts.push(text), alert: text => calls.toasts.push(text),
@@ -68,18 +82,20 @@ function setNewLeadFields(fx) {
   for (const [id, value] of Object.entries({ nlFirst: 'Jane', nlLast: 'Doe', nlPhone: '9285551212', nlEmail: 'jane@example.com', nlSource: 'Google' })) fx.element('#' + id).value = value;
 }
 
-test('manual new lead reuses the customer and canonical lead without resetting stage, source or first inquiry', async () => {
-  const fx = fixture({ customer: { id: 'customer', company: 'prescott-epoxy' }, lead: {
+test('manual new request reuses customer identity but creates a distinct inquiry preserving earlier work', async () => {
+  const fx = fixture({ customer: { id: 'customer', company: 'prescott-epoxy', phone: '9285551212', email: 'jane@example.com' }, lead: {
     id: 'old-lead', brand: 'PEC', customer_id: 'customer', stage: 'estimate_sent', source: 'Referral', created_at: '2026-08-01T00:00:00Z', notes: 'Original notes',
   } });
   fx.context.openNewLeadModal(); setNewLeadFields(fx);
   await fx.element('#nlSave').handlers.click();
   assert.equal(fx.calls.insert.length, 0);
-  assert.equal(fx.rows.leads.length, 1);
+  assert.equal(fx.rows.leads.length, 2);
+  assert.equal(fx.rows.leads[1].stage, 'new');
+  assert.equal(fx.calls.rpc[1].payload.p_mode, 'new');
   assert.equal(fx.rows.leads[0].stage, 'estimate_sent');
   assert.equal(fx.rows.leads[0].source, 'Referral');
   assert.equal(fx.rows.leads[0].created_at, '2026-08-01T00:00:00Z');
-  assert.equal(fx.calls.rpc[0].payload.p_occurred_at, null);
+  assert.match(fx.calls.rpc[1].payload.p_request_key, /^manual:/);
   assert.equal(fx.calls.closes, 1);
 });
 
@@ -96,13 +112,61 @@ test('manual new lead retains a newly saved customer when pipeline linking fails
   await fx.element('#nlSave').handlers.click();
   assert.equal(fx.rows.customers.length, 1);
   assert.equal(fx.rows.leads.length, 1);
-  assert.equal(fx.calls.rpc[1].payload.p_occurred_at, NOW);
+  assert.equal(fx.calls.rpc[2].payload.p_request_key, fx.calls.rpc[1].payload.p_request_key);
   assert.equal(fx.rows.customers[0].name, 'Janet Doe');
   assert.equal(fx.rows.customers[0].email, 'janet@example.com');
   assert.equal(fx.rows.customers[0].phone, '9285553434');
   assert.equal(fx.rows.customers[0].billing_address_line1, '2 Corrected Street');
   assert.equal(fx.rows.customers[0].created_at, NOW);
   assert.equal(fx.calls.closes, 1);
+});
+
+test('manual retry never overwrites an existing matched customer profile', async () => {
+  const original = { id: 'existing', company: 'prescott-epoxy', name: 'Existing owner', phone: '9285551212', email: 'jane@example.com', created_at: NOW };
+  const fx = fixture({ customer: { ...original }, rpcError: true });
+  fx.context.openNewLeadModal(); setNewLeadFields(fx);
+  await fx.element('#nlSave').handlers.click();
+  fx.element('#nlFirst').value = 'Different'; fx.element('#nlEmail').value = 'other@example.com';
+  await fx.element('#nlSave').handlers.click();
+  assert.deepEqual(fx.rows.customers[0], original);
+  assert.equal(fx.rows.customers.length, 1); assert.equal(fx.calls.closes, 1);
+  assert.equal(fx.calls.update.filter(call => call.table === 'customers').length, 0);
+});
+
+test('manual ambiguous customer identity stops before creating an inquiry', async () => {
+  const fx = fixture({ customer: { id: 'one', company: 'prescott-epoxy', phone: '9285551212' } });
+  fx.rows.customers.push({ id: 'two', company: 'prescott-epoxy', email: 'jane@example.com' });
+  fx.context.openNewLeadModal(); setNewLeadFields(fx);
+  await fx.element('#nlSave').handlers.click();
+  assert.match(fx.element('#nlErr').textContent, /Several customers match/);
+  assert.equal(fx.rows.leads.length, 0); assert.equal(fx.calls.closes, 0);
+});
+
+test('separate new work selected from a closed lead creates a new inquiry while followup retains its guard', async () => {
+  const marker = "      if (v.startsWith('lead:')) {";
+  const start = html.indexOf(marker, html.indexOf("q('#espGo').addEventListener"));
+  const end = html.indexOf('      // New Contact:', start);
+  assert.ok(start > 0 && end > start);
+  const fx = fixture(); const requested = [], drafts = [], guarded = [];
+  Object.assign(fx.context, {
+    q: fx.element, val: () => fx.element('#espInquiryMode').value,
+    leads: [{ id: 'closed-lead', customer_id: 'existing-customer', brand: 'PEC', stage: 'accepted' }],
+    errEl: fx.element('#espErr'), extras: {}, estimateInquiryRequestKey: 'stable-request',
+    ensureSalesLead: async (id, options) => { requested.push({ id, ...options }); return 'new-inquiry'; },
+    createDraftEstimateNow: args => drafts.push(args), createDraftEstimate: args => guarded.push(args),
+  });
+  vm.runInContext('async function selectedLead(v) {' + html.slice(start, end) + '\n}', fx.context);
+  fx.element('#espInquiryMode').value = 'new';
+  await fx.context.selectedLead('lead:closed-lead');
+  assert.equal(requested[0].id, 'existing-customer'); assert.equal(requested[0].mode, 'new');
+  assert.equal(requested[0].requestKey, 'stable-request'); assert.equal(drafts[0].leadId, 'new-inquiry');
+  assert.equal(drafts[0].customerId, 'existing-customer'); assert.equal(guarded.length, 0);
+  fx.element('#espInquiryMode').value = 'auto'; await fx.context.selectedLead('lead:closed-lead');
+  assert.equal(guarded[0].leadId, 'closed-lead'); assert.equal(requested.length, 1);
+  fx.context.leads[0].customer_id = null; fx.element('#espInquiryMode').value = 'new';
+  await fx.context.selectedLead('lead:closed-lead');
+  assert.match(fx.element('#espErr').textContent, /Link this lead to its customer/);
+  assert.equal(requested.length, 1);
 });
 
 test('new CRM customer records its fresh inquiry with correct company and retains identity on retry', async () => {
@@ -117,7 +181,7 @@ test('new CRM customer records its fresh inquiry with correct company and retain
   await fx.element('#pecCustForm').handlers.submit(event);
   assert.equal(fx.rows.customers.length, 1);
   assert.equal(fx.calls.rpc[1].payload.p_brand, 'FTP');
-  assert.equal(fx.calls.rpc[1].payload.p_occurred_at, NOW);
+  assert.equal(fx.calls.rpc[1].payload.p_request_key, fx.calls.rpc[0].payload.p_request_key);
   assert.equal(fx.rows.customers[0].name, 'Janet Doe');
   assert.equal(fx.rows.customers[0].email, 'janet@example.com');
   assert.equal(fx.rows.customers[0].billing_city, 'Prescott Valley');

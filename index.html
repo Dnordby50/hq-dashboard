@@ -3832,6 +3832,7 @@ function canFinalizeCosting() {
 // successful write so the caller can re-render. Deploy-safe: if status_manual_at
 // does not exist yet (migration not run), it falls back to a status-only write.
 function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
+  if (toStatus === 'completed') return openJobCompletionModal({ jobId, name: ctx.name, onSaved: onDone, source: 'manual_status' });
   const pretty = s => (s || '').replace('_', ' ');
   // When an admin hand-picks a NON-completed status for a job that is currently
   // on the calendar, the pin protects it from background sweeps, but the next
@@ -3858,16 +3859,6 @@ function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
       try {
         const stamp = new Date().toISOString();
         const patch = { status: toStatus, status_manual_at: stamp };
-        // Manual completion is the ONLY thing that stamps completed_date now
-        // (no schedule auto-complete, 2026-07-21), so the pipeline drag and the
-        // dropdown must stamp it themselves or AR aging shows a dash. Preserve
-        // an already-recorded date (a re-complete keeps the original).
-        if (toStatus === 'completed') {
-          try {
-            const cur = await supabase.from('jobs').select('completed_date').eq('id', jobId).single();
-            if (!cur.error && !(cur.data && cur.data.completed_date)) patch.completed_date = mstTodayIso();
-          } catch (_) {}
-        }
         let upd = await supabase.from('jobs').update(patch).eq('id', jobId);
         if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
           // Migration not applied yet: persist the status anyway. The override
@@ -3879,12 +3870,8 @@ function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
         const after = { status: toStatus, source: 'manual_override' };
         if (reason) after.reason = reason;
         await logJobActivity(jobId, 'status_change', { status: fromStatus }, after);
-        // Two-way sync: a manual move to Complete also completes the calendar row(s).
-        if (toStatus === 'completed') await mirrorProdStatus({ crmJobId: jobId, dealId: ctx.dealId, name: ctx.name, addr: ctx.addr }, 'completed');
         closeModal();
         showToast('Status updated', { ttl: 2000 });
-        // Prompt 60: every path that completes a job offers the review ask.
-        if (toStatus === 'completed') openReviewAskModal(jobId).catch(() => {});
         if (typeof onDone === 'function') onDone();
       } catch (err) {
         go.disabled = false; go.textContent = 'Set status';
@@ -4595,11 +4582,10 @@ function _nameAddrKey(name, addr) {
 // row that is explicitly paired (to any job) or declared separate, so two open
 // jobs at one address can no longer complete each other. Best-effort: the
 // public.jobs write is the source of truth, this is a convenience mirror, so
-// every error is swallowed. Mirroring 'completed' is trigger-safe: prod
-// 'completed' maps back to CRM 'completed', and the trigger's
-// status<>'completed' guard means it will not re-touch (or unpin) the job we
-// just set.
+// every error is swallowed. Completion is deliberately rejected here; it
+// must use the transaction that records its date and exact production link.
 async function mirrorProdStatus({ crmJobId, dealId, name, addr } = {}, prodStatus) {
+  if (prodStatus === 'completed') throw new Error('Completion must use the authorized completion transaction.');
   try {
     if (crmJobId) {
       // Cheap existence probe first: if this job HAS an explicit prod pairing,
@@ -5759,7 +5745,7 @@ async function openEstimateStartPicker(opts = {}) {
   // client-side. Errors degrade to empty lists with New Contact still working.
   const [custRes, leadRes, srcRes, spRes] = await Promise.all([
     supabase.from('customers').select('id,name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_city,billing_state,billing_zip').is('archived_at', null).order('name'),
-    supabase.from('leads').select('id,full_name,first_name,last_name,business_name,stage,phone,email,address,city,state,zip').is('deleted_at', null).is('archived_at', null).order('created_at', { ascending: false }).limit(200),
+    supabase.from('leads').select('id,customer_id,brand,full_name,first_name,last_name,business_name,stage,phone,email,address,city,state,zip').is('deleted_at', null).is('archived_at', null).is('duplicate_of', null).is('reporting_excluded_at', null).order('created_at', { ascending: false }).limit(200),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
     supabase.from('pec_sales_team_members').select('id,name,auth_user_id,active').order('name'),
   ]);
@@ -5785,6 +5771,7 @@ async function openEstimateStartPicker(opts = {}) {
   const uid = (state.session && state.session.user && state.session.user.id) || '';
   const mine = uid ? salespeople.find(s => s.auth_user_id && String(s.auth_user_id) === String(uid)) : null;
 
+  const estimateInquiryRequestKey = 'estimate-entry:' + crypto.randomUUID();
   const secHead = (t, first) => `<div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin:${first ? '0' : '14px'} 0 8px;padding-bottom:4px;border-bottom:1px solid var(--rd-line,var(--border))">${t}</div>`;
   openModal(`
     <h3>New estimate</h3>
@@ -5800,6 +5787,7 @@ async function openEstimateStartPicker(opts = {}) {
         ${leads.length ? `<optgroup label="Leads">${leads.map(l => `<option value="lead:${esc(l.id)}">${esc(leadLabel(l))} · ${esc(titleCaseValue(l.stage))}</option>`).join('')}</optgroup>` : ''}
       </select>
     </div>
+    <div class="pec-field"><label for="espInquiryMode">Work requested</label><select id="espInquiryMode"><option value="auto">Continue an open inquiry, if there is one</option><option value="new">Separate new quote request</option></select><div style="font-size:.75rem;color:var(--muted)">For a specific follow-up, choose its lead above.</div></div>
     <div id="espSummary" style="display:none;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:.82rem"></div>
     <div id="espNewWrap">
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
@@ -5880,7 +5868,7 @@ async function openEstimateStartPicker(opts = {}) {
         if (!l) return;
         sum.innerHTML = `<strong>${esc(leadLabel(l))}</strong> <span class="pec-badge system" style="--pec-badge-bg:#64748b;margin-left:4px">${esc(titleCaseValue(l.stage))}</span>
           <div style="color:var(--muted);font-size:.74rem;margin-top:2px">${esc([l.phone ? qoFmtPhone(l.phone) : '', l.email].filter(Boolean).join(' · ') || 'No phone or email on file')}</div>
-          <div style="color:var(--muted);font-size:.68rem;margin-top:2px">Existing lead. The estimate stays linked to it, and the open-estimate check still runs.</div>`;
+          <div style="color:var(--muted);font-size:.68rem;margin-top:2px">Existing lead. Choose whether this estimate follows that request or starts separate new work.</div>`;
         sum.style.display = '';
         setAddr(l.address, l.city, l.state, l.zip);
       }
@@ -5952,11 +5940,31 @@ async function openEstimateStartPicker(opts = {}) {
       };
       const v = q('#espContact').value;
       if (v.startsWith('cust:')) {
-        closeModal();
-        createDraftEstimateNow({ customerId: v.slice(5), extras });
+        const btn = q('#espGo'); btn.disabled = true;
+        try {
+          const salesLeadId = await ensureSalesLead(v.slice(5), { mode: val('espInquiryMode'), requestKey: estimateInquiryRequestKey });
+          closeModal();
+          createDraftEstimateNow({ customerId: v.slice(5), leadId: salesLeadId, extras });
+        } catch (err) { errEl.textContent = err.message; btn.disabled = false; }
         return;
       }
       if (v.startsWith('lead:')) {
+        if (val('espInquiryMode') === 'new') {
+          const selectedLead = leads.find(row => row.id === v.slice(5));
+          if (!selectedLead || !selectedLead.customer_id) {
+            errEl.textContent = 'Link this lead to its customer first, or choose the customer above.';
+            return;
+          }
+          const btn = q('#espGo'); btn.disabled = true;
+          try {
+            const salesLeadId = await ensureSalesLead(selectedLead.customer_id, {
+              brand: selectedLead.brand || 'PEC', mode: 'new', requestKey: estimateInquiryRequestKey,
+            });
+            closeModal();
+            createDraftEstimateNow({ customerId: selectedLead.customer_id, leadId: salesLeadId, extras });
+          } catch (err) { errEl.textContent = err.message; btn.disabled = false; }
+          return;
+        }
         closeModal();
         // The lead path keeps the duplicate-estimate guard, which runs BEFORE
         // the insert (prompt 61 landmine 6).
@@ -5995,7 +6003,7 @@ async function openEstimateStartPicker(opts = {}) {
         } else {
           createdEstimateCustomer = await updateNewSalesCustomer(createdEstimateCustomer, customerProfile);
         }
-        const salesLeadId = await ensureSalesLead(createdEstimateCustomer.id, { occurredAt: createdEstimateCustomer.created_at });
+        const salesLeadId = await ensureSalesLead(createdEstimateCustomer.id, { mode: 'new', requestKey: estimateInquiryRequestKey, occurredAt: createdEstimateCustomer.created_at });
         closeModal();
         createDraftEstimateNow({ leadId: salesLeadId, customerId: createdEstimateCustomer.id, extras });
       } catch (err) {
@@ -7492,13 +7500,14 @@ async function renderCustomerDetail(id) {
   mountRecordEmailLog(root.querySelector('#pecCustEmailsCard'), { customerId: c.id });
 }
 
-// A customer identity and its qualifying inquiry share one canonical pipeline
-// lead. Only an explicitly new contact passes its just-created timestamp;
-// existing/imported customers qualify now, never on their import date.
-async function ensureSalesLead(customerId, { brand = 'PEC', stage = 'new', occurredAt = null } = {}) {
+// Distinguish new work from follow-up while preserving request identity on retries.
+async function ensureSalesLead(customerId, { brand = 'PEC', stage = 'new', occurredAt = null, mode = 'auto', requestKey = null, leadId = null, inquiryDate = null, evidence = null } = {}) {
   if (!customerId) throw new Error('Save the customer before adding the inquiry.');
-  const result = await withFreshWriteRetry(() => supabase.rpc('ensure_sales_lead', {
-    p_customer_id: customerId, p_brand: brand, p_stage: stage, p_occurred_at: occurredAt,
+  const contactDate = occurredAt && Number.isFinite(Date.parse(occurredAt)) ? new Date(Date.parse(occurredAt) - 7 * 3600000).toISOString().slice(0,10) : null;
+  const result = await withFreshWriteRetry(() => supabase.rpc('record_sales_inquiry', {
+    p_customer_id: customerId, p_brand: brand, p_stage: stage,
+    p_mode: mode, p_request_key: requestKey || ('customer-entry:' + customerId), p_lead_id: leadId,
+    p_inquiry_date: inquiryDate || contactDate, p_origin: 'staff_live', p_evidence: evidence || (contactDate ? 'New contact saved at ' + occurredAt : null),
   }), { label: 'ensure-sales-lead' });
   if (result.error) throw result.error;
   if (typeof result.data !== 'string' || !result.data) throw new Error('The inquiry could not be linked to the sales pipeline.');
@@ -11951,41 +11960,62 @@ function openPaymentModal(row, { deposit }) {
   } });
 }
 
+// One authorized transaction owns dates, invoice terms, CRM/production state,
+// and event evidence. Never fall back to a partial status write.
+async function recordJobCompletion({ jobId, prodJobId = null, date, requestKey, evidence, amend = false }) {
+  if (!jobId) throw new Error('Link this production job to its exact job card before completing it.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date || date > mstTodayIso()) throw new Error('Choose a valid completion date that is not in the future.');
+  const args = { p_job_id: jobId, p_completed_date: date, p_request_key: requestKey, p_evidence_ref: evidence };
+  if (!amend) Object.assign(args, { p_prod_job_id: prodJobId, p_occurred_at: null });
+  const result = await supabase.rpc(amend ? 'pec_amend_job_completion' : 'pec_complete_job', args);
+  if (result.error) throw result.error;
+  if (!result.data || result.data.job_id !== jobId || !result.data.completed_date) throw new Error('Completion was not confirmed. Retry this same form to check the saved result.');
+  return result.data;
+}
+
+function openJobCompletionModal({ jobId, prodJobId = null, name = '', completedDate = null, source = 'staff_completion', amend = false, modalRoot = null, onSaved } = {}) {
+  const requestKey = 'completion:' + crypto.randomUUID();
+  const today = mstTodayIso();
+  let saving = false;
+  const wrap = openModal(`
+    <h3>${amend ? 'Correct completion date' : 'Mark job complete'}</h3>
+    <p>${esc(name || 'This job')}</p>
+    <div class="pec-field"><label for="jobCompletionDate">Actual completion date</label><input id="jobCompletionDate" type="date" required max="${today}" value="${esc(completedDate || today)}"></div>
+    <div class="pec-field"><label for="jobCompletionEvidence">Confirmation or source${amend ? ' (required)' : ' (required for an earlier date)'}</label><textarea id="jobCompletionEvidence" rows="2" placeholder="For example: final walkthrough, or the original schedule end date"></textarea></div>
+    <p style="font-size:.8rem;color:var(--muted)">The job card and its explicitly linked production job save together. A repeat submission keeps the original completion.</p>
+    <div id="jobCompletionError" class="prod-msg-err" role="alert"></div>
+    <div class="pec-modal-actions"><button type="button" class="pec-btn ghost" id="jobCompletionCancel">Cancel</button><button type="button" class="pec-btn primary" id="jobCompletionSave">${amend ? 'Save correction' : 'Mark complete'}</button></div>
+  `, { root: modalRoot || $('pecModalRoot'), closeButton: false, backdropClose: false, onMount: modal => {
+    const go = modal.querySelector('#jobCompletionSave'), cancel = modal.querySelector('#jobCompletionCancel'), error = modal.querySelector('#jobCompletionError');
+    cancel.addEventListener('click', () => { if (!saving) pecCloseModalWrap(wrap); });
+    go.addEventListener('click', async () => {
+      if (saving) return;
+      const date = modal.querySelector('#jobCompletionDate').value;
+      const confirmation = modal.querySelector('#jobCompletionEvidence').value.trim();
+      error.textContent = '';
+      if ((amend || date !== today) && confirmation.length < 8) { error.textContent = 'Add a brief confirmation or source for this historical date (at least 8 characters).'; return; }
+      saving = true; go.disabled = true; cancel.disabled = true;
+      let saved;
+      try {
+        saved = await recordJobCompletion({ jobId, prodJobId, date, requestKey, evidence: confirmation || source + ': staff confirmed completion', amend });
+      } catch (err) {
+        error.textContent = 'Could not save completion: ' + (err?.message || String(err));
+        saving = false; go.disabled = false; cancel.disabled = false;
+        return;
+      }
+      pecCloseModalWrap(wrap);
+      showToast(saved.already ? 'Completion already recorded.' : amend ? 'Completion correction saved.' : 'Job marked complete.', { ttl: 3000 });
+      try { if (typeof onSaved === 'function') await onSaved(saved); } catch (_) { showToast('Completion saved. Refresh this page to see the updated job.', { ttl: 5000 }); }
+      if (!amend && !saved.already && saved.completed_date === today) openReviewAskModal(jobId).catch(() => {});
+    });
+  }});
+  return wrap;
+}
+window.pecOpenJobCompletionModal = openJobCompletionModal;
+
 async function markJobComplete(row) {
   if (!row) return;
-  if (!confirm(`Mark this job complete?\n\n${row.customer_name || ''}\n${row.address || ''}`)) return;
-  const today = invToday();
-  try {
-    // status_manual_at marks this as a HUMAN completion, which is what keeps
-    // the job in AR (not the "Completed, but still on the schedule" parking)
-    // if a schedule day is ever added back later. Same deploy-safe fallback as
-    // the other status writers if the column is missing.
-    const patch = { completed_date: today, status: 'completed', status_manual_at: new Date().toISOString() };
-    // Invoice terms (2026-08-17): completion is the trigger that resolves a
-    // due-upon-completion invoice's due date. Same patch, no extra write.
-    if (row.invoice_terms === 'due_on_completion' && !row.invoice_due_date) patch.invoice_due_date = today;
-    let upd = await withFreshWriteRetry(() => supabase.from('jobs').update(patch).eq('id', row.id), { label: 'mark-complete' });
-    if (upd.error && /status_manual_at|invoice_due_date/.test(upd.error.message || '')) {
-      upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
-    }
-    if (upd.error) throw upd.error;
-    // Mirror completion onto the production row so Job Costing (which reads
-    // pec_prod_jobs.status) sees it. Without this, an Invoicing-side Mark
-    // Complete left the prod record at scheduled/in_progress and the costing
-    // list (gated on completed) never showed the job. Best-effort, same bridge
-    // as the status-pick modal (dripjobs_deal_id, then name+address fallback).
-    try { await mirrorProdStatus({ crmJobId: row.id, dealId: row.dripjobs_deal_id, name: row.customer_name, addr: row.address }, 'completed'); } catch (_) {}
-    try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
-    showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
-    // Prompt 60: the close-out review ask rides every completion path.
-    openReviewAskModal(row.id).catch(() => {});
-    renderInvoicing();
-  } catch (err) {
-    console.error('[pec] mark complete failed', err);
-    showToast(isSessionTimeout(err)
-      ? 'The server did not respond (your session may be stale). Hard-reload the page and try again.'
-      : `Could not mark complete: ${esc(err.message || String(err))}`, { ttl: 7000 });
-  }
+  return openJobCompletionModal({ jobId: row.id, name: row.customer_name, completedDate: row.completed_date, source: 'invoicing_mark_complete', onSaved: () => renderInvoicing() });
 }
 
 // Lazy-load Chart.js from cdnjs on first Metrics render, mirroring the Quill
@@ -14020,6 +14050,8 @@ async function openNewJobForm() {
         <div class="pec-field"><label>Price</label><input name="price" type="number" step="0.01"></div>
         <div class="pec-field"><label>Sq Ft</label><input name="sqft"></div>
       </div>
+      <div class="pec-field"><label>Date accepted</label><input name="signed_date" type="date" required max="${mstTodayIso()}"><small>Use the customer's original acceptance date, not the day this record is entered.</small></div>
+      <div class="pec-field"><label>Acceptance confirmation or source</label><input name="booking_evidence_ref" placeholder="Required for an earlier date, for example proposal #123 acceptance history"></div>
       <div class="pec-field"><label>System type</label>
         <select name="system_type_id">
           <option value="">No system type</option>
@@ -14067,6 +14099,10 @@ async function openNewJobForm() {
         // Re-enable the address input so FormData picks it up
         addrInput.disabled = false;
         const fd = Object.fromEntries(new FormData(e.target));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fd.signed_date || '') || !Number.isFinite(Date.parse(fd.signed_date)) || new Date(fd.signed_date).toISOString().slice(0, 10) !== fd.signed_date || fd.signed_date > mstTodayIso()) throw new Error('Enter the original Date accepted, using a valid date that is not in the future.');
+        fd.booking_evidence_ref = (fd.booking_evidence_ref || '').trim();
+        if (fd.signed_date !== mstTodayIso() && fd.booking_evidence_ref.length < 8) throw new Error('Add the acceptance confirmation or source for this earlier date (at least 8 characters).');
+        if (!fd.booking_evidence_ref) fd.booking_evidence_ref = 'Staff confirmed original acceptance today';
         fd.price = fd.price ? parseFloat(fd.price) : null;
         fd.system_type_id = fd.system_type_id || null;
         // jobs.type is NOT NULL with a CHECK ('epoxy','paint'); pick by brand
@@ -15479,32 +15515,12 @@ async function renderJobDetailInner(id) {
   // the job detail render never waits on the review tables.
   hydrateJobReviewChip(id).catch(() => {});
   // Job Complete button (open to staff, not just admins -- Dusty / crew lead).
-  // Sets completed + completed_date, marks it a manual lock so automation won't
-  // move it, and mirrors 'completed' onto the bridged pec_prod_jobs row.
+  // The server transaction records the date and updates only explicit pairs.
   const completeBtn = $('pecJobComplete');
   if (completeBtn) completeBtn.addEventListener('click', async () => {
-    if (!confirm(`Mark this job complete?\n\n${job.customers?.name || ''}\n${job.address || ''}`)) return;
-    completeBtn.disabled = true; completeBtn.textContent = 'Saving…';
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      let upd = await supabase.from('jobs').update({ status: 'completed', completed_date: today, status_manual_at: new Date().toISOString() }).eq('id', id);
-      if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
-        upd = await supabase.from('jobs').update({ status: 'completed', completed_date: today }).eq('id', id);
-      }
-      if (upd.error) throw upd.error;
-      if (scheduleState?.prodJob?.id) {
-        try { await supabase.from('pec_prod_jobs').update({ status: 'completed' }).eq('id', scheduleState.prodJob.id); } catch (_) {}
-      }
-      try { await logJobActivity(id, 'status_change', { status: job.status }, { status: 'completed', source: 'mark_complete' }); } catch (_) {}
-      showToast('Job marked complete', { ttl: 2500 });
-      // Prompt 60: the close-out review ask rides every completion path.
-      openReviewAskModal(id).catch(() => {});
-      renderJobDetail(id);
-    } catch (err) {
-      completeBtn.disabled = false; completeBtn.textContent = 'Mark job complete';
-      console.error('[pec] mark complete (job detail):', err);
-      showToast('Could not mark complete: ' + (err && err.message ? err.message : err), { ttl: 5000 });
-    }
+    // Let the server resolve only an explicit pairing. The schedule display
+    // may still contain a legacy name/address match, which is not authority.
+    openJobCompletionModal({ jobId: id, name: job.customers?.name, completedDate: job.completed_date, source: 'job_card_complete', onSaved: () => renderJobDetail(id) });
   });
   // Callback Yes/No writes to the bridged pec_prod_jobs row (callback lives on
   // the production job, same column the costing page edits). Tracked per crew
@@ -17770,7 +17786,7 @@ async function renderBonusReport() {
       // undefined before, instead of 400ing the whole report pre-migration.
       supabase.from('pec_prod_job_bonuses').select('*').order('created_at'),
       supabase.from('pec_bonus_payouts').select('*'),
-      supabase.from('pec_prod_jobs').select('id,customer_name,address,dripjobs_deal_id,is_callback,original_job_id'),
+      supabase.from('pec_prod_jobs').select('id,customer_name,address,dripjobs_deal_id,is_callback,original_job_id,crm_job_id'),
       // The completion-date bridge for the 2-week lock (prompt 50 Part E1):
       // completion lives on public.jobs (stamped by markJobComplete), NOT on
       // pec_prod_jobs.completed_at, which nothing populates. Bridged deal-id
@@ -18023,7 +18039,7 @@ async function renderBonusReport() {
                 chips.push(`<span style="color:#b45309">Callback reviewed: reduced</span>${l.reviewNote ? ` <span style="color:var(--muted)">${esc(l.reviewNote)}</span>` : ''}`);
               }
               if (l.lock.state === 'locked') chips.push(`<span style="color:var(--muted)">payable ${esc(invFmtDate(l.lock.unlockOn))}</span>`);
-              else if (l.lock.state === 'missing') chips.push(`<span style="color:#dc2626">Completion date missing</span>${isAdm && l.lock.crmId ? ` <button class="pec-btn ghost sm" data-bon-setcompl="${esc(l.lock.crmId)}">Set completion date</button>` : isAdm ? ' <span style="color:var(--muted)">(no CRM job match)</span>' : ''}`);
+              else if (l.lock.state === 'missing') chips.push(`<span style="color:#dc2626">Completion date missing</span>${isAdm && l.lock.crmId && prodById[l.job_id]?.crm_job_id === l.lock.crmId ? ` <button class="pec-btn ghost sm" data-bon-setcompl="${esc(l.lock.crmId)}" data-bon-customer="${esc(l.customer)}">Set completion date</button>` : isAdm ? ' <span style="color:var(--muted)">(review the explicit job link first)</span>' : ''}`);
               else if (l.payable) chips.push('<span style="color:var(--rd-success,#16a34a)">Payable</span>');
             }
             return `<tr class="nohover"${l.review === 'voided' ? ' style="opacity:.65"' : ''}>
@@ -18280,23 +18296,12 @@ async function renderBonusReport() {
     }
   }));
 
-  // Set a missing completion date (prompt 50 Part E1, Correction 1): writes
-  // public.jobs.completed_date on the bridged CRM job so the lock can be
-  // evaluated. Data fix only; status is not touched (manual completion stays
-  // the source of truth via markJobComplete). Prompt 60's review-ask popup is
-  // DELIBERATELY not wired here: this stamps a possibly weeks-old date on an
-  // already-finished job for bonus locking, it is not a completion event, and
-  // texting that customer "your job wrapped up yesterday" would be wrong. Old
-  // jobs get their ask from the Part H backfill instead.
+  // An administrator records historical completion evidence through the
+  // amendment transaction. Preserve its audit trail and suppress review asks;
+  // correcting an old date is not a fresh customer close-out.
   root.querySelectorAll('[data-bon-setcompl]').forEach(b => b.addEventListener('click', async () => {
     const crmId = b.dataset.bonSetcompl;
-    const d = prompt('Completion date for this job (YYYY-MM-DD):', today);
-    if (d == null) return;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d.trim())) { alert('Enter the date as YYYY-MM-DD.'); return; }
-    b.disabled = true;
-    const up = await withFreshWriteRetry(() => supabase.from('jobs').update({ completed_date: d.trim() }).eq('id', crmId).select('id').single(), { label: 'bonus-setcompl' });
-    if (up.error || !up.data) { b.disabled = false; alert('Could not set the completion date: ' + (up.error?.message || 'no row updated')); return; }
-    renderBonusReport();
+    openJobCompletionModal({ jobId: crmId, name: b.dataset.bonCustomer, amend: true, source: 'bonus_historical_completion', onSaved: () => renderBonusReport() });
   }));
 }
 
@@ -26924,6 +26929,7 @@ function openPipelineMoveModal(row, target, onDone) {
   const statusChanges = target.status !== row.status;
   const colorsChanges = target.colors !== null && target.colors !== curColors;
   if (!statusChanges && !colorsChanges) { showToast('Already in that column', { ttl: 1800 }); return; }
+  if (target.status === 'completed' && statusChanges) return openJobCompletionModal({ jobId: row.id, name: row.customerName, completedDate: row.completed_date, source: 'pipeline_drag', onSaved: onDone });
   const pretty = s => (s || '').replace('_', ' ');
   const summary = statusChanges
     ? `Set status from <strong>${esc(pretty(row.status))}</strong> to <strong>${esc(pretty(target.status))}</strong>${colorsChanges ? ` and mark colors <strong>${target.colors ? 'confirmed' : 'not confirmed'}</strong>` : ''}?`
@@ -26964,8 +26970,6 @@ function openPipelineMoveModal(row, target, onDone) {
           const after = { status: target.status, source: 'pipeline_drag' };
           if (reason) after.reason = reason;
           await logJobActivity(row.id, 'status_change', { status: row.status }, after);
-          // Two-way sync: dragging to Project Complete also completes the calendar row(s).
-          if (target.status === 'completed') await mirrorProdStatus({ crmJobId: row.id, dealId: row.dealId, name: row.customerName, addr: row.address }, 'completed');
         }
         if (colorsChanges) {
           await logJobActivity(row.id, 'save', { colors_confirmed: curColors }, { colors_confirmed: target.colors });
@@ -28548,6 +28552,7 @@ async function openAppointmentForm(existing, prefill = {}) {
   // customer at save time. Preload the linked customer for the picker chip; a
   // legacy lead-only row resolves its customer through the lead, so old rows
   // pick up the customer link (and the derived title) on their next save.
+  const appointmentInquiryRequestKey = 'appointment-entry:' + crypto.randomUUID();
   let curCustomer = null;   // { id, name, email, lead_source }
   let custChanged = false;  // any pick/unlink; save re-resolves the lead only then
   let leadEmail = null;     // fallback prefill when the lead has no customer yet
@@ -28574,6 +28579,7 @@ async function openAppointmentForm(existing, prefill = {}) {
 
   openModal(`
     <h3>${isNew ? 'New appointment' : 'Edit appointment'}</h3>
+    ${!isImported ? '<div class="pec-field"><label for="afInquiry">Quote request</label><select id="afInquiry"><option value="auto">Keep linked inquiry or follow only open request</option><option value="new">Separate new quote request</option></select><div style="font-size:.75rem;color:var(--muted)">Rescheduling keeps the original inquiry.</div></div>' : ''}
     <div class="pec-row-2">
       <div class="pec-field"><label>Type</label>
         <select id="afType">${APPT_TYPES.map(t => `<option value="${esc(t.key)}"${curType === t.key ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
@@ -28737,7 +28743,22 @@ async function openAppointmentForm(existing, prefill = {}) {
         }
       })();
     };
+    let inquiryChoiceSequence = 0;
+    const loadInquiryChoices = async () => {
+      const select = modal.querySelector('#afInquiry'); if (!select) return;
+      const sequence = ++inquiryChoiceSequence;
+      select.innerHTML = '<option value="auto">Keep linked inquiry or follow only open request</option><option value="new">Separate new quote request</option>';
+      if (!curCustomer) return;
+      const response = await supabase.from('leads').select('id,notes,inquiry_date,created_at,stage').eq('customer_id',curCustomer.id).is('deleted_at',null).is('archived_at',null).is('duplicate_of',null).is('reporting_excluded_at',null).not('stage','in','(accepted,lost)').order('created_at',{ascending:false});
+      if (sequence !== inquiryChoiceSequence || !select.isConnected) return;
+      if (response.error) { errEl.textContent = 'Could not load this customer’s inquiries. Please try again.'; return; }
+      (response.data || []).forEach(lead => {
+        const option = document.createElement('option'); option.value = lead.id;
+        option.textContent = [lead.inquiry_date || String(lead.created_at).slice(0,10), lead.notes || titleCaseValue(lead.stage)].join(' · '); select.appendChild(option);
+      });
+    };
     const renderCustPicker = () => {
+      loadInquiryChoices().catch(() => {});
       if (curCustomer) {
         custWrap.innerHTML = `
           <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:7px 10px">
@@ -29007,18 +29028,18 @@ async function openAppointmentForm(existing, prefill = {}) {
         lead_id: saveLeadId,
         customer_id: saveCustomer ? saveCustomer.id : null,
       };
-      if (saveCustomerChanged || (isNew && saveCustomer && !saveLeadId)) {
-        saveLeadId = null;
-        if (saveCustomer) {
-          try {
-            const lr = await supabase.from('leads').select('id')
-              .eq('customer_id', saveCustomer.id).is('deleted_at', null).is('archived_at', null)
-              .order('created_at', { ascending: false }).limit(1);
-            if (lr.error) throw lr.error;
-            if (lr.data && lr.data[0]) saveLeadId = lr.data[0].id;
-          } catch (_) { errEl.textContent = 'Could not check the linked lead. Please try again before booking.'; return; }
-        }
-      }
+      if (!isImported && row.appt_type === 'on_site_estimate' && saveCustomer) {
+        const inquiryChoice = val('afInquiry') || 'auto';
+        try {
+          if (inquiryChoice !== 'auto' || saveCustomerChanged || (isNew && !saveLeadId)) {
+            const explicit = !['auto','new'].includes(inquiryChoice) ? inquiryChoice : null;
+            saveLeadId = await ensureSalesLead(saveCustomer.id, {
+              mode: explicit ? 'followup' : inquiryChoice, leadId: explicit,
+              requestKey: appointmentInquiryRequestKey, stage: 'new',
+            });
+          }
+        } catch (err) { errEl.textContent = err.message || 'Could not link this quote request.'; return; }
+      } else if (saveCustomerChanged) saveLeadId = null;
       row.lead_id = saveLeadId;
       const btn = modal.querySelector('#afSave');
       btn.disabled = true; btn.textContent = 'Saving…';
@@ -31321,12 +31342,19 @@ function openLeadNameModal(lead, onSaved) {
 // Manual lead entry. Same validation contract as the intake webhook (name
 // required, phone or email required) so a manual lead is never a lesser row.
 function openNewLeadModal(prefill) {
+  const inquiryRequestKey = 'manual:' + crypto.randomUUID();
+  const newLeadCustomerId = crypto.randomUUID();
   let savedLeadCustomer = null;
   const staffNames = (state.leadsData && state.leadsData.staffNames) || {};
   const sources = (state.leadsData && state.leadsData.sources) || ['manual'];
   const pfPhone = prefill && prefill.phone ? qoFmtPhone(prefill.phone) : '';
   openModal(`
     <h3>New lead</h3>
+    <p style="color:var(--muted);font-size:.85rem">Each separate quote request creates a new opportunity, including returning customers. Use the existing lead for follow-ups and rescheduling.</p>
+    <details><summary>Advanced: original inquiry date</summary>
+      <div class="pec-field"><label for="nlInquiryDate">Date the customer first requested this work</label><input id="nlInquiryDate" type="date" max="${mstTodayIso()}" value="${mstTodayIso()}"></div>
+      <div class="pec-field"><label for="nlEvidence">Evidence for an earlier date</label><input id="nlEvidence" placeholder="Original message, call record or source reference"></div>
+    </details>
     <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
       <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="nlType" value="individual" checked style="width:auto">Individual</label>
       <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="nlType" value="business" style="width:auto">Business</label>
@@ -31419,28 +31447,24 @@ function openNewLeadModal(prefill) {
         };
         let custId = savedLeadCustomer && savedLeadCustomer.id;
         if (!custId) {
-          const ors = [];
-          if (p10) ors.push(`phone_norm.eq.${p10}`);
-          if (email) ors.push(`email.eq."${email.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
-          if (ors.length) {
-            const m = await supabase.from('customers').select('id').is('archived_at', null)
-              .eq('company', 'prescott-epoxy').or(ors.join(',')).order('created_at', { ascending: true }).limit(1);
-            if (m.error) throw m.error;
-            if (m.data && m.data[0]) { custId = m.data[0].id; savedLeadCustomer = { id: custId }; }
-          }
-          if (!custId) {
-            const ci = await supabase.from('customers').insert({
-              ...customerProfile, token: randomToken(),
-            }).select('id,created_at').single();
-            if (ci.error) throw ci.error;
-            if (!ci.data) throw new Error('The customer could not be saved.');
-            savedLeadCustomer = ci.data;
-            custId = ci.data.id;
+          const resolved = await withFreshWriteRetry(() => supabase.rpc('resolve_sales_customer', {
+            p_profile: { ...customerProfile, _new_customer_id: newLeadCustomerId },
+          }), { label: 'lead-customer-identity' });
+          if (resolved.error) throw resolved.error;
+          if (typeof resolved.data !== 'string' || !resolved.data) throw new Error('The customer could not be resolved.');
+          custId = resolved.data;
+          if (custId === newLeadCustomerId) {
+            const own = await supabase.from('customers').select('id,created_at,company').eq('id', custId).single();
+            if (own.error) throw own.error;
+            if (!own.data) throw new Error('The saved customer could not be loaded.');
+            savedLeadCustomer = own.data;
+          } else {
+            savedLeadCustomer = { id: custId };
           }
         } else if (savedLeadCustomer.created_at) {
           savedLeadCustomer = await updateNewSalesCustomer(savedLeadCustomer, customerProfile);
         }
-        const salesLeadId = await ensureSalesLead(custId, { occurredAt: savedLeadCustomer.created_at || null });
+        const salesLeadId = await ensureSalesLead(custId, { mode: 'new', requestKey: inquiryRequestKey, inquiryDate: val('nlInquiryDate') || null, evidence: val('nlEvidence') || null });
         const existingLead = await supabase.from('leads').select('*').eq('id', salesLeadId).single();
         if (existingLead.error) throw existingLead.error;
         if (!existingLead.data) throw new Error('The saved lead could not be loaded.');
@@ -46867,34 +46891,15 @@ function _mergeAcrossAreas(areaPlans) {
 
   async function completeActiveJob() {
     const j = state.activeJob;
-    if (!confirm(`Mark job #${j.proposal_number} complete? Sets the job status to completed. Material line data is preserved for future job costing.`)) return;
     const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
     errEl.textContent = ''; okEl.textContent = '';
-    const btn = $('prodDetailComplete'); btn.disabled = true;
-    try {
-      const { error } = await supabase.from('pec_prod_jobs').update({ status: 'completed' }).eq('id', j.id);
-      if (error) throw error;
-      // The DB trigger mirrors this onto jobs.status but no longer stamps
-      // completed_date (manual completion source of truth, 2026-07-21). This
-      // IS a human completion, so stamp the date here. Best-effort, fills only
-      // a null so a re-complete keeps the original date.
-      if (j.dripjobs_deal_id) {
-        try { await supabase.from('jobs').update({ completed_date: mstTodayIso() }).eq('dripjobs_deal_id', j.dripjobs_deal_id).is('completed_date', null); } catch (_) {}
-        // Prompt 60: the close-out review ask rides every completion path.
-        // pec_review_requests hangs off public.jobs, so a manual prod-only job
-        // (no deal id, no CRM row) has nothing to ask against and is skipped.
-        try {
-          const crm = await supabase.from('jobs').select('id').eq('dripjobs_deal_id', j.dripjobs_deal_id).limit(1).maybeSingle();
-          // Separate module scope: the CRM module exposes the modal on window.
-          if (!crm.error && crm.data && window.pecOpenReviewAskModal) window.pecOpenReviewAskModal(crm.data.id).catch(() => {});
-        } catch (_) {}
-      }
-      okEl.textContent = 'Marked complete.';
+    if (!j.crm_job_id) { errEl.textContent = 'Link this production job to its exact job card before completing it. Open Jobs and review the matching customer and scope.'; return; }
+    if (!window.pecOpenJobCompletionModal) { errEl.textContent = 'Completion form is unavailable. Refresh the page and try again.'; return; }
+    window.pecOpenJobCompletionModal({ jobId: j.crm_job_id, prodJobId: j.id, name: j.customer_name, completedDate: j.completed_date, source: 'production_complete', modalRoot: $('prodModalRoot'), onSaved: async () => {
+      closeJobDetail();
       await loadJobs();
-      state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
-      renderJobDetail();
-    } catch (err) { errEl.textContent = err.message; }
-    finally { btn.disabled = false; }
+      render();
+    }});
   }
 
   // -------------------- Material Catalog (admin/pm) --------------------

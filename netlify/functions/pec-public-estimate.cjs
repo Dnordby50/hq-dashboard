@@ -1921,7 +1921,9 @@ async function ensureJobCreated(est) {
       crew_notes: est.crew_notes || null,
       price: est.price != null ? Number(est.price) : null,
       salesperson: intake.salesperson_name || null,
-      signed_date: phoenixToday(),
+      signed_date: require('./_pec-job-events.cjs').dateOfInstant(est.signed_at || est.accepted_at),
+      booked_occurred_at: est.signed_at || est.accepted_at || null,
+      booking_evidence_ref: `estimates/${est.id}`,
       source: 'estimate',
       system_type_id: est.system_type_id || null,
       // Prompt 83: the estimate's CompanyCam link rides to the job so the job

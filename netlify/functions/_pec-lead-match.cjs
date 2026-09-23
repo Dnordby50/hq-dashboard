@@ -1,16 +1,6 @@
-// Shared "same human" lead matching (prompt 56, landmine 2). Extracted from
-// pec-lead-intake.cjs so every intake path that must decide "is this person
-// already a lead?" uses ONE rule: a live (not soft-deleted) lead whose
-// normalized last-10 phone or exact lowercased email matches. Two callers:
-//   - pec-lead-intake.cjs: dedupe 2 (same person re-inquiring inside the
-//     90-day window folds onto the existing lead).
-//   - pec-appt-intake.cjs: the Routemize adapter both links appointments to
-//     leads (windowless: an old lead booking an estimate is exactly the
-//     linkage we want) and guards its create-a-lead path (decision 9) with
-//     the same windowed dedupe as lead-intake, so the two intakes cannot
-//     drift apart on what counts as a duplicate.
-
-const { randomToken } = require('./_pec-supabase.cjs');
+// Shared customer identity matching. Matching a person never decides whether
+// a quote request is new: _pec-sales-inquiry and its database RPC own that.
+// The legacy recent-lead helper remains exported for compatibility only.
 
 const DEDUPE_WINDOW_DAYS = 90;
 
@@ -62,31 +52,16 @@ async function findRecentLiveLead(sb, { phone10, email, now, windowDays = DEDUPE
 // customer record). Brand maps PEC -> 'prescott-epoxy', FTP ->
 // 'finishing-touch' (the same mapping pec-public-estimate uses).
 async function resolveOrCreateCustomer(db, f = {}) {
-  const or = sameHumanOr(f.phone10, f.email);
-  if (or) {
-    const rows = await db('GET',
-      `/customers?or=(${or})&archived_at=is.null&select=id&order=created_at.desc&limit=1`);
-    if (Array.isArray(rows) && rows[0]) return { customer_id: rows[0].id, created: false };
-  }
-  if (!f.name) return { customer_id: null, created: false }; // nothing to create from
-  const created = await db('POST', '/customers', {
-    token: randomToken(),
-    name: f.name,
-    first_name: f.firstName || null,
-    last_name: f.lastName || null,
-    company_name: f.businessName || null,
-    email: f.email || null,
-    phone: f.phone10 || f.phone || null,
-    billing_address_line1: f.address || null,
-    billing_city: f.city || null,
-    billing_state: f.state || null,
-    billing_zip: f.zip || null,
-    lead_source: f.source || null,
+  if (!f.name) return { customer_id: null, created: false };
+  const customerId = await db('POST', '/rpc/resolve_sales_customer', { p_profile: {
+    name: f.name, first_name: f.firstName || null, last_name: f.lastName || null,
+    company_name: f.businessName || null, email: f.email || null, phone: f.phone10 || f.phone || null,
+    billing_address_line1: f.address || null, billing_city: f.city || null,
+    billing_state: f.state || null, billing_zip: f.zip || null, lead_source: f.source || null,
     company: (f.brand === 'FTP' || f.brand === 'finishing-touch') ? 'finishing-touch' : 'prescott-epoxy',
-  }, true);
-  const row = Array.isArray(created) && created[0];
-  if (!row) throw new Error('customer insert returned no row');
-  return { customer_id: row.id, created: true };
+  }});
+  if (typeof customerId !== 'string' || !customerId) throw new Error('Customer identity could not be resolved');
+  return { customer_id: customerId, created: false };
 }
 
 module.exports = { DEDUPE_WINDOW_DAYS, normPhone, postgrestLiteral, sameHumanOr, findRecentLiveLead, resolveOrCreateCustomer };

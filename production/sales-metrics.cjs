@@ -18,15 +18,33 @@ function firstFullSunday(value){
   const date=phoenixDay(value),stamp=Date.parse(`${date}T00:00:00Z`);
   return new Date(stamp+(7-new Date(stamp).getUTCDay())%7*DAY).toISOString().slice(0,10);
 }
-function canonicalLeads(rows){
-  const contacts=new Map();
-  for(const row of rows){
-    if(row.deleted_at||!validTime(row.created_at))continue;
-    const key=row.customer_id?`customer:${row.customer_id}`:`lead:${row.id}`;
-    if(!contacts.has(key)||Date.parse(row.created_at)<Date.parse(contacts.get(key).created_at))contacts.set(key,row);
-  }
-  return [...contacts.values()];
+function inquiryDay(row){
+  if(validDay(row.inquiry_date))return row.inquiry_date;
+  // Preserve pre-migration behavior only. New/imported records need their original date.
+  return !row.inquiry_date&&!row.inquiry_origin&&!row.intake_request_key&&validTime(row.created_at)?phoenixDay(row.created_at):null;
 }
+function reconcileInquiries(rows){
+  const byId=new Map(rows.filter(row=>row.id).map(row=>[row.id,row])),canonical=new Map(),issues=[];
+  for(const row of byId.values()){
+    if(row.deleted_at||row.reporting_excluded_at)continue;
+    let current=row,problem=null;const seen=new Set();
+    while(current.duplicate_of){
+      if(seen.has(current.id)){problem='Duplicate inquiry links contain a cycle.';break;}
+      seen.add(current.id);
+      const next=byId.get(current.duplicate_of);
+      if(!next||next.deleted_at){problem='The canonical inquiry is missing or deleted.';break;}
+      if((next.brand||'PEC')!==(row.brand||'PEC')||next.customer_id!==row.customer_id){problem='The duplicate link points to a different customer or company.';break;}
+      current=next;
+    }
+    if(problem){issues.push({id:row.id,customer_id:row.customer_id,name:row.full_name,reason:problem,from:'0000-01-01',through:'9999-12-31'});continue;}
+    if(current.reporting_excluded_at)continue;
+    const date=inquiryDay(current);
+    if(!date){if(!issues.some(issue=>issue.id===current.id))issues.push({id:current.id,customer_id:current.customer_id,name:current.full_name,reason:'Original inquiry date is missing.',from:'0000-01-01',through:'9999-12-31'});continue;}
+    canonical.set(current.id,{...current,inquiry_day:date,date_evidence:validDay(current.inquiry_date)?(current.inquiry_origin||'recorded_inquiry'):'legacy_record_created'});
+  }
+  return {leads:[...canonical.values()],issues};
+}
+function canonicalLeads(rows){return reconcileInquiries(rows).leads;}
 // Match only the exact proposal URL token. Subject lines and customer names are editable.
 function messageEstimateIds(body,byToken){
   const ids=new Set();
@@ -91,9 +109,9 @@ function recoverFirstSends({estimates,firstSends,emails,sms,confirmations=[],tra
 }
 async function fetchSalesMetrics({db,start,until}){
   const results=await Promise.allSettled([
-    // Read prior contacts too: a duplicate/re-linked lead must not become a new contact this year.
-    allRows(db,`/leads?select=id,customer_id,full_name,created_at,deleted_at&brand=eq.PEC&created_at=lt.${until}`),
-    allRows(db,`/customers?select=id,name,created_at&company=eq.prescott-epoxy&created_at=gte.${start}T07:00:00Z&created_at=lt.${until}`),
+    // Read every inquiry so explicit canonical links and backdated imports resolve across years.
+    allRows(db,`/leads?select=id,brand,customer_id,full_name,source,created_at,deleted_at,inquiry_date,inquiry_origin,inquiry_evidence,intake_request_key,duplicate_of,reporting_excluded_at,reporting_exclusion_reason&brand=eq.PEC`),
+    allRows(db,`/customers?select=id,name,created_at,reporting_excluded_at,reporting_exclusion_reason&company=eq.prescott-epoxy`),
     allRows(db,`/estimates?select=id,estimate_number,public_token,created_at,sent_at&brand=eq.PEC&created_at=lt.${until}`),
     allRows(db,`/pec_estimate_first_sends?select=estimate_id,first_sent_at,channel&brand=eq.PEC&first_sent_at=lt.${until}`,'estimate_id'),
     allRows(db,`/pec_email_log?select=id,sent_at,status,resend_id,body_html&brand=in.(PEC,prescott-epoxy)&template_key=eq.estimate&resend_id=not.is.null&sent_at=lt.${until}`),
@@ -103,27 +121,29 @@ async function fetchSalesMetrics({db,start,until}){
   ]);
   const ok=index=>results[index].status==='fulfilled';
   const rows=index=>ok(index)?results[index].value:[];
-  const leads=canonicalLeads(rows(0)),linked=new Set(rows(0).filter(r=>r.customer_id&&!r.deleted_at).map(r=>r.customer_id));
-  const missingLeads=rows(1).filter(row=>!linked.has(row.id));
+  const reconciled=reconcileInquiries(rows(0)),leads=reconciled.leads.filter(row=>row.inquiry_day<=phoenixDay(new Date(Date.parse(until)-1).toISOString())&&(validDay(row.inquiry_date)||Date.parse(row.created_at)<Date.parse(until))),linked=new Set(rows(0).filter(r=>r.customer_id&&!r.deleted_at).map(r=>r.customer_id));
+  const missingLeads=rows(1).filter(row=>!row.reporting_excluded_at&&!linked.has(row.id));
   const estimatesAvailable=[2,3,4,5,6,7].every(ok);
   const trackingStartedAt=rows(6).map(row=>row.started_at).filter(validTime).sort()[0]||null;
   const recovered=recoverFirstSends({estimates:rows(2),firstSends:rows(3),emails:rows(4),sms:rows(5),confirmations:rows(7),trackingStartedAt});
   const pending=rows(6).filter(row=>row.status==='pending');
   const warnings=[];
   if(!ok(0)||!ok(1))warnings.push('PEC lead data could not be refreshed. Existing entries were retained.');
-  if(missingLeads.length)warnings.push(`${missingLeads.length} new contact record(s) have no pipeline lead. Affected lead totals need reconciliation, including checking for historical imports.`);
+  if(missingLeads.length)warnings.push(`${missingLeads.length} customer record(s) have no pipeline lead. Confirm original request dates or classify non-sales contacts; import dates do not establish inquiry dates.`);
+  if(reconciled.issues.length)warnings.push(`${reconciled.issues.length} inquiry date or duplicate-link exception(s) need review before lead totals can be verified.`);
   if(!estimatesAvailable)warnings.push('PEC first-send history could not be refreshed. Estimate totals are unavailable; no zero was substituted.');
   if(pending.length)warnings.push(`${pending.length} proposal send(s) need delivery verification. Affected estimate totals are unavailable until their outcome is recorded.`);
   if(recovered.unresolved.length)warnings.push(`${recovered.unresolved.length} older proposal(s) lack complete first-send evidence. Affected historical weeks remain unverified.`);
-  return {leads,missingLeads,firstSends:recovered.records,unresolved:recovered.unresolved,pending,
+  return {leads,missingLeads,inquiryIssues:reconciled.issues,firstSends:recovered.records,unresolved:recovered.unresolved,pending,
     leadsAvailable:ok(0)&&ok(1),estimatesAvailable,warnings,
-    coverageStarts:{leads:firstFullSunday(leads.map(r=>r.created_at).sort()[0]),estimates:firstFullSunday(recovered.records.map(r=>sendDay(r)+'T07:00:00Z').sort()[0])}};
+    coverageStarts:{leads:firstFullSunday(leads.map(r=>r.inquiry_day+'T07:00:00Z').sort()[0]),estimates:firstFullSunday(recovered.records.map(r=>sendDay(r)+'T07:00:00Z').sort()[0])}};
 }
 function salesWeek(source,start,end){
-  const within=value=>validTime(value)&&phoenixDay(value)>=start&&phoenixDay(value)<=end;
-  const leads=source.leads.filter(row=>within(row.created_at));
+  const leads=source.leads.filter(row=>inquiryDay(row)>=start&&inquiryDay(row)<=end);
+  const inquiryIssues=(source.inquiryIssues||[]).filter(row=>row.from<=end&&row.through>=start);
   const estimates=source.firstSends.filter(row=>sendDay(row)>=start&&sendDay(row)<=end);
-  const missingLeads=source.missingLeads.filter(row=>within(row.created_at));
+  // An unclassified import has no known original request date, so its affected range is unknown.
+  const missingLeads=source.missingLeads;
   const unresolved=source.unresolved.filter(row=>row.from<=end&&row.through>=start);
   // Pending sends for an already counted proposal are resends, so cannot add a new proposal.
   const known=new Map(source.firstSends.map(row=>[row.estimate_id,row]));
@@ -132,9 +152,9 @@ function salesWeek(source,start,end){
     if(first&&validTime(row.started_at)&&(first.first_sent_on?first.first_sent_on<=phoenixDay(row.started_at):Date.parse(first.first_sent_at)<=Date.parse(row.started_at)))return false;
     return (!validTime(row.started_at)||phoenixDay(row.started_at)<=end)&&(!first||sendDay(first)>=start);
   });
-  return {leads,estimates,missingLeads,unresolved,pending,available:{
-    leads:source.leadsAvailable&&!!source.coverageStarts.leads&&start>=source.coverageStarts.leads&&!missingLeads.length,
+  return {leads,estimates,missingLeads,inquiryIssues,unresolved,pending,available:{
+    leads:source.leadsAvailable&&!!source.coverageStarts.leads&&start>=source.coverageStarts.leads&&!missingLeads.length&&!inquiryIssues.length,
     estimates:source.estimatesAvailable&&!!source.coverageStarts.estimates&&start>=source.coverageStarts.estimates&&!unresolved.length&&!pending.length,
   }};
 }
-module.exports={fetchSalesMetrics,salesWeek,canonicalLeads,recoverFirstSends,messageEstimateIds,allRows};
+module.exports={fetchSalesMetrics,salesWeek,canonicalLeads,reconcileInquiries,inquiryDay,recoverFirstSends,messageEstimateIds,allRows};

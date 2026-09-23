@@ -3777,6 +3777,106 @@
       "hasHeader": false,
       "none": null,
       "artifacts": []
+    },
+    {
+      "file": "20260923163510_job_event_integrity.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_job_business_events"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_sales_integrity_exceptions"
+        },
+        {
+          "kind": "column",
+          "name": "public.jobs.reporting_state"
+        },
+        {
+          "kind": "column",
+          "name": "public.jobs.booked_occurred_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.jobs.booking_evidence_ref"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.reporting_excluded_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.reporting_exclusion_reason"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.completed_date"
+        },
+        {
+          "kind": "index",
+          "name": "pec_job_business_events_one_original_idx"
+        },
+        {
+          "kind": "index",
+          "name": "pec_job_business_events_job_idx"
+        }
+      ]
+    },
+    {
+      "file": "20260923163602_sales_inquiry_identity.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": "Inquiry identity RPC and audited classification guards; no historical reclassification",
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.leads.inquiry_date"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.inquiry_origin"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.inquiry_evidence"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.intake_request_key"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.duplicate_of"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.reporting_excluded_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.reporting_exclusion_reason"
+        },
+        {
+          "kind": "column",
+          "name": "public.customers.reporting_excluded_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.customers.reporting_exclusion_reason"
+        },
+        {
+          "kind": "table",
+          "name": "topcoat_sales_private.inquiry_requests"
+        },
+        {
+          "kind": "index",
+          "name": "leads_intake_request_key_unique"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3827,6 +3927,7 @@
     "pec_followup_ranks",
     "pec_heartbeats",
     "pec_invoice_installments",
+    "pec_job_business_events",
     "pec_lead_sources",
     "pec_notifications",
     "pec_ops_items",
@@ -3867,6 +3968,7 @@
     "pec_radar_alerts",
     "pec_review_bonuses",
     "pec_review_requests",
+    "pec_sales_integrity_exceptions",
     "pec_sales_member_google_calendars",
     "pec_sales_member_google_tokens",
     "pec_sales_team_members",
@@ -3887,6 +3989,7 @@
     "settings",
     "sign_in_log",
     "timeline_stages",
+    "topcoat_sales_private",
     "user_permissions"
   ]
 }

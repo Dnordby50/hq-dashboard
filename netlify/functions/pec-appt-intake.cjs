@@ -1,3 +1,4 @@
+const { originalInquiryDate, stageInquiryReview, recordInquiry } = require('./_pec-sales-inquiry.cjs');
 // Routemize -> TopCoat appointment intake (prompt 43 contract + prompt 56
 // native adapter). Appointments booked in Routemize land on the TopCoat
 // calendar as the system of record, linked to the originating lead so the
@@ -50,28 +51,16 @@
 //     (_pec-appt-push.cjs, prompt 88): the dashboard's client-side kick
 //     never runs for webhook-sourced writes, which left every Routemize
 //     booking off Google for a month. Best-effort; see kickPush below.
-//   - Lead linkage (prompt 43 decision 3): match a LIVE lead by last-10 phone
-//     or email and link it (plus its customer); else a customer by the same
-//     keys; else leave both null and carry name/phone on the appointment
-//     itself. The hand-rolled contract never auto-creates a lead or customer
-//     (would collide with the other intake paths).
-//
-// Routemize-native lead behavior (prompt 56, REVERSING prompt 43 decision 3
-// for the native path ONLY, Dylan 2026-07-29): Routemize is now the front
-// door, so a direct booker who matches no lead and no customer gets a lead
-// CREATED (stage 'new'; apptBookingLeadEffects then advances it exactly like
-// an in-app booking). The collision risk prompt 43 worried about is handled
-// by sharing pec-lead-intake's own same-human dedupe (_pec-lead-match.cjs):
-// the windowless lead match here is strictly broader than lead-intake's
-// 90-day window, so if it found nothing, the windowed dedupe cannot hit
-// either, and creating is safe. A created lead is NOT nurture-enrolled
-// (landmine 3: apptBookingLeadEffects would pause it instantly; enroll-then-
-// pause is churn). Prompt 97 REVERSED the "no AI kick" half of that decision:
-// the no-kick was right for drips and wrong for scoring, and with Routemize
-// as the front door it silenced leads.score for most new leads. A created
-// lead now kicks pec-lead-ai (best-effort, fire-and-forget past the request
-// leaving; see kickLeadAi), exactly like pec-lead-intake does. Nurture
-// enrollment stays OFF, untouched.
+//   - Existing appointment links remain stable on retries/reschedules.
+//     New estimate visits resolve the customer within PEC and use the inquiry
+//     RPC: follow one active request, create after closed work, and stage
+//     ambiguous identity or undated new requests for office review. Original
+//     inquiry dates come from source evidence, never the appointment start or
+//     delivery day. Confirmation effects run only after a linked save.
+//   - New contacts are saved before the inquiry, with a stable Routemize
+//     appointment key making retries return the same inquiry. Creation and
+//     its event are atomic in the RPC; consent upgrades never revoke STOP.
+//     Nurture remains off for direct appointment bookings.
 // Lead source is attributed to the PERSON, never the appointment (decision
 // 10): a new lead takes Routemize's own leadSource (fallback 'routemize');
 // an existing lead's source is filled only if blank, never overwritten.
@@ -182,18 +171,13 @@ async function resolveSalesMember(db, memberEmails, memberName) {
 // same keys; else nothing.
 async function resolveContact(db, phone10, email) {
   const out = { lead_id: null, customer_id: null };
-  const or = sameHumanOr(phone10, email); // ONE matching rule, shared with pec-lead-intake
+  const or = sameHumanOr(phone10, email);
   if (!or) return out;
-  const leads = await db('GET',
-    `/leads?or=(${or})&deleted_at=is.null&select=id,customer_id&order=created_at.desc&limit=1`);
-  if (Array.isArray(leads) && leads.length) {
-    out.lead_id = leads[0].id;
-    out.customer_id = leads[0].customer_id || null;
-    return out;
-  }
-  const customers = await db('GET',
-    `/customers?or=(${or})&archived_at=is.null&select=id&order=created_at.desc&limit=1`);
-  if (Array.isArray(customers) && customers.length) out.customer_id = customers[0].id;
+  const customers = await db('GET', `/customers?or=(${or})&company=eq.prescott-epoxy&archived_at=is.null&select=id&limit=2`);
+  if (customers.length > 1) throw new Error('Several customer identities match; office review is required');
+  if (customers[0]) out.customer_id = customers[0].id;
+  // Matching a person is not matching a request. The inquiry RPC decides
+  // whether one active request can be followed, or selection is necessary.
   return out;
 }
 
@@ -529,6 +513,9 @@ async function mapRoutemizeEnvelope(db, env) {
     customer_name: customerName,
     phone: contact.phoneNumber,
     email: contact.email,
+    // Contact creation is the source inquiry event, never the visit time or
+    // webhook delivery timestamp. Missing evidence is staged for review.
+    inquiry_date: data.inquiry_date || data.submitted_at || normalizeRoutemizeUtc(contact.createdAt),
     address: addr || null,
     city: address.city,
     state: address.state,
@@ -618,46 +605,10 @@ async function createRoutemizeLead(db, args) {
   });
   const customerId = c.customer_id;
   if (!customerId) throw new Error('Customer creation returned no linked record');
-  const base = {
-    brand: 'PEC', // decision 7: FTP does not use Routemize
-    customer_id: customerId,
-    source: args.source,
-    source_ref: args.contactId || null,
-    first_name: args.firstName || (args.customerName ? args.customerName.split(' ')[0] : null),
-    last_name: args.lastName || (args.customerName && args.customerName.includes(' ')
-      ? args.customerName.split(' ').slice(1).join(' ') : null),
-    business_name: args.businessName || null,
-    full_name: args.customerName,
-    email: args.email,
-    phone: args.phone10 || null,
-    address: args.address, city: args.city, state: args.state, zip: args.zip,
-    stage: 'new',
-    // Policy 2026-08-21 (Dylan, reversing the earlier never-inferred
-    // stance): booking an estimate IS consent to be texted about it; STOP
-    // opts out and every send path checks opted_out.
-    sms_consent: true,
-    sms_consent_source: 'implied by inquiry (policy 2026-08-21)',
-    sms_consent_at: new Date().toISOString(),
-  };
-  let rows;
-  try {
-    rows = await db('POST', '/leads', { ...base, routemize_contact_id: args.contactId || null }, true);
-  } catch (err) {
-    // Pre-migration (landmine 8): the column is not there yet; the lead
-    // still gets created without it.
-    if (/routemize_contact_id/i.test(String(err && err.message))) {
-      rows = await db('POST', '/leads', base, true);
-    } else throw err;
-  }
-  const lead = Array.isArray(rows) && rows[0];
-  if (!lead) throw new Error('lead insert returned no row');
-  await db('POST', '/lead_events', {
-    lead_id: lead.id,
-    event_type: 'created',
-    to_stage: 'new',
-    payload: { source: args.source, via: 'routemize_booking', routemize_appt_id: args.rmId },
-  }).catch(e => console.warn('pec-appt-intake: created lead_event failed (non-fatal):', e && e.message));
-  return lead;
+  const id = await recordInquiry(db, { customerId, key: 'routemize:' + args.rmId,
+    mode: args.mode || 'auto', date: args.inquiryDate, origin: 'source_event',
+    evidence: 'Routemize original inquiry for appointment ' + args.rmId });
+  return { id, customer_id: customerId };
 }
 
 // Store contact.contactId on the matched/created lead or customer (decision
@@ -868,33 +819,31 @@ async function processApptIntake(deps, body) {
     const existingRow = Array.isArray(existing) && existing[0];
 
     const [contact, member] = [
-      await resolveContact(db, phone10, email),
+      existingRow && (existingRow.lead_id || existingRow.customer_id)
+        ? { lead_id: existingRow.lead_id || null, customer_id: existingRow.customer_id || null }
+        : await resolveContact(db, phone10, email),
       await resolveSalesMember(db, rz ? rz.memberEmails : memberEmail, memberName),
     ];
 
-    // Routemize-native lead behavior (decisions 9/10/12; see the header
-    // block). resolveContact just ran the shared same-human match with NO
-    // window, strictly broader than lead-intake's 90-day dedupe, so a miss
-    // here proves the windowed dedupe cannot hit either: creating is safe.
-    // Prompt 61 Part D: Routemize's leadSource token maps to the managed
-    // pec_lead_sources name here (both the create and the fill-when-null
-    // paths). Mapping the value does NOT license overwriting an existing
-    // source (prompt 56 decision 10 stands: fill only when null).
+    // Identity and inquiry are separate. The database RPC owns retries and
+    // the active-request choice; source attribution only fills empty values.
     const rzSource = rz ? await resolveLeadSourceName(db, rz.leadSource) : null;
     let leadCreated = false;
-    if (!existingRow && !contact.lead_id && contact.customer_id && normApptType(body.appt_type) === 'on_site_estimate') {
-      const leadId = await db('POST', '/rpc/ensure_sales_lead', {
-        p_customer_id: contact.customer_id, p_brand: 'PEC', p_stage: 'new', p_occurred_at: null,
-      });
-      if (typeof leadId !== 'string' || !leadId) throw new Error('Could not link the customer inquiry to the sales pipeline');
-      contact.lead_id = leadId;
-    }
-    if (rz && !contact.lead_id && !contact.customer_id && customerName && (phone10 || email)) {
-      try {
+    const inquiryDate = originalInquiryDate(body.inquiry_date || body.submitted_at || body.created_at);
+    try {
+      if (!contact.lead_id && contact.customer_id && (rz || apptType === 'on_site_estimate')) {
+        contact.lead_id = await recordInquiry(db, { customerId: contact.customer_id,
+          key: 'routemize:' + rmId, mode: body.inquiry_mode === 'new' ? 'new' : 'auto',
+          date: inquiryDate, origin: 'source_event', evidence: 'Routemize original inquiry for appointment ' + rmId });
+      }
+      if (!contact.lead_id && !contact.customer_id && (rz || apptType === 'on_site_estimate')) {
+        if (!inquiryDate) throw new Error('Original inquiry date required');
+        if (!customerName || !(phone10 || email)) throw new Error('Customer identity requires office review');
         const lead = await createRoutemizeLead(db, {
-          customerName, firstName: rz.firstName, lastName: rz.lastName,
-          businessName: rz.businessName || null,
-          phone10, email, source: rzSource, contactId: rz.contactId, rmId,
+          customerName, firstName: rz ? rz.firstName : customerName.split(' ')[0], lastName: rz ? rz.lastName : customerName.split(' ').slice(1).join(' '),
+          businessName: rz ? rz.businessName : null,
+          phone10, email, source: rzSource, contactId: rz ? rz.contactId : null, rmId,
+          inquiryDate, mode: body.inquiry_mode === 'new' ? 'new' : 'auto',
           address: cleanStr(body.address), city: cleanStr(body.city),
           state: cleanStr(body.state), zip: cleanStr(body.zip),
         });
@@ -904,9 +853,20 @@ async function processApptIntake(deps, body) {
         // Prompt 97: score the lead this booking just created (the door that
         // left 17 of 18 open leads unscored). Best-effort, never a non-200.
         await (deps.kickLeadAi || kickLeadAi)(lead.id).catch(e => console.warn('pec-appt-intake: lead scoring skipped:', e && e.message));
-      } catch (e) {
-        throw new Error('Could not save the customer inquiry: ' + (e && e.message || 'pipeline unavailable'));
       }
+    } catch (e) {
+      if (/original inquiry date|original date evidence|several|choose an|office review|request identifier conflicts/i.test(String(e && e.message))) {
+        await stageInquiryReview(db, { key: 'routemize:' + rmId, endpoint: ENDPOINT, reason: e.message, payload: rawPayload });
+        await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'rejected', status_code: 202, message: 'Inquiry needs office review: ' + e.message, payload: rawPayload });
+        return { status: 202, body: { success: true, review_required: true } };
+      }
+      throw e;
+    }
+    if (contact.lead_id && !existingRow) {
+      await db('PATCH', `/leads?id=eq.${encodeURIComponent(contact.lead_id)}&sms_consent=eq.false&opted_out=eq.false`, {
+        sms_consent: true, sms_consent_source: 'implied by inquiry (policy 2026-08-21)', sms_consent_at: new Date().toISOString(),
+      });
+      if (rz && rz.contactId) await db('PATCH', `/leads?id=eq.${encodeURIComponent(contact.lead_id)}&source_ref=is.null`, { source_ref: rz.contactId });
     }
     if (rz && contact.lead_id && !leadCreated) {
       // Existing lead: fill the source only if blank, NEVER overwrite
@@ -1115,6 +1075,11 @@ async function processApptIntake(deps, body) {
       },
     };
   } catch (err) {
+    if (/several customer|choose the inquiry|office review/i.test(String(err && err.message))) {
+      await stageInquiryReview(db, { key: 'routemize:' + rmId, endpoint: ENDPOINT, reason: err.message, payload: rawPayload });
+      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'rejected', status_code: 202, message: 'Inquiry identity needs office review', payload: rawPayload });
+      return { status: 202, body: { success: true, review_required: true } };
+    }
     console.error('pec-appt-intake failed:', err);
     await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'error', status_code: 500, message: err && err.message, payload: rawPayload });
     return { status: 500, body: { success: false, error: 'Internal error ingesting appointment' } };

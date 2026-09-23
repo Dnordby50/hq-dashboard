@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {fetchSalesMetrics,salesWeek,canonicalLeads,recoverFirstSends,allRows}=require('./sales-metrics.cjs');
+const {fetchSalesMetrics,salesWeek,canonicalLeads,reconcileInquiries,recoverFirstSends,allRows}=require('./sales-metrics.cjs');
 const token='11111111-1111-4111-8111-111111111111';
 const estimate={id:'proposal',public_token:token,estimate_number:101,created_at:'2026-09-14T15:00:00Z',sent_at:'2026-09-22T15:00:00Z'};
 const email=(id,time,extra={})=>({id,sent_at:time,status:'delivered',resend_id:id,body_html:`<a href="https://example.invalid/e/${token}">Open</a>`,...extra});
@@ -32,9 +32,9 @@ test('first-send ledger survives current status, deletion, missing current propo
   const recovered=recoverFirstSends({estimates:[{...estimate,status:'accepted',deleted_at:'2026-09-21T15:00:00Z'}],firstSends:[{estimate_id:estimate.id,first_sent_at:'2026-09-14T15:00:00Z',channel:'sms'},{estimate_id:'removed',first_sent_at:'2026-09-15T15:00:00Z',channel:'email'}],emails:[email('later','2026-09-22T15:00:00Z')],sms:[]});
   assert.equal(recovered.records.length,2);assert.equal(recovered.records[0].first_sent_at,'2026-09-14T15:00:00Z');
 });
-test('one contact counts once using earliest inquiry regardless later lead stage or duplicate rows',()=>{
+test('separate inquiries from the same customer count independently regardless of later stage',()=>{
   const rows=canonicalLeads([{id:'a',customer_id:'c',created_at:'2026-09-01T15:00:00Z',stage:'accepted'},{id:'b',customer_id:'c',created_at:'2026-09-15T15:00:00Z'},{id:'deleted',created_at:'2026-09-15T15:00:00Z',deleted_at:'2026-09-16T15:00:00Z'}]);
-  assert.deepEqual(rows.map(r=>r.id),['a']);
+  assert.deepEqual(rows.map(r=>r.id),['a','b']);
 });
 test('unmapped new contact blocks a falsely low lead count, while estimates still report',async()=>{
   const data=base();data.customers.push({id:'missing',created_at:'2026-09-16T15:00:00Z'});
@@ -116,4 +116,40 @@ test('confirmation conflicting with earlier delivery or proposal creation remain
   const source=await load(data);assert.ok(source.unresolved.length);assert.equal(salesWeek(source,'2026-09-13','2026-09-19').available.estimates,false);
  }
  const source=await load(base(),'pec_estimate_first_send_confirmations');assert.equal(source.estimatesAvailable,false);
+});
+
+test('reviewed duplicate chains count canonical inquiry once without changing its date',()=>{
+ const rows=[{id:'a',customer_id:'c',inquiry_date:'2026-08-20',inquiry_origin:'staff',created_at:'2026-09-01T15:00:00Z'}, {id:'b',customer_id:'c',duplicate_of:'a'}, {id:'c',customer_id:'c',duplicate_of:'b'}];
+ const result=reconcileInquiries(rows);assert.equal(result.issues.length,0);assert.equal(result.leads.length,1);assert.equal(result.leads[0].inquiry_day,'2026-08-20');
+});
+test('broken, cyclic, deleted, and cross-customer duplicate links require review',()=>{
+ for(const rows of [
+  [{id:'a',duplicate_of:'missing'}],
+  [{id:'a',duplicate_of:'b'},{id:'b',duplicate_of:'a'}],
+  [{id:'a',duplicate_of:'b'},{id:'b',deleted_at:'2026-09-20'}],
+  [{id:'a',customer_id:'one',duplicate_of:'b'},{id:'b',customer_id:'two',inquiry_date:'2026-09-20'}],
+  [{id:'a',brand:'PEC',duplicate_of:'b'},{id:'b',brand:'FTP',inquiry_date:'2026-09-20'}],
+ ]) assert.ok(reconcileInquiries(rows).issues.length);
+});
+test('new and imported inquiry dates never silently fall back to import day',async()=>{
+ const data=base();data.leads.push({id:'import',inquiry_origin:'import',created_at:'2026-09-22T15:00:00Z'});
+ let source=await load(data);assert.equal(salesWeek(source,'2026-09-13','2026-09-19').available.leads,false);assert.equal(source.inquiryIssues.length,1);
+ data.leads.at(-1).inquiry_date='2026-08-22';source=await load(data);
+ assert.equal(source.inquiryIssues.length,0);assert.equal(salesWeek(source,'2026-08-16','2026-08-22').leads.length,1);
+ assert.equal(salesWeek(source,'2026-09-20','2026-09-26').leads.length,0);
+ data.leads.at(-1).inquiry_date='2026-02-31';assert.equal((await load(data)).inquiryIssues.length,1);
+});
+test('only explicit exclusions suppress sales records, and excluded canonical chains stay excluded',async()=>{
+ const data=base();data.leads.push({id:'test-name',full_name:'Test Example',created_at:'2026-09-14T15:00:00Z'},{id:'excluded',customer_id:'e',inquiry_date:'2026-09-14',reporting_excluded_at:'2026-09-15',reporting_excluded_reason:'Reviewed administrative contact'},{id:'duplicate',customer_id:'e',duplicate_of:'excluded'});
+ data.customers.push({id:'admin',created_at:'2026-09-14T15:00:00Z',reporting_excluded_at:'2026-09-15',reporting_excluded_reason:'Reviewed administrative contact'});
+ const source=await load(data),week=salesWeek(source,'2026-09-13','2026-09-19');assert.equal(week.leads.length,2);assert.equal(week.missingLeads.length,0);assert.equal(week.available.leads,true);
+});
+test('undated contact exceptions remain visible after their import week',async()=>{
+ const data=base();data.customers.push({id:'unknown',created_at:'2026-08-02T15:00:00Z'});
+ const source=await load(data);assert.equal(salesWeek(source,'2026-09-13','2026-09-19').available.leads,false);
+});
+
+test('a contact imported after an earlier reporting period cannot certify that earlier period',async()=>{
+ const data=base();data.customers.push({id:'late-import',created_at:'2026-09-22T15:00:00Z'});
+ const source=await load(data);assert.equal(salesWeek(source,'2026-08-02','2026-08-08').available.leads,false);
 });

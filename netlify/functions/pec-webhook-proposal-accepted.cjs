@@ -3,7 +3,7 @@
 // POST /.netlify/functions/pec-webhook-proposal-accepted
 // Header: x-webhook-secret: <PEC_WEBHOOK_SECRET>
 
-const { sb, epoxyStages, paintStages, badSecret, json, randomToken, logIngest } = require('./_pec-supabase.cjs');
+const { sb, badSecret, json, logIngest } = require('./_pec-supabase.cjs');
 const { prepareDepositInstallment } = require('./_pec-installments.cjs');
 const { resolveDefaultTerms } = require('./_pec-invoice-terms.cjs');
 
@@ -31,191 +31,53 @@ function stripHtml(s) {
   return out || null;
 }
 
+const { sourceEvent, stageException, resolveException } = require('./_pec-job-events.cjs');
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });
   if (badSecret(event)) return json(401, { success: false, error: 'Invalid webhook secret' });
-
   let body;
   try { body = JSON.parse(event.body || '{}'); }
-  catch { return json(400, { success: false, error: 'Invalid JSON' }); }
-
-  const {
-    customer_name, customer_email, customer_phone, company,
-    deal_id, address, job_type, package: pkg, scope, sqft,
-    price, monthly_payment, dripjobs_url, warranty, salesperson,
-  } = body;
-
-  if (!customer_name) {
-    await logIngest({ endpoint: ENDPOINT, deal_id, customer_name: null, company, outcome: 'rejected', status_code: 400, message: 'customer_name is required', payload: body });
-    return json(400, { success: false, error: 'customer_name is required' });
-  }
-
-  const cleanScope = stripHtml(scope);
-  // The proposal-accepted event fires the day the proposal is signed, so
-  // today (America/Phoenix, no DST) is the signed date for AR aging. Mirrors
-  // the MST date math in pec-auto-progress.cjs.
-  const signedDate = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
+  catch { return json(400, { success:false, error:'Invalid JSON' }); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json(400,{success:false,error:'Expected a JSON object'});
+  const { deal_id, customer_name, company } = body;
+  const occurrence = sourceEvent(body, 'booked');
   try {
-    // Upsert by email (fall back to create if no email)
-    let customer;
-    if (customer_email) {
-      const existing = await sb('GET', `/customers?email=eq.${encodeURIComponent(customer_email)}&select=*&limit=1`);
-      if (existing.length) {
-        const updated = await sb('PATCH', `/customers?id=eq.${existing[0].id}`, {
-          name: customer_name,
-          phone: customer_phone || existing[0].phone,
-        }, true);
-        customer = updated[0];
-      }
+    if (!occurrence.ok || !deal_id || !customer_name) {
+      const reason = !occurrence.ok ? occurrence.reason : 'Proposal identity and customer name are required';
+      const key = await stageException(sb, body, 'booked', reason, occurrence.eventKey);
+      await logIngest({ endpoint:ENDPOINT,deal_id,customer_name,company,outcome:'rejected',status_code:202,message:reason,payload:body });
+      return json(202, { success:false, review_required:true, source_event_key:key, error:reason });
     }
-    if (!customer) {
-      const created = await sb('POST', '/customers', {
-        token: randomToken(),
-        name: customer_name,
-        email: customer_email || null,
-        phone: customer_phone || null,
-        company: company || 'prescott-epoxy',
-      }, true);
-      customer = created[0];
-    }
-
-    const type = (job_type === 'paint') ? 'paint' : 'epoxy';
-    // Idempotent against webhook re-deliveries: if a public.jobs row for this
-    // DripJobs deal already exists, reuse it instead of inserting a duplicate.
-    // public.jobs.dripjobs_deal_id is NOT unique (only a plain index), so this
-    // SELECT-before-INSERT guard -- mirroring the pec_prod_jobs bridge below --
-    // is what prevents duplicate job rows on a re-fire. Only applies when a
-    // deal_id is present; manual / no-deal jobs are unaffected.
-    let job = null;
-    let jobIsNew = false;
-    if (deal_id) {
-      const existingJobs = await sb('GET', `/jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id&limit=1`);
-      if (existingJobs.length) job = existingJobs[0];
-    }
-    if (!job) {
-      // Invoice terms (2026-08-17): DripJobs deals get the same default-terms
-      // stamp as native accepts. The webhook payload carries no business-name
-      // field, so the only commercial signal here is the customer's stored
-      // company_name; everything else lands residential and staff can flip it
-      // from the invoice's Edit terms button. Best-effort settings read.
-      let termsSettings = {};
-      try {
-        const tRows = await sb('GET', '/settings?key=in.(invoice_terms_residential_default,invoice_terms_commercial_default)&select=key,value');
-        termsSettings = Object.fromEntries((Array.isArray(tRows) ? tRows : []).map(r => [r.key, r.value]));
-      } catch (_) { /* locked defaults */ }
-      const createdJobs = await sb('POST', '/jobs', {
-        customer_id: customer.id,
-        type,
-        invoice_terms: resolveDefaultTerms({ companyName: customer.company_name || null }, termsSettings),
-        address: address || null,
-        package: pkg || null,
-        scope: cleanScope,
-        sqft: sqft || null,
-        price: price ? parseFloat(price) : null,
-        monthly_payment: monthly_payment ? parseFloat(monthly_payment) : null,
-        warranty: warranty || null,
-        dripjobs_url: dripjobs_url || null,
-        dripjobs_deal_id: deal_id || null,
-        salesperson: salesperson || null,
-        signed_date: signedDate,
-        source: 'dripjobs',
-      }, true);
-      job = createdJobs[0];
-      jobIsNew = true;
-    }
-
-    // Create default timeline stages -- ONLY for a newly created job. On a
-    // re-fire we reuse the existing job and must not duplicate its stages.
-    if (jobIsNew) {
-      const stages = (type === 'epoxy' ? epoxyStages : paintStages).map((name, i) => ({
-        job_id: job.id,
-        stage_name: name,
-        status: i === 0 ? 'completed' : 'pending',
-        completed_at: i === 0 ? new Date().toISOString() : null,
-        sort_order: i,
-      }));
-      await sb('POST', '/timeline_stages', stages);
-    }
-
-    // Required deposit (prompt 45): prepare the deposit installment on this
-    // acceptance path too. Idempotent inside (a re-fired delivery is a no-op);
-    // best-effort so a hiccup never fails the webhook. This webhook has no
-    // system_type_id, so precedence falls through to the company default.
+    let termsSettings = {};
     try {
-      await prepareDepositInstallment(sb, job.id, {});
-    } catch (depErr) {
-      console.error('proposal-accepted: deposit prepare failed (job unaffected):', String(depErr && depErr.message || depErr));
+      const rows = await sb('GET','/settings?key=in.(invoice_terms_residential_default,invoice_terms_commercial_default)&select=key,value');
+      termsSettings = Object.fromEntries(rows.map(r => [r.key,r.value]));
+    } catch (_) { /* existing locked terms defaults */ }
+    let customerCompany = body.company_name || null;
+    if (body.customer_email) {
+      const matches = await sb('GET',`/customers?email=eq.${encodeURIComponent(body.customer_email)}&company=eq.${encodeURIComponent(company || 'prescott-epoxy')}&select=company_name&limit=2`);
+      if (matches.length === 1) customerCompany = matches[0].company_name || customerCompany;
     }
-
-    // Auto-bridge: create the matching pec_prod_jobs row so this proposal lands
-    // in the PEC Job Schedule's Pending Jobs sidebar immediately. install_date
-    // stays null (PM picks days in the schedule popup). Idempotent against
-    // re-deliveries via dripjobs_deal_id check; failures here do NOT roll back
-    // the public.jobs side.
-    //
-    // Brand gate: pec_prod_* tables are PEC-only. FTP customers come through
-    // the same webhook (one DripJobs endpoint, payload field `company`
-    // distinguishes), so skip the bridge when company is anything other than
-    // 'prescott-epoxy'. The FTP equivalent (separate table or a `company`
-    // column on pec_prod_jobs) is logged in docs/job-schedule-future-todos.md.
-    const companyKey = customer.company || company || 'prescott-epoxy';
-    let prodJobId = null;
-    if (companyKey === 'prescott-epoxy') {
-      try {
-        if (deal_id) {
-          const existing = await sb('GET', `/pec_prod_jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id,crm_job_id&limit=1`);
-          if (!existing.length) {
-            const proposalNumber = String(deal_id);
-            const created = await sb('POST', '/pec_prod_jobs', {
-              proposal_number: proposalNumber,
-              customer_id: customer.id,
-              customer_name: customer_name,
-              address: address || null,
-              revenue: price ? parseFloat(price) : null,
-              status: 'unscheduled',
-              sync_status: 'dirty',
-              dripjobs_deal_id: deal_id,
-              sales_team: salesperson || null,
-              notes: cleanScope,
-              // Explicit prod->CRM pairing (prompt 91): this webhook writes
-              // both rows and knows both ids, so the link is stamped at birth
-              // and the resolver never needs the fuzzy name+address rung.
-              crm_job_id: job.id,
-            }, true);
-            prodJobId = created && created[0] ? created[0].id : null;
-          } else {
-            prodJobId = existing[0].id;
-            // Re-fire with a pre-prompt-91 prod row: heal the missing link
-            // (fill-if-null only; an already-stamped link is never rewritten).
-            if (!existing[0].crm_job_id) {
-              await sb('PATCH', `/pec_prod_jobs?id=eq.${encodeURIComponent(prodJobId)}&crm_job_id=is.null`, { crm_job_id: job.id });
-            }
-          }
-        }
-      } catch (bridgeErr) {
-        console.error('pec-webhook-proposal-accepted: prod auto-bridge failed (non-fatal):', bridgeErr);
-        // The public.jobs row DID succeed (job.id) but the pec_prod_jobs bridge
-        // threw, so this job lands on the Jobs page but never on the Schedule --
-        // the silent partial-ingestion class the Sync Health view exists to catch.
-        await logIngest({ endpoint: ENDPOINT, deal_id, customer_name, company: companyKey, outcome: 'bridge_failed', status_code: 200, message: bridgeErr && bridgeErr.message ? bridgeErr.message : String(bridgeErr), payload: body, public_job_id: job.id });
-      }
+    const result = await sb('POST','/rpc/pec_accept_external_job',{ p_payload:{
+      ...body, scope:stripHtml(body.scope), signed_date:occurrence.businessDate, occurred_at:occurrence.occurredAt,
+      invoice_terms:resolveDefaultTerms({ companyName:customerCompany },termsSettings),
+    }});
+    // Deposit preparation is independently idempotent; no customer messages are sent.
+    try { await prepareDepositInstallment(sb,result.job_id,{}); }
+    catch (error) { console.error('proposal-accepted deposit preparation:',String(error.message)); }
+    await resolveException(sb,occurrence.eventKey,'booked','Accepted with original source date and atomic CRM/production link');
+    await logIngest({ endpoint:ENDPOINT,deal_id,customer_name,company,outcome:'ok',status_code:200,message:result.created?'job created atomically':'existing job reused',payload:body,public_job_id:result.job_id,prod_job_id:result.prod_job_id });
+    return json(200,{ success:true,data:{ ...result,portal_link:`/?portal=${result.customer_token}` }});
+  } catch (error) {
+    // A conflicting identity/date must remain visible. Database transaction has
+    // rolled back, so neither a partial job nor a false booking is reported.
+    if (/conflict|Multiple|matches multiple|linked to another|Unknown company|contract price is required|Date accepted|Invalid original|date\/time field/i.test(String(error.message))) {
+      await stageException(sb,body,'booked',String(error.message),occurrence.eventKey);
+      return json(202,{ success:false,review_required:true,error:String(error.message) });
     }
-
-    await logIngest({ endpoint: ENDPOINT, deal_id, customer_name, company: customer.company || company, outcome: 'ok', status_code: 200, message: jobIsNew ? 'job created' : 'existing job reused (re-fire)', payload: body, public_job_id: job.id, prod_job_id: prodJobId });
-    return json(200, {
-      success: true,
-      data: {
-        customer_token: customer.token,
-        customer_id: customer.id,
-        job_id: job.id,
-        prod_job_id: prodJobId,
-        portal_link: `/?portal=${customer.token}`,
-      },
-    });
-  } catch (err) {
-    console.error('pec-webhook-proposal-accepted error:', err);
-    await logIngest({ endpoint: ENDPOINT, deal_id, customer_name, company, outcome: 'error', status_code: 500, message: err && err.message ? err.message : String(err), payload: body });
-    return json(500, { success: false, error: err.message });
+    console.error('pec-webhook-proposal-accepted error:',error);
+    await logIngest({ endpoint:ENDPOINT,deal_id,customer_name,company,outcome:'error',status_code:500,message:String(error.message),payload:body });
+    return json(500,{ success:false,error:String(error.message) });
   }
 };

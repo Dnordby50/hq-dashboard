@@ -9,7 +9,9 @@ const { sameHumanOr, findRecentLiveLead, resolveOrCreateCustomer } = require('..
 const { driveMinutesFor } = require('../netlify/functions/_pec-booking-drive.cjs');
 const booking = require('../netlify/functions/pec-booking.cjs');
 const pricing = require('../netlify/functions/pec-pricing.cjs');
-const { makeDb } = require('./_drip-test-kit.cjs');
+const { makeDb: baseMakeDb } = require('./_drip-test-kit.cjs');
+const { withSalesLeadRpc } = require('./_sales-pipeline-test-kit.cjs');
+const makeDb = seed => withSalesLeadRpc(baseMakeDb(seed), NOW);
 
 const NOW = new Date('2026-09-14T15:00:00Z');
 const IP_HASH = crypto.createHash('sha256').update('fixture-connection').digest('hex');
@@ -68,7 +70,8 @@ test('shared matching treats punctuation and filter-looking email text as one li
   const found = await findRecentLiveLead(fx.sb, { email, now: NOW });
   assert.equal(found, null);
   const created = await resolveOrCreateCustomer(fx.sb, { name: 'Fixture New', email });
-  assert.equal(created.created, true);
+  assert.equal(fx.db.customers.length, 2);
+  assert.equal(fx.db.customers[0].id, 'other-customer');
   assert.notEqual(created.customer_id, 'other-customer');
   assert.equal(fx.db.customers[1].email, email);
 });
@@ -283,7 +286,7 @@ test('Instant Pricing duplicate lookup treats the email as a literal and retains
     pec_drip_campaigns: [], pec_drip_enrollments: [], pec_drip_steps: [], pec_email_senders: [],
   });
   const result = await pricing.processQuote({ sb: fx.sb, logIngest: async () => {}, kickLeadAi: async () => {} },
-    { project_type_id: 'fixture-type', name: 'Fixture Person', phone: '9285551111', email,
+    { request_key: 'fixture-request-00001', project_type_id: 'fixture-type', name: 'Fixture Person', phone: '9285551111', email,
       address1: 'Fixture Address', city: 'Prescott', fill_ms: 5000 }, { ipHash: IP_HASH, userAgent: 'fixture' });
   assert.equal(result.status, 200);
   assert.equal(result.body.duplicate, undefined);
@@ -308,7 +311,7 @@ test('Instant Pricing fails closed on rate-limit errors or exhaustion before any
       return [];
     };
     const result = await pricing.processQuote({ sb, logIngest: async () => {}, kickLeadAi: async () => {} },
-      { project_type_id: 'fixture-type', name: 'Fixture Person', phone: '9285551111', email: 'fixture@invalid.test',
+      { request_key: 'fixture-request-00001', project_type_id: 'fixture-type', name: 'Fixture Person', phone: '9285551111', email: 'fixture@invalid.test',
         address1: 'Fixture Address', city: 'Prescott', fill_ms: 5000 }, { ipHash: IP_HASH });
     assert.equal(result.status, unavailable ? 503 : 429);
     assert.deepEqual(writes, []);

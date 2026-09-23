@@ -9,7 +9,7 @@ const assert = require('assert');
 const { processApptIntake, parseApptDate, normApptType } = require('../netlify/functions/pec-appt-intake.cjs');
 const { makeDb: baseDb, makeChecker } = require('./_drip-test-kit.cjs');
 const { withSalesLeadRpc } = require('./_sales-pipeline-test-kit.cjs');
-const makeDb = tables => withSalesLeadRpc(baseDb(tables), NOW);
+const makeDb = tables => withSalesLeadRpc(baseDb({...tables, customers: tables.customers.map(c=>({company:'prescott-epoxy',...c})), pec_sales_integrity_exceptions: []}), NOW);
 
 const { state, ok } = makeChecker();
 
@@ -21,11 +21,11 @@ function baseTables(over = {}) {
     leads: [{
       id: 'lead1', full_name: 'Jane Doe', first_name: 'Jane',
       phone: '9285551234', email: 'jane@example.com', stage: 'new',
-      sms_consent: true, opted_out: false, customer_id: null,
+      sms_consent: true, opted_out: false, customer_id: 'custJane',
       contacted_at: null, deleted_at: null,
       created_at: '2026-07-19T15:00:00Z',
     }],
-    customers: [{
+    customers: [{ id: 'custJane', name: 'Jane Doe', phone: '9285551234', email: 'jane@example.com', archived_at: null }, {
       id: 'cust1', name: 'Bob Builder', phone: '9285559999',
       email: 'bob@example.com', archived_at: null,
       created_at: '2026-05-01T15:00:00Z',
@@ -178,23 +178,13 @@ const CREATED = {
     ok(fx.db.leads[0].stage === 'contacted', 'canceling the LAST scheduled estimate walks the lead back');
   }
 
-  console.log('# no contact match: lands unlinked with the contact carried in notes');
+  console.log('# undated unmatched inquiry is staged without messages or appointments');
   {
-    const fx = makeDb(baseTables());
-    const { deps, captured } = stubDeps(fx);
-    const out = await processApptIntake(deps, {
-      routemize_appt_id: 'rm_200', customer_name: 'Stranger Sam',
-      phone: '5205550000', start_at: '2026-07-23T14:00:00',
-      assigned_member_name: 'Nobody Known',
-    });
-    ok(out.status === 200 && out.body.created === true, '200 created');
-    const appt = fx.db.pec_appointments[0];
-    ok(appt.lead_id == null && appt.customer_id == null, 'no auto-created lead/customer, both null');
-    ok(appt.title === 'On-site estimate for Stranger Sam', 'unmatched contact still derives the auto-title');
-    ok(/Routemize contact/.test(appt.notes) && /5205550000/.test(appt.notes), 'phone carried in internal notes');
-    ok(appt.sales_member_id == null && /rep not matched/.test(appt.notes), 'unmatched rep leaves it unassigned and notes it');
-    ok(fx.db.leads.length === 1 && fx.db.customers.length === 1, 'nothing was auto-created');
-    ok(captured.kicks.length === 1, 'confirmation kick still fires (engine skips no-contact legs itself)');
+    const fx = makeDb(baseTables()); const { deps, captured } = stubDeps(fx);
+    const out = await processApptIntake(deps, { routemize_appt_id: 'rm_200', customer_name: 'Stranger Sam', phone: '5205550000', start_at: '2026-07-23T14:00:00' });
+    ok(out.status===202 && out.body.review_required, 'undated request staged for review');
+    ok(fx.db.pec_appointments.length===0 && captured.kicks.length===0, 'staged inquiry makes no appointment or confirmation');
+    ok(fx.db.leads.length===1 && fx.db.customers.length===2, 'no fabricated lead date or partial customer');
   }
 
   console.log('# customer fallback + rep by name + type default');
@@ -202,7 +192,7 @@ const CREATED = {
     const fx = makeDb(baseTables());
     const { deps } = stubDeps(fx);
     const out = await processApptIntake(deps, {
-      routemize_appt_id: 'rm_300', customer_name: 'Bob Builder',
+      routemize_appt_id: 'rm_300', customer_name: 'Bob Builder', inquiry_date: '2026-07-20',
       phone: '(928) 555-9999', start_at: '2026-07-25T08:00:00',
       assigned_member_name: 'aron s',
     });
@@ -210,7 +200,7 @@ const CREATED = {
     const appt = fx.db.pec_appointments[0];
     ok(appt.lead_id === 'canonical-cust1' && appt.customer_id === 'cust1', 'customer-only quote booking gets its canonical pipeline lead');
     ok(fx.db.leads.find(row => row.id === appt.lead_id).stage === 'estimate_scheduled', 'customer-only booking automatically advances to Estimate Scheduled');
-    ok(fx.salesLeadCalls[0].p_occurred_at === null, 'a legacy customer import date is never used as this new inquiry date');
+    ok(fx.salesLeadCalls[0].p_inquiry_date === '2026-07-20', 'a legacy customer import date is never used as this new inquiry date');
     ok(appt.sales_member_id === 'sm2', 'rep matched by name, case-insensitive');
     ok(appt.appt_type === 'on_site_estimate', 'missing appt_type defaults');
   }
@@ -282,7 +272,7 @@ const CREATED = {
           contactId: '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001',
           firstName: 'John', lastName: 'Courtis',
           email: 'john.courtis@example.com', phoneNumber: '+1 (928) 555-7777',
-          businessName: null, leadSource: 'Other', leadSourceText: 'Google',
+          createdAt: '2026-07-18T20:00:00Z', businessName: null, leadSource: 'Other', leadSourceText: 'Google',
         },
         address: { addressLine1: '100 Desert Rd', addressLine2: null, city: 'DEWEY', state: 'AZ', zipCode: '86327-5311', latitude: 34.6, longitude: -112.2 },
         serviceName: 'Estimate',
@@ -331,7 +321,7 @@ const CREATED = {
     ok(lead.sms_consent === true && /implied by inquiry/.test(lead.sms_consent_source || ''),
       'consent implied by the booking (policy 2026-08-21; STOP is the opt-out)');
     ok(lead.stage === 'estimate_scheduled', 'created at new, then advanced by apptBookingLeadEffects like an in-app booking');
-    ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'created' && e.payload.via === 'routemize_booking'), "created lead_event written with via 'routemize_booking'");
+    ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'created' && e.payload.via === 'sales_inquiry'), "created lead_event written with via 'routemize_booking'");
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'stage_change'), 'stage_change event from the booking effects');
     ok(!fx.db.pec_drip_enrollments.some(e => e.lead_id === lead.id), 'created lead NOT nurture-enrolled (landmine 3: no enroll-then-pause churn)');
     // Prompt 97 Part A: the created lead kicks the AI score (the door that
@@ -397,7 +387,7 @@ const CREATED = {
     const { deps } = stubDeps(fx);
     const out = await processApptIntake(deps, rzEnvelope({}, {
       contactName: 'Bob Builder',
-      contact: { contactId: 'rz-contact-bob', firstName: 'Bob', lastName: 'Builder', email: 'nomatch@example.com', phoneNumber: '928-555-9999', leadSource: null, leadSourceText: null },
+      contact: { createdAt: '2026-07-20T12:00:00Z', contactId: 'rz-contact-bob', firstName: 'Bob', lastName: 'Builder', email: 'nomatch@example.com', phoneNumber: '928-555-9999', leadSource: null, leadSourceText: null },
     }));
     ok(out.status === 200, '200');
     ok(fx.db.pec_appointments[0].customer_id === 'cust1' && fx.db.pec_appointments[0].lead_id === 'canonical-cust1', 'customer matched by phone and linked to its canonical lead');
@@ -450,7 +440,7 @@ const CREATED = {
     const out = await processApptIntake({
       sb: guardedSb, now: () => NOW,
       logIngest: async (f) => { captured.logs.push(f); },
-      runReminders: async () => {},
+      runReminders: async () => {}, kickLeadAi: async () => {}, kickPush: async () => {},
     }, rzEnvelope());
     ok(out.status === 200 && out.body.created === true, 'intake still succeeds with the column absent');
     ok(fx.db.leads.length === 2 && !('routemize_contact_id' in fx.db.leads[1]), 'lead still created, just without the column');
@@ -463,7 +453,7 @@ const CREATED = {
     const { deps } = stubDeps(fx);
     await processApptIntake(deps, rzEnvelope({}, { serviceName: 'Walkthrough', relatedEntityId: 'rz-appt-w' }));
     ok(fx.db.pec_appointments[0].appt_type === 'project_walkthrough', 'mapped service uses its configured type');
-    await processApptIntake(deps, rzEnvelope({}, { serviceName: 'Mystery Service', relatedEntityId: 'rz-appt-m', contact: { contactId: 'c9', firstName: 'Al', lastName: 'B', email: 'al@example.com', phoneNumber: '5205551111' }, contactName: 'Al B' }));
+    await processApptIntake(deps, rzEnvelope({}, { serviceName: 'Mystery Service', relatedEntityId: 'rz-appt-m', contact: { createdAt: '2026-07-20T12:00:00Z', contactId: 'c9', firstName: 'Al', lastName: 'B', email: 'al@example.com', phoneNumber: '5205551111' }, contactName: 'Al B' }));
     const m = fx.db.pec_appointments.find(a => a.routemize_appt_id === 'rz-appt-m');
     ok(m.appt_type === 'on_site_estimate', 'unmapped service defaults to on_site_estimate');
     ok(m.title === 'On-site estimate for Al B', 'unmapped service: auto-title from the defaulted type');
@@ -623,7 +613,7 @@ const CREATED = {
     const { deps, captured } = stubDeps(fx);
     const base = deps.sb;
     deps.sb = async (method, path, ...rest) => {
-      if (path === '/rpc/ensure_sales_lead') throw new Error('pipeline unavailable');
+      if (path === '/rpc/record_sales_inquiry') throw new Error('pipeline unavailable');
       return base(method, path, ...rest);
     };
     const refused = await processApptIntake(deps, { ...CREATED, phone: '9285559999', email: 'bob@example.com', customer_name: 'Bob Builder' });
@@ -635,15 +625,33 @@ const CREATED = {
     const original = recovering.deps.sb;
     let failLead = true;
     recovering.deps.sb = async (method, path, ...rest) => {
-      if (method === 'POST' && path === '/leads' && failLead) { failLead = false; throw new Error('lead write failed'); }
+      if (method === 'POST' && path === '/rpc/record_sales_inquiry' && failLead) { failLead = false; throw new Error('lead write failed'); }
       return original(method, path, ...rest);
     };
     const first = await processApptIntake(recovering.deps, rzEnvelope());
-    ok(first.status === 500 && partial.db.pec_appointments.length === 0 && partial.db.customers.length === 2, 'Routemize lead failure keeps saved customer but refuses an unlinked appointment');
+    ok(first.status === 500 && partial.db.pec_appointments.length === 0 && partial.db.customers.length === 3, 'Routemize lead failure keeps saved customer but refuses an unlinked appointment');
     const second = await processApptIntake(recovering.deps, rzEnvelope());
     await processApptIntake(recovering.deps, rzEnvelope());
-    ok(second.status === 200 && partial.db.customers.length === 2 && partial.db.leads.length === 2 && partial.db.pec_appointments.length === 1, 'Routemize retry recovers saved customer without duplicate lead or appointment');
+    ok(second.status === 200 && partial.db.customers.length === 3 && partial.db.leads.length === 2 && partial.db.pec_appointments.length === 1, 'Routemize retry recovers saved customer without duplicate lead or appointment');
     ok(recovering.captured.kicks.length === 1, 'recovered Routemize appointment confirms only once');
+  }
+
+  console.log('# inquiry identity boundaries and original dates');
+  {
+    const fx=makeDb(baseTables()); const {deps,captured}=stubDeps(fx);
+    fx.db.leads[0].stage='accepted';
+    const missing=await processApptIntake(deps,{...CREATED,routemize_appt_id:'late-undated'});
+    ok(missing.status===202&&fx.db.pec_appointments.length===0,'closed inquiry is not reused when original date is missing');
+    ok(fx.db.pec_sales_integrity_exceptions.length===1&&captured.kicks.length===0,'undated late source stages evidence before notifications');
+    const dated=await processApptIntake(deps,{...CREATED,routemize_appt_id:'late-dated',inquiry_date:'2026-07-12T01:00:00Z'});
+    ok(dated.status===200&&fx.db.leads.length===2,'dated new request enters pipeline after an accepted job');
+    ok(fx.db.leads[1].inquiry_date==='2026-07-11','original inquiry uses Arizona date, not visit or arrival date');
+    const linked=fx.db.pec_appointments[0].lead_id;
+    const update=await processApptIntake(deps,{...CREATED,action:'updated',routemize_appt_id:'late-dated',phone:'9285559999',email:'bob@example.com'});
+    ok(update.status===200&&fx.db.pec_appointments[0].lead_id===linked&&fx.db.leads.length===2,'appointment update retains its established inquiry despite changed contact fields');
+    const ambiguous=makeDb(baseTables()); ambiguous.db.leads.push({...ambiguous.db.leads[0],id:'other'});
+    const review=await processApptIntake(stubDeps(ambiguous).deps,{...CREATED,routemize_appt_id:'ambiguous'});
+    ok(review.status===202&&ambiguous.db.pec_appointments.length===0,'multiple inquiries stage office review without arbitrary linking');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

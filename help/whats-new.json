@@ -1,5 +1,17 @@
 [
   {
+    "id": "sales-inquiry-event-integrity",
+    "date": "2026-09-23",
+    "title": "Separate requests stay visible, and reporting shows its evidence.",
+    "summary": "Returning customers can have a new lead for each quote request. Booking and completion preserve original dates and recorded amounts, with reporting exceptions visible for review.",
+    "howto": [
+      "Use New lead for separate work. When starting an estimate or scheduling a visit, choose a separate request or the existing inquiry; rescheduling keeps its link.",
+      "Enter the original Date accepted for a booked job. Mark complete asks for the actual date and saves the linked CRM and production records together.",
+      "In Growth and Development, open Reporting health for missing information and records behind weekly totals. Later value adjustments appear in their adjustment week; manual workbook entries stay intact.",
+      "External records missing their original date are retained for review. They do not silently become today’s activity."
+    ]
+  },
+  {
     "id": "historical-first-send-confirmations",
     "date": "2026-09-22",
     "title": "Confirmed historical proposal dates stay in the right week.",

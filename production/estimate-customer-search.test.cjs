@@ -99,7 +99,7 @@ async function modalHarness(seed) {
   const start = html.indexOf('async function openEstimateStartPicker(');
   const end = html.indexOf('\n// The iframe talks back', start);
   assert.ok(start >= 0 && end > start);
-  const context = vm.createContext({
+  const context = vm.createContext({ crypto: require('node:crypto'),
     supabase: db, state: {},
     esc: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
     titleCaseValue: value => String(value ?? ''), qoFmtPhone: value => value,

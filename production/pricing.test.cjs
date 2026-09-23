@@ -7,7 +7,9 @@
 // Run: node production/pricing.test.cjs
 
 const { processQuote, processBookedCallback } = require('../netlify/functions/pec-pricing.cjs');
-const { makeDb } = require('./_drip-test-kit.cjs');
+const { makeDb: baseDb } = require('./_drip-test-kit.cjs');
+const { withSalesLeadRpc } = require('./_sales-pipeline-test-kit.cjs');
+const makeDb = tables => withSalesLeadRpc(baseDb({...tables, customers: tables.customers.map(c=>({company:'prescott-epoxy',...c}))}), new Date());
 
 let passed = 0, failed = 0;
 function ok(cond, label) {
@@ -69,7 +71,7 @@ function makeDeps(fx) {
   };
 }
 
-const goodBody = (over = {}) => ({
+const goodBody = (over = {}) => ({ request_key: 'pricing-fixture-request-01',
   project_type_id: TYPE_FLAKE, sqft: '1000',
   name: 'Jane Doe', phone: '(928) 555-1212', email: 'jane@example.com',
   address1: '123 N Test St', city: 'Prescott', zip: '86301',
@@ -94,7 +96,7 @@ const META = { ipHash: 'hash1', userAgent: 'test-ua' };
     const lead = fx.db.leads[0];
     ok(lead.source === 'Instant Pricing' && lead.stage === 'new' && lead.sms_consent === true, 'happy: lead source/stage/consent');
     ok(String(lead.sms_consent_source || '').includes('implied consent'), 'happy: consent source recorded');
-    ok(fx.db.lead_events.some(e => e.event_type === 'created' && e.payload && e.payload.via === 'instant_pricing' && e.payload.price_low === 5250), 'happy: created event carries the shown price');
+    ok(fx.db.lead_events.some(e => e.event_type === 'note' && e.payload && e.payload.via === 'instant_pricing' && e.payload.price_low === 5250), 'happy: created event carries the shown price');
     ok(spies.scored.length === 1 && spies.scored[0] === lead.id, 'happy: lead AI kicked');
     ok(fx.db.pec_notifications.some(n => n.type === 'lead_created'), 'happy: bell row written');
     const row = fx.db.pec_pricing_requests[0];
@@ -138,22 +140,14 @@ const META = { ipHash: 'hash1', userAgent: 'test-ua' };
     ok(fx.db.leads.length === 0, 'rate limit: no lead');
   }
 
-  // ---- Duplicate window: same person re-asks, gets the SAME stored range ---
+  // A retry keeps the original answer and does not create another inquiry.
   {
-    const recent = new Date(Date.now() - 60 * 1000).toISOString();
-    const fx = makeDb(baseTables({
-      pec_pricing_requests: [{
-        id: 'prior-1', status: 'priced', ip_hash: 'otherhash', created_at: recent,
-        phone: '9285551212', email: 'jane@example.com', project_type_id: TYPE_FLAKE,
-        price_low: 4000, price_high: 5000, lead_id: 'lead-1', in_area: true,
-      }],
-    }));
-    const { deps } = makeDeps(fx);
-    const out = await processQuote(deps, goodBody(), META);
-    ok(out.status === 200 && out.body.duplicate === true, 'duplicate: answered as duplicate');
-    ok(out.body.price_low === 4000 && out.body.price_high === 5000, 'duplicate: STORED prices, not recomputed');
-    ok(fx.db.leads.length === 0, 'duplicate: no second lead');
-    ok(fx.db.pec_pricing_requests.some(r => r.error_text === 'duplicate'), 'duplicate: audit row written');
+    const fx=makeDb(baseTables()); const {deps,spies}=makeDeps(fx);
+    const first=await processQuote(deps,goodBody(),META);
+    const again=await processQuote(deps,goodBody({sqft:'1200'}),META);
+    ok(again.status===200&&again.body.duplicate===true,'same request key is a retry');
+    ok(again.body.price_low===first.body.price_low,'retry retains originally shown amount');
+    ok(fx.db.leads.length===1&&fx.db.pec_pricing_requests.length===1&&spies.scored.length===1,'retry does not duplicate lead, audit row or scoring');
   }
 
   // ---- Out of area: price still shows, lead still lands, no booking --------
@@ -205,19 +199,13 @@ const META = { ipHash: 'hash1', userAgent: 'test-ua' };
     ok(fx2.db.leads.length === 1, 'tiers: oversize still captures the lead');
   }
 
-  // ---- Same-human dedupe: repeat inquirer lands on the existing lead -------
+  // A separate pricing request from the same person is a new inquiry.
   {
-    const recent = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
-    const fx = makeDb(baseTables({
-      leads: [{ id: 'lead-9', phone: '9285551212', email: 'jane@example.com', stage: 'contacted', customer_id: 'cust-9', created_at: recent, deleted_at: null, full_name: 'Jane Doe' }],
-    }));
-    const { deps, spies } = makeDeps(fx);
-    const out = await processQuote(deps, goodBody(), META);
-    ok(out.status === 200 && out.body.ok === true, 'dedupe: still answered');
-    ok(fx.db.leads.length === 1, 'dedupe: no second lead');
-    ok(fx.db.lead_events.some(e => e.lead_id === 'lead-9' && e.event_type === 'note' && String(e.payload.text || '').includes('instant pricing')), 'dedupe: note on the existing lead');
-    ok(spies.scored.length === 0, 'dedupe: AI not re-billed');
-    ok(fx.db.pec_pricing_requests[0].lead_id === 'lead-9', 'dedupe: audit row links the existing lead');
+    const fx=makeDb(baseTables()); const {deps}=makeDeps(fx);
+    await processQuote(deps,goodBody(),META);
+    const next=await processQuote(deps,goodBody({request_key:'pricing-fixture-new-request',sqft:'1300'}),META);
+    ok(next.status===200&&!next.body.duplicate,'separate request answered normally');
+    ok(fx.db.customers.length===1&&fx.db.leads.length===2,'same customer has two separate inquiries');
   }
 
   // ---- Instant-reply delay: enrollment scheduled out, no inline send -------

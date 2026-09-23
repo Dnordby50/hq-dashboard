@@ -50,6 +50,7 @@
 // classify the whole world as out of area).
 
 'use strict';
+const { recordInquiry } = require('./_pec-sales-inquiry.cjs');
 
 const crypto = require('crypto');
 const { sb, withActor, json: rawJson, randomToken, logIngest, writeHeartbeat } = require('./_pec-supabase.cjs');
@@ -111,6 +112,9 @@ function validPublicBody(body) {
 }
 
 const cleanStr = (s) => { const v = String(s == null ? '' : s).trim(); return v || null; };
+function inquiryConflict(err) { return /several|choose the inquiry|request identifier conflicts/i.test(String(err && err.message)); }
+function inquiryConflictResponse() { return { status: 409, body: { ok: false, inquiry_selection_required: true, error: 'We found more than one open quote request. If this is a separate new project, select that option below. For an existing project, please call us so we can link your visit correctly.' } }; }
+
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -376,17 +380,11 @@ async function resolveContact(db, phone10, email) {
   const out = { lead_id: null, customer_id: null };
   const or = sameHumanOr(phone10, email);
   if (!or) return out;
-  const leads = await db('GET',
-    `/leads?or=(${or})&deleted_at=is.null&select=id,customer_id,source&order=created_at.desc&limit=1`);
-  if (Array.isArray(leads) && leads.length) {
-    out.lead_id = leads[0].id;
-    out.customer_id = leads[0].customer_id || null;
-    out.lead_source = leads[0].source || null;
-    return out;
-  }
-  const customers = await db('GET',
-    `/customers?or=(${or})&archived_at=is.null&select=id&order=created_at.desc&limit=1`);
-  if (Array.isArray(customers) && customers.length) out.customer_id = customers[0].id;
+  const customers = await db('GET', `/customers?or=(${or})&company=eq.prescott-epoxy&archived_at=is.null&select=id&limit=2`);
+  if (customers.length > 1) throw new Error('Several customer identities match; office review is required');
+  if (customers[0]) out.customer_id = customers[0].id;
+  // Matching a person is not matching a request. The inquiry RPC decides
+  // whether one active request can be followed, or selection is necessary.
   return out;
 }
 
@@ -431,34 +429,12 @@ async function createBookingLead(db, f) {
   if (!customerId) throw new Error('Customer creation returned no linked record');
   // Policy 2026-08-21 (Dylan): booking IS consent; the disclosure the page
   // showed is stored as the record. STOP opts out.
-  const consent = true;
-  const rows = await db('POST', '/leads', {
-    brand: 'PEC',
-    customer_id: customerId,
-    source: f.source,
-    first_name: f.firstName,
-    last_name: f.lastName,
-    full_name: f.name,
-    email: f.email,
-    phone: f.phone10 || null,
-    address: f.address, city: f.city, state: f.state, zip: f.zip,
-    stage: 'new',
-    sms_consent: consent,
-    sms_consent_source: 'online booking form (implied consent policy 2026-08-21)',
-    sms_consent_at: new Date().toISOString(),
-  }, true);
-  const lead = Array.isArray(rows) && rows[0];
-  if (!lead) throw new Error('lead insert returned no row');
-  await db('POST', '/lead_events', {
-    lead_id: lead.id,
-    event_type: 'created',
-    to_stage: 'new',
-    payload: {
-      source: f.source, via: 'topcoat_booking',
-      ...(consent && f.disclosure ? { sms_consent_disclosure: f.disclosure } : {}),
-    },
-  }).catch(e => console.warn('pec-booking: created lead_event failed (non-fatal):', e && e.message));
-  return lead;
+  const inquiryId = await recordInquiry(db, { customerId, key: f.requestKey, mode: f.mode || 'auto' });
+  // The RPC owns creation and the original profile/date. A replay may return
+  // a progressed or opted-out inquiry, so never reset its stage or consent.
+  await db('PATCH', `/leads?id=eq.${encodeURIComponent(inquiryId)}&source=is.null`, { source: f.source });
+  await upgradeLeadConsent(db, inquiryId, f.disclosure);
+  return { id: inquiryId, customer_id: customerId };
 }
 
 // Existing lead ticking the box for the first time: consent is an UPGRADE
@@ -710,7 +686,15 @@ async function processBook(deps, body, meta = {}) {
     //    prove ownership of the original appointment or its private link. ----
     const t = formApptType(form);
     const dupWindowH = numSetting(settings, 'booking_duplicate_window_hours', 24);
-    if (phone10 && dupWindowH > 0) {
+    // A person can request separate work inside the abuse-control window.
+    // Only their explicit new-project choice bypasses person-level folding;
+    // replaying that same request still follows its saved inquiry.
+    let newRequestReplay = false;
+    if (body.inquiry_mode === 'new' && /^[a-zA-Z0-9_-]{16,100}$/.test(String(body.request_key || ''))) {
+      const sameRequest = await db('GET', `/leads?intake_request_key=eq.${encodeURIComponent('booking:' + body.request_key)}&brand=eq.PEC&deleted_at=is.null&select=id&limit=1`);
+      newRequestReplay = !!sameRequest[0];
+    }
+    if (phone10 && dupWindowH > 0 && (body.inquiry_mode !== 'new' || newRequestReplay)) {
       const since = new Date(now.getTime() - dupWindowH * 3600 * 1000).toISOString();
       const dupReq = await db('GET',
         `/pec_booking_requests?phone=eq.${encodeURIComponent(phone10)}&status=eq.booked&created_at=gte.${encodeURIComponent(since)}&select=appointment_id&order=created_at.desc&limit=1`);
@@ -756,6 +740,7 @@ async function processBook(deps, body, meta = {}) {
     }
 
     // -- Contact: the processApptIntake mirror ------------------------------
+    if (!/^[a-zA-Z0-9_-]{16,100}$/.test(String(body.request_key || ''))) return { status: 400, body: { ok: false, error: 'Please refresh the booking form before submitting.' } };
     const contact = await resolveContact(db, phone10, email);
     const sp = name.indexOf(' ');
     const firstName = sp < 0 ? name : name.slice(0, sp);
@@ -763,9 +748,13 @@ async function processBook(deps, body, meta = {}) {
     const source = await resolveLeadSourceName(db, routed.leadSourceAnswer || 'topcoat_booking');
     let leadCreated = false;
     if (!contact.lead_id && contact.customer_id) {
-      const leadId = await db('POST', '/rpc/ensure_sales_lead', {
-        p_customer_id: contact.customer_id, p_brand: 'PEC', p_stage: 'new', p_occurred_at: null,
-      });
+      let pricingLeadId = null;
+      if (/^[a-zA-Z0-9_-]{16,100}$/.test(String(body.pricing_request_key || ''))) {
+        const pricing = await db('GET', `/leads?intake_request_key=eq.${encodeURIComponent('pricing:' + body.pricing_request_key)}&customer_id=eq.${encodeURIComponent(contact.customer_id)}&brand=eq.PEC&deleted_at=is.null&select=id&limit=1`);
+        pricingLeadId = pricing[0] && pricing[0].id;
+      }
+      const leadId = await recordInquiry(db, { customerId: contact.customer_id, key: 'booking:' + body.request_key,
+        leadId: pricingLeadId || null, mode: body.inquiry_mode === 'new' ? 'new' : 'auto' });
       if (typeof leadId !== 'string' || !leadId) throw new Error('Could not link the customer inquiry to the sales pipeline');
       contact.lead_id = leadId;
     }
@@ -774,7 +763,7 @@ async function processBook(deps, body, meta = {}) {
         const lead = await createBookingLead(db, {
           name, firstName, lastName, phone10, email,
           address: addr.address, city: addr.city, state: addr.state, zip: addr.zip,
-          source, smsConsent, disclosure,
+          source, smsConsent, disclosure, requestKey: 'booking:' + body.request_key, mode: body.inquiry_mode === 'new' ? 'new' : 'auto',
         });
         contact.lead_id = lead.id;
         contact.customer_id = lead.customer_id || null;
@@ -889,6 +878,7 @@ async function processBook(deps, body, meta = {}) {
       },
     };
   } catch (err) {
+    if (inquiryConflict(err)) return inquiryConflictResponse();
     console.error('pec-booking book failed:', err);
     await writeRequestRow(db, { ...baseRow, status: 'error', error_text: String(err && err.message || err).slice(0, 500) });
     await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'error', status_code: 500, message: err && err.message, payload: null });
@@ -943,12 +933,11 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
     const source = await resolveLeadSourceName(db, routed.leadSourceAnswer || 'topcoat_booking');
     const sp = name.indexOf(' ');
 
+    if (!/^[a-zA-Z0-9_-]{16,100}$/.test(String(body.request_key || ''))) return { status: 400, body: { ok: false, error: 'Please refresh the booking form before submitting.' } };
     const contact = await resolveContact(db, phone10, email);
     let leadId = contact.lead_id;
     if (!leadId && contact.customer_id) {
-      leadId = await db('POST', '/rpc/ensure_sales_lead', {
-        p_customer_id: contact.customer_id, p_brand: 'PEC', p_stage: 'new', p_occurred_at: null,
-      });
+      leadId = await recordInquiry(db, { customerId: contact.customer_id, key: 'booking:' + body.request_key, mode: body.inquiry_mode === 'new' ? 'new' : 'auto' });
       if (typeof leadId !== 'string' || !leadId) throw new Error('Could not link the customer inquiry to the sales pipeline');
     }
     if (!leadId) {
@@ -957,7 +946,7 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
         lastName: sp < 0 ? null : name.slice(sp + 1).trim() || null,
         phone10, email,
         address: addr.address, city: addr.city, state: addr.state, zip: addr.zip,
-        source, smsConsent, disclosure,
+        source, smsConsent, disclosure, requestKey: 'booking:' + body.request_key, mode: body.inquiry_mode === 'new' ? 'new' : 'auto',
       });
       leadId = lead.id;
       contact.customer_id = lead.customer_id || null;
@@ -1006,6 +995,7 @@ async function processOutOfAreaLead(deps, body, meta = {}) {
         : 'Thanks! That address is a little outside our usual area, but we take projects like this case by case. We will call you about scheduling.' },
     };
   } catch (err) {
+    if (inquiryConflict(err)) return inquiryConflictResponse();
     console.error('pec-booking out-of-area failed:', err);
     await log({ endpoint: ENDPOINT, deal_id: null, customer_name: name, outcome: 'error', status_code: 500, message: err && err.message, payload: null });
     return { status: 500, body: { ok: false, error: 'Something went wrong on our side. Please call us.' } };
@@ -1358,6 +1348,7 @@ ${preview ? '<div class="card" style="padding:10px 14px;margin-bottom:12px"><spa
   <label for="ooPhone">Phone</label><input id="ooPhone" autocomplete="tel" type="tel" aria-required="true">
   <label for="ooEmail">Email (optional)</label><input id="ooEmail" autocomplete="email" type="email">
   <label for="ooProject">Tell us about the project</label><textarea id="ooProject" rows="3"></textarea>
+  <label><input id="ooNewRequest" type="checkbox" style="width:auto"> This is a separate new project from another quote I already requested.</label>
   <div class="consent"><span id="ooConsentText"></span></div>
   <div class="err" id="ooErr" role="alert"></div>
   <div class="bk-action"><span></span><button class="btn" id="ooSend" type="button">Request a call</button></div>
@@ -1386,6 +1377,7 @@ ${preview ? '<div class="card" style="padding:10px 14px;margin-bottom:12px"><spa
     <div><label for="bkEmail">Email</label><input id="bkEmail" autocomplete="email" type="email" aria-required="true"></div>
   </div>
   <div id="bkQuestions"></div>
+  <label><input id="bkNewRequest" type="checkbox" style="width:auto"> This is a separate new project from another quote I already requested.</label>
   <div class="hpwrap" aria-hidden="true"><label for="bkWebsite">Website</label><input id="bkWebsite" tabindex="-1" autocomplete="off"></div>
   <div class="consent"><span id="bkConsentText"></span></div>
   <div class="err" id="bkErr" role="alert"></div>
@@ -1444,7 +1436,8 @@ $('bkChangeAddress').addEventListener('click',changeAddress);
 $('ooChangeAddress').addEventListener('click',changeAddress);
 $('bkChangeTime').addEventListener('click',function(){go(2)});
 function setHeadline(t){$('bkHeadline').textContent=t||'Book your free estimate'}
-function api(path,body){return fetch('/api/booking/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
+var inquiryRequestKey=crypto.randomUUID();
+function api(path,body){if(path==='book'||path==='lead'){body.request_key=inquiryRequestKey;body.inquiry_mode=$(path==='book'?'bkNewRequest':'ooNewRequest').checked?'new':'auto';}return fetch('/api/booking/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){j.__status=r.status;return j})})}
 
 // Disclosure text arrives with the slots payload settings; fallback fetched lazily.
 fetch('/api/booking/config?form='+encodeURIComponent(CFG.slug)).then(function(r){return r.json()}).then(function(j){

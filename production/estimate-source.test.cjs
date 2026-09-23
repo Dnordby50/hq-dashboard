@@ -25,14 +25,14 @@ function database(seed = {}, failures = {}) {
   return {
     writes, reads, rpcCalls,
     async rpc(name, payload) {
-      assert.equal(name, 'ensure_sales_lead');
+      assert.equal(name, 'record_sales_inquiry');
       rpcCalls.push(payload);
       if (failures.rpc) { failures.rpc = false; return { error: new Error('pipeline unavailable') }; }
       const customer = (tables.customers || []).find(row => row.id === payload.p_customer_id);
       assert.ok(customer, 'pipeline inquiry links the customer just saved');
       const lead = { id: 'canonical-lead', customer_id: customer.id, brand: payload.p_brand, source: customer.lead_source,
         full_name: customer.name, first_name: customer.first_name, last_name: customer.last_name,
-        email: customer.email, phone: customer.phone, created_at: payload.p_occurred_at };
+        email: customer.email, phone: customer.phone, inquiry_date: payload.p_inquiry_date };
       (tables.leads ||= []).push(lead);
       writes.push({ table: 'leads', row: lead });
       return { data: lead.id, error: null };
@@ -84,7 +84,7 @@ function dashboard(db) {
     return fields.get(selector);
   };
   const context = vm.createContext({
-    console: { warn() {} }, supabase: db, navigator: { onLine: true },
+    console: { warn() {} }, crypto: require('node:crypto'), supabase: db, navigator: { onLine: true },
     state: { session: { user: { id: 'staff' } } }, pecEstInline: {},
     withDeadline: callback => callback(), withFreshWriteRetry: callback => callback(), showToast() {}, switchView() {},
     openEstimatorFrame() { throw new Error('unexpected offline launch'); },
@@ -127,7 +127,7 @@ test('new contact form carries the entered source through customer creation into
   assert.deepEqual(db.writes.map(write => [write.table, write.row.lead_source || write.row.source]), [['customers', 'Google'], ['leads', 'Google'], ['estimates', 'Google']]);
   assert.equal(db.writes[2].row.customer_id, db.writes[0].row.id);
   assert.equal(db.writes[2].row.lead_id, db.writes[1].row.id);
-  assert.equal(db.rpcCalls[0].p_occurred_at, db.writes[0].row.created_at);
+  assert.equal(db.rpcCalls[0].p_inquiry_date, '2026-09-22');
 });
 
 test('new contact attribution survives a failed follow-up customer lookup', async () => {
@@ -153,7 +153,8 @@ test('new estimate contact retry keeps edited details and original inquiry date 
   const estimate = db.writes.find(row => row.table === 'estimates').row;
   assert.equal(estimate.customer_name, 'Samuel Example'); assert.equal(estimate.customer_email, 'samuel@example.test');
   assert.equal(estimate.lead_source, 'Referral');
-  assert.equal(db.rpcCalls[1].p_occurred_at, '2026-09-22T17:00:00Z');
+  assert.equal(db.rpcCalls[1].p_inquiry_date, '2026-09-22');
+  assert.equal(db.rpcCalls[1].p_request_key, db.rpcCalls[0].p_request_key);
 });
 
 test('an unavailable linked-customer source does not prevent a lead draft from opening', async () => {
