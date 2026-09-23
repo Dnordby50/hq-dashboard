@@ -23452,13 +23452,18 @@ async function renderOpsQueue() {
       supabase.from('pec_booking_requests').select('id,name,phone,address_city,address_zip,lead_id,customer_id,created_at').eq('status', 'out_of_area').gte('created_at', new Date(Date.now() - bkDays * 86400000).toISOString()).order('created_at'),
       supabase.from('pec_call_log').select('customer_id,to_number,created_at').eq('direction', 'out').gte('created_at', new Date(Date.now() - bkDays * 86400000).toISOString()),
       supabase.from('pec_sms_log').select('customer_id,to_number,created_at').eq('direction', 'out').gte('created_at', new Date(Date.now() - bkDays * 86400000).toISOString()),
+      // Check 13 (prompt 107): Quo contact pushes that exhausted their
+      // retries. Staff-read RLS; the worker (service role) is the writer. A
+      // missing table (migration pending) is an error result, which the
+      // check below reads as an empty list.
+      supabase.from('pec_quo_contact_sync').select('phone_norm,source_table,source_id,first_name,last_name,company,last_error,attempts,updated_at').eq('status', 'failed').order('updated_at', { ascending: false }).limit(200),
     ]), { label: 'renderOpsQueue' });
   } catch (e) {
     root.innerHTML = `<div class="pec-empty">Could not load the Ops Queue: ${esc(e.message || e)}</div>`;
     return;
   }
   if (state.view !== 'ops') return; // user navigated away mid-read
-  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes, apptIngestRes, bookingReqRes, bkCallsRes, bkSmsRes] = res;
+  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes, apptIngestRes, bookingReqRes, bkCallsRes, bkSmsRes, quoSyncRes] = res;
   const admins = adminsRes.error ? [] : (adminsRes.data || []);
   if (admins.length) state.adminUsers = admins;
   const adminName = id => { const a = admins.find(x => x.id === id); return a ? (a.name || a.email) : ''; };
@@ -23656,10 +23661,27 @@ async function renderOpsQueue() {
         })));
   }
 
+  // Check 13 (prompt 107): Quo contact pushes that failed after every retry
+  // (default 4 attempts over about an hour). DERIVED at render, one row per
+  // phone; it self-clears when the worker later succeeds (the queue row
+  // leaves status failed) or when the name is edited again (re-queued). The
+  // lead or customer itself was never blocked by the failure.
+  if (on('ops_check_quo_contact_sync')) {
+    const rows = (quoSyncRes && !quoSyncRes.error) ? (quoSyncRes.data || []) : [];
+    const fmtPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || ''); };
+    push('quosync', 'Quo contact names that did not push',
+      'TopCoat tried to name this phone number in Quo and gave up after the retry window. Open the record and re-save the name to try again, or check the Quo API key in Netlify. The lead or customer itself is fine.',
+      rows.map(r => ({
+        key: `quo_contact_sync_failed:${r.phone_norm}`,
+        label: `${esc(fmtPhone(r.phone_norm))} · ${esc([r.first_name, r.last_name].filter(Boolean).join(' ') || 'No name')}${r.company ? ` (${esc(r.company)})` : ''} · ${esc(String(r.last_error || 'unknown error').slice(0, 120))}`,
+        nav: r.source_table === 'customers' ? { view: 'customers', customerId: r.source_id } : { view: 'leads', leadId: r.source_id },
+      })));
+  }
+
   const derivedCount = sections.reduce((s, x) => s + x.rows.length, 0);
   const total = manualOpen.length + derivedCount;
 
-  const navAttrs = (nav) => `data-ops-view="${esc(nav.view)}"${nav.jobId ? ` data-ops-job="${esc(nav.jobId)}"` : ''}${nav.unifiedId ? ` data-ops-unified="${esc(nav.unifiedId)}"` : ''}${nav.invoiceId ? ` data-ops-invoice="${esc(nav.invoiceId)}"` : ''}${nav.apptId ? ` data-ops-appt="${esc(nav.apptId)}"` : ''}${nav.tab ? ` data-ops-tab="${esc(nav.tab)}"` : ''}`;
+  const navAttrs = (nav) => `data-ops-view="${esc(nav.view)}"${nav.jobId ? ` data-ops-job="${esc(nav.jobId)}"` : ''}${nav.unifiedId ? ` data-ops-unified="${esc(nav.unifiedId)}"` : ''}${nav.invoiceId ? ` data-ops-invoice="${esc(nav.invoiceId)}"` : ''}${nav.apptId ? ` data-ops-appt="${esc(nav.apptId)}"` : ''}${nav.leadId ? ` data-ops-lead="${esc(nav.leadId)}"` : ''}${nav.customerId ? ` data-ops-customer="${esc(nav.customerId)}"` : ''}${nav.tab ? ` data-ops-tab="${esc(nav.tab)}"` : ''}`;
   const rowHtml = (r) => `<tr class="nohover">
       <td style="font-size:.85rem">${r.muted ? `<span style="color:var(--muted)">${r.label}</span>` : r.label}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -23717,6 +23739,9 @@ async function renderOpsQueue() {
     if (el.dataset.opsUnified) { state.openJobId = null; state.openUnifiedJobId = el.dataset.opsUnified; }
     if (el.dataset.opsInvoice) state.openInvoiceJobId = el.dataset.opsInvoice;
     if (el.dataset.opsAppt) state.openAppointmentId = el.dataset.opsAppt;
+    // Prompt 107: the Quo sync check deep-links the lead or customer.
+    if (el.dataset.opsLead) state.openLeadId = el.dataset.opsLead;
+    if (el.dataset.opsCustomer) state.openCustomerId = el.dataset.opsCustomer;
     switchView(view);
   }));
   root.querySelectorAll('[data-ops-dismiss]').forEach(el => el.addEventListener('click', async () => {
@@ -24109,6 +24134,27 @@ async function renderSettings() {
           </select>
           <span style="color:var(--muted);font-size:.68rem">On, the suggested crew bonus counts against GP as pending before approval, so GP does not drop later when it is approved.</span>
         </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Quo contact sync</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">New leads and customers (and later name, phone or email edits) push their TopCoat name onto the matching Quo contact, so calls and texts on every Quo line show who it is. Only the name is written on a contact someone made in Quo; the newest duplicate on a number is the one updated; a fuller name already in Quo is kept. Queued pushes retry on their own and show on the Ops Queue when they give up.</div>
+        <div class="pec-field"><label>Push names to Quo</label>
+          <select name="quo_contact_sync_enabled">
+            <option value="true" ${(map.quo_contact_sync_enabled || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.quo_contact_sync_enabled || 'true') === 'false' ? 'selected' : ''}>Off (changes still queue; nothing is sent)</option>
+          </select></div>
+        <details style="margin:4px 0 10px">
+          <summary style="cursor:pointer;font-size:.78rem;font-weight:700">Advanced</summary>
+          <div class="pec-field"><label>Retry attempts before giving up</label><input name="quo_contact_sync_max_attempts" type="number" min="1" max="20" step="1" value="${esc(map.quo_contact_sync_max_attempts || '4')}"><span style="color:var(--muted);font-size:.68rem">Four attempts span about an hour (2, 8, 20 and 30 minutes apart).</span></div>
+          <div class="pec-field"><label>Create a Quo contact when the number has none</label>
+            <select name="quo_contact_sync_create_missing">
+              <option value="true" ${(map.quo_contact_sync_create_missing || 'true') !== 'false' ? 'selected' : ''}>On</option>
+              <option value="false" ${(map.quo_contact_sync_create_missing || 'true') === 'false' ? 'selected' : ''}>Off (rename existing contacts only)</option>
+            </select></div>
+          <div class="pec-field"><label>Push later edits, not just new records</label>
+            <select name="quo_contact_sync_on_edit">
+              <option value="true" ${(map.quo_contact_sync_on_edit || 'true') !== 'false' ? 'selected' : ''}>On</option>
+              <option value="false" ${(map.quo_contact_sync_on_edit || 'true') === 'false' ? 'selected' : ''}>Off</option>
+            </select></div>
+        </details>
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Financing (Enhancify)</div>
         <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">Shows a financing block on the public estimate page, the estimate PDF, and the public invoice page. Off by default; nothing appears anywhere until this is turned on. With APR and term both set, the block quotes an estimated monthly payment (always labeled an estimate, subject to credit approval); with either blank it shows a plain "check your options" action instead.</div>
         <div class="pec-field"><label>Financing block</label>
@@ -24138,6 +24184,7 @@ async function renderSettings() {
           ['ops_check_system_health', 'System health (drift + stuck syncs)'],
           ['ops_check_appt_intake', 'Routemize events not applied'],
           ['ops_check_booking_out_of_area', 'Online booking out-of-area requests'],
+          ['ops_check_quo_contact_sync', 'Quo contact names that did not push'],
         ].map(([k, l]) => `<div class="pec-field"><label>${l}</label>
           <select name="${k}">
             <option value="true" ${(map[k] || 'true') !== 'false' ? 'selected' : ''}>On</option>

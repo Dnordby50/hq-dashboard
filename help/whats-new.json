@@ -1,5 +1,18 @@
 [
   {
+    "id": "quo-contact-name-sync",
+    "date": "2026-09-23",
+    "title": "New leads and customers now show up by name in Quo.",
+    "summary": "When a lead or customer is created in TopCoat, or their name, phone or email is edited, the matching Quo contact is named automatically within a few minutes. Calls and texts on every Quo line then show the TopCoat name instead of a bare number.",
+    "howto": [
+      "Nothing to do on a new record. Within about five minutes the Quo contact on that phone number carries the TopCoat name (first and last name, with the business in Company).",
+      "If Quo already has a contact on the number, only its name is updated. Email, notes and anything typed in Quo stay as they were. If Quo has two contacts on one number, the newest one is updated.",
+      "A fuller name already in Quo is kept. For example, a TopCoat lead named Kyle will not shorten a Quo contact named Kyle Kirby.",
+      "If a push keeps failing, it appears on the Ops Queue under Quo contact names that did not push. Open the record and re-save the name to try again.",
+      "Settings, General, Quo contact sync turns the push on or off. Advanced holds the retry count and whether to create missing contacts or push later edits."
+    ]
+  },
+  {
     "id": "sales-inquiry-event-integrity",
     "date": "2026-09-23",
     "title": "Separate requests stay visible, and reporting shows its evidence.",

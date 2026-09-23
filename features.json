@@ -1785,26 +1785,47 @@
     {
       "name": "Quo / OpenPhone integration",
       "area": "integrations",
-      "description": "Integration with the office phone (Quo/OpenPhone) powering two-way SMS from customer profiles and jobs, a Text invoice button that sends the pay link, STOP-based opt-out enforcement, and automatic call logging with AI summaries, next steps, and full transcripts on customer profiles and lead timelines. 2026-08-17: brandForOurNumber (pec-webhook-quo.cjs) gained a fallback for inboxes that cannot have a pec_sms_senders row (that table is keyed one-row-per-brand): the quo_number_brand_map settings key, a JSON object of {number: brand}. The Aron personal inbox +19284931922 was the live case, 33 brand-null pec_call_log rows in 30 days; it stays unmapped (brand null) until Dylan picks its brand or retires the inbox. Webhook signatures now require supported signed formats and timestamps within five minutes. Quo defaults to official signed requests; legacy plain-secret compatibility requires an explicit environment opt-in.",
+      "description": "Integration with the office phone (Quo/OpenPhone) powering two-way SMS from customer profiles and jobs, a Text invoice button that sends the pay link, STOP-based opt-out enforcement, and automatic call logging with AI summaries, next steps, and full transcripts on customer profiles and lead timelines. 2026-08-17: brandForOurNumber (pec-webhook-quo.cjs) gained a fallback for inboxes that cannot have a pec_sms_senders row (that table is keyed one-row-per-brand): the quo_number_brand_map settings key, a JSON object of {number: brand}. The Aron personal inbox +19284931922 was the live case, 33 brand-null pec_call_log rows in 30 days; it stays unmapped (brand null) until Dylan picks its brand or retires the inbox. Webhook signatures now require supported signed formats and timestamps within five minutes. Quo defaults to official signed requests; legacy plain-secret compatibility requires an explicit environment opt-in. Prompt 107 (2026-09-23, contact name sync): a lead or customer created in TopCoat (and later first/last/business name, phone or email edits) now pushes its name onto the matching Quo contact so calls and texts on all three Quo lines show who it is. Database triggers on leads and customers (trg_leads_quo_contact_sync / trg_customers_quo_contact_sync, SECURITY DEFINER, so every create path is covered: Angi/Zapier intake, booking, manual, estimator accept, import) queue ONE row per phone_norm in pec_quo_contact_sync (customer name wins over a linked lead's; person name in first/last, business in company, business-only in first name; coalesced, so two quick edits are one push). The scheduled worker pec-quo-contact-sync.cjs (every 5 minutes) pages the whole Quo contact list once per run (the API cannot filter by phone), indexes it by last-10, and per row either creates a contact (name, company, phone in E.164, email, externalId topcoat:<phone_norm>, source topcoat) or PATCHes the NEWEST duplicate on the number by createdAt (a contact TopCoat created wins), rewriting the name only and carrying emails, phone numbers, role and custom fields back verbatim because Quo's PATCH replaces the contact (email is also synced on contacts TopCoat itself created). The keep-the-fuller-name rule (production/quo-contact-sync.cjs shouldRename, fixture-tested): a blank TopCoat name, or a first-name-only TopCoat name that Quo's current full name already contains with more, is skipped; any real difference overwrites (case-insensitive, trimmed). Failures retry with backoff (2, 8, 20, 30 minutes; quo_contact_sync_max_attempts, default 4) and then surface as ONE derived Ops Queue row per phone (check_key quo_contact_sync_failed:<phone_norm>, deep-linking the lead or customer; switch ops_check_quo_contact_sync); a 429 stops the pass and leaves rows pending. Creating or editing a record is never blocked by Quo. Settings > General 'Quo contact sync': quo_contact_sync_enabled front of card, quo_contact_sync_create_missing / quo_contact_sync_on_edit / max attempts under Advanced. Manual drain and the one-time backfill (locked decision 10) go through pec-quo-contact-sync-run (staff JWT or webhook secret; {\"backfill\":\"dry\"} reports every create / rename (old -> new) / skip with counts, {\"backfill\":\"live\"} only ENQUEUES rows for the worker and needs Dylan's go-ahead after reviewing the dry run); scripts/backfill-quo-contacts.cjs --dry-run is the CLI twin. Echo safety: nothing reads a Quo name back onto TopCoat; pec-webhook-quo still handles message/call events only, and a future contact webhook must not write names back.",
       "code": {
         "indexHtml": [
           "pecSendSms",
-          "mountCustomerSmsThread"
+          "mountCustomerSmsThread",
+          "renderOpsQueue",
+          "renderSettings"
         ],
         "netlifyFunctions": [
           "pec-send-sms.cjs",
           "pec-webhook-quo.cjs",
-          "pec-openphone-sync.cjs"
+          "pec-openphone-sync.cjs",
+          "_pec-quo-contacts.cjs",
+          "pec-quo-contact-sync.cjs",
+          "pec-quo-contact-sync-run.cjs"
+        ],
+        "other": [
+          "production/quo-contact-sync.cjs",
+          "production/quo-contact-sync.test.cjs",
+          "scripts/backfill-quo-contacts.cjs",
+          "supabase/migrations/20260923172636_quo_contact_sync.sql"
         ]
       },
       "tables": [
         "pec_sms_log",
-        "pec_call_log"
+        "pec_call_log",
+        "pec_quo_contact_sync",
+        "leads",
+        "customers",
+        "settings"
       ],
       "since": "2026-06",
       "settings": [
-        "quo_number_brand_map"
-      ]
+        "quo_number_brand_map",
+        "quo_contact_sync_enabled",
+        "quo_contact_sync_max_attempts",
+        "quo_contact_sync_create_missing",
+        "quo_contact_sync_on_edit",
+        "ops_check_quo_contact_sync"
+      ],
+      "spec": "claude-code-prompt-107-quo-contact-sync.md"
     },
     {
       "name": "DripJobs integration",

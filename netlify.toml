@@ -128,6 +128,16 @@
 [functions."pec-lead-score-runner"]
   schedule = "30 15 * * *"
 
+# Quo contact sync (prompt 107). Every 5 minutes: drains pec_quo_contact_sync
+# (fed by database triggers on leads / customers) into Quo contacts, so a
+# number created in TopCoat shows its name on calls and texts across all
+# three Quo lines. Gated by quo_contact_sync_enabled; a no-op without
+# QUO_API_KEY or before the migration lands. Manual runs and the backfill
+# dry run go through pec-quo-contact-sync-run (Netlify 403s direct
+# invocation of schedule-declared functions).
+[functions."pec-quo-contact-sync"]
+  schedule = "*/5 * * * *"
+
 # SalesAsk sync: push upcoming appointments to SalesAsk as scheduled tasks
 # (event_id = our appointment id, so the rep's recording auto-attaches),
 # reconcile recent recordings (SalesAsk webhooks have NO retries, this sweep

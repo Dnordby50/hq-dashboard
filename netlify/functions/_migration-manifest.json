@@ -3877,6 +3877,42 @@
           "name": "leads_intake_request_key_unique"
         }
       ]
+    },
+    {
+      "file": "20260923172636_quo_contact_sync.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_quo_contact_sync"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_quo_contact_sync_due"
+        },
+        {
+          "kind": "setting",
+          "name": "quo_contact_sync_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "quo_contact_sync_max_attempts"
+        },
+        {
+          "kind": "setting",
+          "name": "quo_contact_sync_create_missing"
+        },
+        {
+          "kind": "setting",
+          "name": "quo_contact_sync_on_edit"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_quo_contact_sync"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -3965,6 +4001,7 @@
     "pec_prod_recipe_slots",
     "pec_prod_system_types",
     "pec_prod_tasks",
+    "pec_quo_contact_sync",
     "pec_radar_alerts",
     "pec_review_bonuses",
     "pec_review_requests",

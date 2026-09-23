@@ -644,6 +644,7 @@ CASE
 PK: id
 FK: customer_id → customers.id
 CHECK leads_stage_check: stage in ('new','contacted','estimate_scheduled','estimate_sent','presented','accepted','lost')
+Trigger (prompt 107): trg_leads_quo_contact_sync (AFTER INSERT OR UPDATE OF first_name, last_name, full_name, business_name, phone, email) queues a Quo contact name push in pec_quo_contact_sync; see that table. The same trigger shape exists on customers (trg_customers_quo_contact_sync, watching first_name, last_name, name, company_name, phone, email).
 
 ### pec_appointment_blocked_days
 RLS: enabled · rows: 0 (added 2026-09-21, migration 2026-09-21_appt_blocked_days_audit_trail.sql; UI seeds)
@@ -2221,6 +2222,31 @@ RLS: enabled (NO policies — default-deny token vault, service-role only) · ro
 PK: id
 FK: sales_member_id → pec_sales_team_members.id (unique)
 
+### pec_quo_contact_sync
+RLS: enabled · rows: 0 until the first lead/customer write after the migration (prompt 107, migration 20260923172636_quo_contact_sync.sql, applied live 2026-09-23 and verified: table, both triggers, policy, grants, 5 settings)
+
+| column | type | nullable | default |
+|---|---|---|---|
+| phone_norm | text | no |  |
+| source_table | text | no |  |
+| source_id | uuid | no |  |
+| first_name | text | yes |  |
+| last_name | text | yes |  |
+| company | text | yes |  |
+| email | text | yes |  |
+| origin | text | no | 'insert' |
+| status | text | no | 'pending' |
+| attempts | integer | no | 0 |
+| next_attempt_at | timestamptz | no | now() |
+| last_error | text | yes |  |
+| quo_contact_id | text | yes |  |
+| last_synced_at | timestamptz | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: phone_norm (ONE row per phone; a new change on a pending phone overwrites the snapshot, so two quick edits become one Quo push). CHECK source_table in (leads, customers); origin in (insert, update, backfill); status in (pending, done, skipped, failed). Index idx_pec_quo_contact_sync_due (status, next_attempt_at). Trigger trg_pec_quo_contact_sync_touch (updated_at).
+Note: the queue that pushes TopCoat names onto Quo (OpenPhone) contacts. FED by the SECURITY DEFINER trigger function pec_quo_contact_sync_trigger on public.leads (AFTER INSERT OR UPDATE OF first_name, last_name, full_name, business_name, phone, email) and public.customers (... name, company_name, phone, email), which calls pec_quo_contact_enqueue(phone_norm, origin): it re-derives the desired snapshot from the LIVE rows on every fire (the newest live customer on the phone wins over the newest live lead; person name in first/last, business in company; no person name means the business is the first name; a legacy combined name splits on the first space unless it just repeats the company), skips rows with no phone_norm and soft-deleted / archived rows, and upserts the queue row back to pending with attempts 0. A phone change also re-derives the OLD number. DRAINED by netlify/functions/pec-quo-contact-sync.cjs every 5 minutes (rules in production/quo-contact-sync.cjs: exactly-one Quo contact per phone is written, the newest by createdAt or the one carrying our externalId topcoat:<phone_norm>; name only on contacts made in Quo, email too on ours; a fuller name already in Quo is kept; 4 attempts over about an hour, then status failed surfaces on the Ops Queue as check_key quo_contact_sync_failed:<phone_norm>). RLS: staff SELECT only (is_admin_staff); INSERT/UPDATE/DELETE revoked from anon/authenticated (the trigger and the service-role worker are the only writers); service_role all. Nothing ever reads a Quo name back onto leads/customers (echo safety).
+
 ### pec_sales_team_members
 RLS: enabled · rows: 2
 
@@ -2568,6 +2594,7 @@ RLS: enabled · rows: 184 (live count 2026-08-19, after the prompt-101 online-bo
 PK: id
 Trigger: settings_touch_updated_at (BEFORE INSERT OR UPDATE, sets updated_at := now(); the trigger is the ONLY writer, there is no column default). **Do NOT backfill updated_at: a NULL means the row has not been written since the 2026-08-16 prompt-79 migration ran, and that NULL is the audit signal the column exists to provide.** Row-count note: this block previously read 95; a live count on 2026-08-08 (pre-migration) returned 97, so the documented number had drifted by 2 (the live schema wins); 98 after the settings_rail_breakpoint_px seed.
 Customer portal configuration (2026-09-22, application defaults; no seed migration or live settings write): `customer_portal_referrals_enabled` and `customer_portal_reviews_enabled` default to enabled unless their saved value is `'false'`. Settings > Customer portal exposes both controls; Advanced edits the existing `google_review_link_epoxy` / `google_review_link_paint` and new optional `portal_yelp_link_epoxy` / `portal_yelp_link_paint` keys. Blank or invalid destinations are hidden; Google and Yelp links require official HTTPS hosts and Yelp requires a business-page path. Brand selection follows the token-authenticated customer's company and never borrows the other business's links. One upsert saves all six settings. Referral reward remains `referral_reward_amount`; contact details remain in `pec_brand_identity`.
+Keys added 2026-09-23 (prompt 107, Quo contact sync; migration 20260923172636_quo_contact_sync.sql, insert-only), Settings > General 'Quo contact sync' card: quo_contact_sync_enabled ('true', front of card; the worker no-ops when 'false', the triggers still queue), and behind Advanced quo_contact_sync_max_attempts ('4'), quo_contact_sync_create_missing ('true': create a Quo contact when the number has none), quo_contact_sync_on_edit ('true': push later name/phone/email edits, not just new records); plus the Ops Queue switch ops_check_quo_contact_sync ('true'). Read server-side by _pec-quo-contacts.cjs loadSettings. Settings 194 rows to 199.
 Keys added 2026-09-21 (prompt 106, estimate choice group; migration 20260921174926_estimate_choice_group.sql, insert-only, applied live), Settings > Estimates 'Optional lines' card under 'Customer chooses one', all read server-side by pec-public-estimate.cjs loadChoiceCopy (the PDF and Present mode share that renderer): estimate_choice_heading ('Choose your project'), estimate_choice_recommended_label ('Recommended'), estimate_choice_show_difference ('true': each card shows "+$X vs <cheapest option>", hidden on the cheapest card), estimate_choice_no_pick_total_text ('Select an option', the total cells before a pick), estimate_choice_no_pick_sign_text ('Choose an option to sign', the disabled sign button before a pick). Customer-facing: the Settings save refuses em dashes. Settings 189 rows to 194.
 Keys added 2026-09-21 (prompt 105, rep eligibility; migration 20260921171120_booking_rep_eligibility.sql, insert-only, applied and verified by Codex 2026-09-22), Settings > Appointments 'Online booking' card under Advanced > Salespeople: booking_primary_member_id (Dylan's id 2add1f35-...; the rep the engine assigns first and the staff appointment form's default rep for a NEW appointment, read client-side by apptPrimaryMemberId), booking_assignment_mode ('primary_first' | 'primary_only' | 'round_robin'; an unknown value reads as primary_first, and a primary who is missing/inactive/not bookable makes the effective mode round_robin with a warning on the card), booking_require_google_connected ('true': a rep without a connected Google Calendar is not bookable online whatever bookable_online says; 'false' admits them). Read server-side by pec-booking.cjs (SETTING_KEYS) and the eligibility rule in _pec-booking-reps.cjs; the Google requirement is also read inside book_appointment_slot. Three eligibility settings verified live 2026-09-22.
 Keys added 2026-09-21 (days off / audit trail / default length), Settings > Appointments 'Days off' card, both front-of-card: booking_block_crew_holidays ('true'; while not 'false', pec_prod_holidays dates also close online booking, read server-side by pec-booking.cjs and inside book_appointment_slot) and appt_default_duration_minutes ('45'; the staff appointment form's default length, and the length the end time follows when the start changes; read client-side by apptDefaultDurationMinutes, cached per page load). Inserted insert-only. Settings 184 rows to 186.
