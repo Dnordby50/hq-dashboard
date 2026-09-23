@@ -1,3 +1,10 @@
+## [2026-09-23 10:15 MST] sales: verify preventive integrity release live
+By: Codex
+
+Production main@fa1a769 published successfully in Netlify (47 seconds). Preserved Cowork's independent MCP commits during integration. Full npm test including posttest passed again after integration. Authenticated Growth and Development refreshed successfully against both new migrations: Sales Plan health exposes 184 review items (127 contact records, five missing booking dates, 52 production-link tasks); Revenue Produced exposes 48 (46 unlinked completed production records, two missing completion dates). These are overlapping source tasks, not additional sales. Last complete Sunday–Saturday week, September 13–19, shows eight proposals sent with eight source records; leads/bookings remain explicitly unverified where historical coverage is incomplete. Read-only live checks did not create customers, send proposals or mark work complete. Served owner UI and What's New match release hashes; internal schema/log/draft paths remain 404.
+
+The private VA workbook/printable checklist is being extended with all 52 production-link records (46 completed, three scheduled, three unscheduled), preserving the nine priority date/amount cases and 127 inquiry candidates. Original install/row timestamps are review clues, not accepted completion facts. Full historical certification remains dependent on reviewed evidence and exact links. No historical amount corrections or bulk inquiry creation were performed by this release.
+
 ## [2026-09-23 10:09 MST] sales: enforce inquiry identity and original business-event evidence
 By: Codex
 
