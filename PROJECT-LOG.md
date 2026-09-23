@@ -1,3 +1,14 @@
+## [2026-09-23 10:30 MST] quo: scope prompt 107, push lead/customer names to Quo contacts
+By: Cowork
+Changed: Wrote claude-code-prompt-107-quo-contact-sync.md from a 10-question scoping session with Dylan. No code, schema, or Quo data changed.
+Why: Dylan wants a TopCoat lead/customer create (and later name/phone/email edits) to name the matching Quo contact.
+Findings: Nothing writes Quo contacts today; QUO_API_KEY already in Netlify. Quo's contact API cannot filter by phone (only externalIds/sources), so the worker must page the whole contact list. Quo already holds duplicate contacts on single numbers (Kyle/Kyle Kirby, Chris/Chris Clevenger, Marianne T/Husband Cell, two Mattie Magonigal, two Kathryn Huntley). pec-webhook-quo handles no contact events, so no echo loop today.
+Locked: leads + customers, create and edits, overwrite name only, newest duplicate only, create when missing (externalId topcoat:<phone_norm>), person name + Company, no brand tag, keep the fuller name, retry then derived Ops Queue item, dry-run backfill needing Dylan's go-ahead.
+Files touched: claude-code-prompt-107-quo-contact-sync.md, PROJECT-LOG.md
+Next steps: Claude Code runs prompt 107.
+Handoff to Cowork: None
+Handoff to Dylan: Paste prompt 107 into Claude Code. Name one test record for the end-to-end check, then review the backfill dry-run list before authorizing the live run.
+
 ## [2026-09-23 10:15 MST] sales: verify preventive integrity release live
 By: Codex
 
