@@ -3920,6 +3920,13 @@
       "hasHeader": true,
       "none": "extend portal_confirm_job to recognize staff-recorded external contract acceptance",
       "artifacts": []
+    },
+    {
+      "file": "20260923213545_advertiser_read_only_access.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": "Advertiser role, session boundaries and a limited read-only reporting RPC.",
+      "artifacts": []
     }
   ],
   "knownTables": [

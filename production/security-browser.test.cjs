@@ -51,7 +51,7 @@ function authFixture(options = {}) {
   };
   const ctx = vm.createContext({ ...dom, state, console: { error() {} }, Event: class { constructor(type) { this.type = type; } }, atob: s => Buffer.from(s, 'base64').toString(), setTimeout, clearTimeout, location: { origin: 'https://synthetic.example' }, _pecAuthSub: null,
     supabase: { auth, from: table => { reads.push(table); const chain = { select() { return chain; }, eq() { return chain; }, maybeSingle: async () => options.row ? options.row(table) : { data: table === 'admin_users' ? { id: 'row-' + current.user.id, auth_user_id: current.user.id, role: 'staff' } : {}, error: null } }; return chain; } },
-    $: dom.get, syncWhatsNewSession() {}, ownerStudio: { sessionChanged() {} }, runScheduleStatusSync() {}, renderGlobalAuthGate: () => gates.push(!!state.session),
+    $: dom.get, syncWhatsNewSession() {}, advertiserView: { mount() {}, unmount() {} }, ownerStudio: { sessionChanged() {} }, runScheduleStatusSync() {}, renderGlobalAuthGate: () => gates.push(!!state.session),
     fetch: async (...args) => { audits.push(args); return {}; },
     openModal(markup, options) { const nodes = new Map([...markup.matchAll(/id="([^"]+)"/g)].map(m => [m[1], new Element(m[1])])); modal = { markup, options, nodes }; options.onMount({ querySelector: sel => nodes.get(sel.slice(1)) }); },
     closeModal() { modal = null; },
@@ -216,4 +216,15 @@ for (const { role, company, expected } of [
   dom.get('sopChatInputOwner').value = 'How do I use the grinder?';
   await ctx.sendSOPChat('owner');
   assert.deepEqual([...requests[0].system.matchAll(/=== SOP: ([^ ]+)/g)].map(m => m[1]), expected);
+});
+
+test('advertiser sign-in loads only its identity and never all-on staff permissions', async () => {
+  const x = authFixture({ enrolled: false, row: async table => {
+    assert.equal(table, 'admin_users');
+    return { data: { id: 'advertiser-row', auth_user_id: 'staff-a', role: 'advertiser', company: 'PEC' }, error: null };
+  } });
+  await x.ctx.initAuth();
+  assert.equal(x.state.adminUser.role, 'advertiser');
+  assert.ok(Object.values(x.state.adminUser.permissions).every(value => value === false));
+  assert.deepEqual(x.reads, ['admin_users']);
 });

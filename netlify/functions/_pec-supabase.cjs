@@ -90,7 +90,7 @@ async function requireStaff(event, opts) {
   } catch (_) {
     return { ok: false, status: 500, error: 'Authorization check failed' };
   }
-  if (!staff || !staff.id || staff.auth_user_id !== user.id) {
+  if (!staff || !staff.id || staff.auth_user_id !== user.id || staff.role === 'advertiser') {
     return { ok: false, status: 403, error: 'Current staff session required' };
   }
   if (opts && opts.adminOnly && staff.role !== 'admin') {

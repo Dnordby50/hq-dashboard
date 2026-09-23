@@ -1555,7 +1555,7 @@
     {
       "name": "Per-user permissions",
       "area": "platform",
-      "description": "Role and per-view access controls managed in Settings, defaulting all-on with an admin super-role, so each staff account only sees the views it should (Job Costing, Bonus Report, Commission, Catalog, and Settings are admin-only). Staff accounts, roles, and access are added and managed in the Settings Users area. Prompt 54: staff identity now also lives on public.people (one record per person across logins, sales, crew); admin_users remains the auth/RLS record and is mirrored from people by triggers, and a new admin_users row (pec-create-staff) is auto-adopted as a person. Settings > People is the unified surface; Users stays the place for logins, roles, permissions, and password resets. Prompt 57: renderSettingsUsers is retired; role and permission management moved into the person modal's Login section on Settings > People (see 'People directory and birthdays'). Permission semantics are unchanged: missing row = all capabilities, admins are full-access with Finalize costing as the one restrictable capability, saves keep the pre-migration can_finalize_costing retry.",
+      "description": "Role and per-view access controls managed in Settings, defaulting all-on with an admin super-role, so each staff account only sees the views it should (Job Costing, Bonus Report, Commission, Catalog, and Settings are admin-only). Staff accounts, roles, and access are added and managed in the Settings Users area. Prompt 54: staff identity now also lives on public.people (one record per person across logins, sales, crew); admin_users remains the auth/RLS record and is mirrored from people by triggers, and a new admin_users row (pec-create-staff) is auto-adopted as a person. Settings > People is the unified surface; Users stays the place for logins, roles, permissions, and password resets. Prompt 57: renderSettingsUsers is retired; role and permission management moved into the person modal's Login section on Settings > People (see 'People directory and birthdays'). Permission semantics are unchanged: missing row = all capabilities, admins are full-access with Finalize costing as the one restrictable capability, saves keep the pre-migration can_finalize_costing retry. Advertiser (2026-09-23): Settings > People > Add advertiser creates a company-scoped, read-only leads and sales login. Existing logins can select Advertiser in their Login role. The dedicated report shows dated leads, accepted jobs and current contract values with source/campaign counts, pagination and missing-date disclosure. Database staff helpers and owner entitlements explicitly exclude advertisers; own-account todo/ack/permission policies require operational staff. The advertiser RPC validates the current session and company and projects only reporting fields. No raw CRM, operations, finance, communications, or administration access.",
       "code": {
         "indexHtml": [
           "openPersonModal",
@@ -1567,6 +1567,12 @@
         "netlifyFunctions": [
           "pec-create-staff.cjs",
           "pec-reset-password.cjs"
+        ],
+        "files": [
+          "production/advertiser.js",
+          "production/advertiser.css",
+          "production/security-advertiser.test.cjs",
+          "supabase/migrations/20260923213545_advertiser_read_only_access.sql"
         ]
       },
       "tables": [],

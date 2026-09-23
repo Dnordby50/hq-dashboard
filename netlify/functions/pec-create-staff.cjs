@@ -2,9 +2,9 @@
 // Caller must pass their own Supabase JWT as Bearer token; the function verifies
 // the caller is in admin_users with role='admin' before acting.
 // POST /.netlify/functions/pec-create-staff
-// Body: { name, email, password, role? }
+// Body: { name, email, password, role?, company? }
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, requireStaff } = require('./_pec-supabase.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -13,31 +13,23 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
   if (event.httpMethod !== 'POST') return json(405, { error: 'Method not allowed' });
 
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
+  const authHeader = event.headers?.authorization || event.headers?.Authorization || '';
   if (!authHeader.startsWith('Bearer ')) return json(401, { error: 'Missing bearer token' });
-  const jwt = authHeader.slice(7);
 
   let body;
   try { body = JSON.parse(event.body || '{}'); }
   catch { return json(400, { error: 'Invalid JSON' }); }
 
-  const { name, email, password, role } = body;
+  const { name, email, password, role, company = 'both' } = body;
   if (!name || !email || !password) return json(400, { error: 'name, email, password required' });
   if (password.length < 8) return json(400, { error: 'Password must be at least 8 characters' });
-  const newRole = ['admin', 'office', 'pm'].includes(role) ? role : 'office';
+  const newRole = role || 'office';
+  if (!['admin', 'office', 'pm', 'advertiser'].includes(newRole)) return json(400, { error: 'Invalid role' });
+  if (!['PEC', 'FTP', 'both'].includes(company)) return json(400, { error: 'Invalid company' });
 
   try {
-    // 1. Validate caller is admin
-    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${jwt}` },
-    });
-    if (!userRes.ok) return json(401, { error: 'Invalid session' });
-    const caller = await userRes.json();
-
-    const callerAdmin = await sb('GET', `/admin_users?auth_user_id=eq.${caller.id}&select=role&limit=1`);
-    if (!callerAdmin.length || callerAdmin[0].role !== 'admin') {
-      return json(403, { error: 'Admins only' });
-    }
+    const auth = await requireStaff(event, { adminOnly: true });
+    if (!auth.ok) return json(auth.status, { error: auth.error });
 
     // 2. Check email isn't already a staff row
     const existing = await sb('GET', `/admin_users?email=eq.${encodeURIComponent(email)}&select=id&limit=1`);
@@ -65,16 +57,14 @@ exports.handler = async (event) => {
       email,
       name,
       role: newRole,
+      company,
     }, true);
 
-    // 5. Seed an all-on user_permissions row so a new account has every
-    // capability by default (the table's columns all default true, so inserting
-    // just the FK is enough). Best-effort: if the migration is not live yet the
-    // app falls back to all-true in memory anyway, so a failure must not block
-    // staff creation.
+    // Staff keep their existing defaults; advertiser capabilities start false.
+    // Database staff/session helpers deny advertiser access even if seeding fails.
     const newAdminId = inserted[0]?.id;
     if (newAdminId) {
-      try { await sb('POST', '/user_permissions', { admin_user_id: newAdminId }, true); }
+      try { await sb('POST', '/user_permissions', { admin_user_id: newAdminId, ...(newRole === 'advertiser' ? Object.fromEntries(['can_move_pipeline','can_view_job_costing','can_override_status','can_view_commission','can_edit_catalog','can_manage_team','can_manage_settings','can_finalize_costing'].map(k => [k, false])) : {}) }, true); }
       catch (e) { console.warn('pec-create-staff: user_permissions seed failed:', e.message); }
     }
 

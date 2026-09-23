@@ -91,7 +91,7 @@ function harness() {
     document, window, state, console, Set, Promise,
     $: id => document.getElementById(id), esc: value => String(value ?? ''),
     location: { reload() { counters.reloads++; } }, recoverWedgedClient() { counters.recoveries++; },
-    ownerStudio: { sessionChanged() {}, bootstrap: async () => {} },
+    advertiserView: { mount() {}, unmount() {} }, ownerStudio: { sessionChanged() {}, bootstrap: async () => {} },
     deriveAuthShell: () => ({}), setAuthGateState() {}, renderAuthUI() {},
     switchView: view => navigation.push(view),
     fetch: async () => { counters.fetches++; if (gates.fetch) await gates.fetch; return { ok: true, json: async () => [{ id: 'synthetic-update', title: 'A readable update', summary: 'Synthetic regression content.' }] }; },

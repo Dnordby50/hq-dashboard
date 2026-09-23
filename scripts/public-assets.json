@@ -12,6 +12,8 @@
     "production/owner-mbp-ui.js",
     "production/owner-routine.js",
     "production/owner-finance.js",
-    "production/owner-finance-ui.js"
+    "production/owner-finance-ui.js",
+    "production/advertiser.js",
+    "production/advertiser.css"
   ]
 }

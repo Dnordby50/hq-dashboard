@@ -2111,6 +2111,7 @@ body.pec-portal-mode{background:#f2f3f6!important;color:#14181c!important;font-f
 @media(max-width:600px){body.pec-portal-mode{padding:10px!important}#customerPortalRoot .tc-sidebar{min-height:0}#customerPortalRoot .tc-brand{display:flex;padding-bottom:14px}#customerPortalRoot .tc-brand-name{font-size:16px;max-width:185px}#customerPortalRoot .tc-nav-button svg{height:16px;width:16px}#customerPortalRoot .tc-record-inner .tc-record-actions{flex-direction:row;align-items:center}#customerPortalRoot .tc-invoice-metrics{gap:15px 24px}#customerPortalRoot .tc-project-row{align-items:flex-start;flex-wrap:wrap}#customerPortalRoot .tc-referral-row{flex-wrap:wrap}#customerPortalRoot .pec-row-2{grid-template-columns:1fr}#customerPortalRoot .pec-field input,#customerPortalRoot .pec-field select{font-size:16px}#customerPortalRoot .pec-btn{min-height:44px}#customerPortalRoot .pec-card{padding:18px;border-radius:13px}#customerPortalRoot .pec-portal-foot{display:block}#customerPortalRoot .pec-portal-foot span{display:block}#customerPortalRoot .tc-project-documents .tc-project-row{display:block}#customerPortalRoot .tc-project-documents .tc-button{margin-top:12px}#customerPortalRoot .tc-alert .tc-amount{font-size:23px}}
 
 </style>
+<link rel="stylesheet" href="production/advertiser.css">
 </head>
 <body>
 
@@ -3521,6 +3522,7 @@ setInterval(() => { if (appShellInitialized) refreshAll(false); }, 5 * 60 * 1000
 <link rel="stylesheet" href="./production/owner-studio.css">
 <script type="module">
 import { createOwnerStudio } from './production/owner-studio.js';
+import { createAdvertiserView } from './production/advertiser.js';
 const { createClient } = window.supabase;
 
 const CFG = window.CONFIG || {};
@@ -3804,6 +3806,7 @@ function isAdmin() {
 // defaults every capability to true when no row exists, so this is fail-open for
 // existing users until an admin unchecks something).
 function can(capability) {
+  if (state.adminUser?.role === 'advertiser') return false;
   return isAdmin() || !!(state.adminUser && state.adminUser.permissions && state.adminUser.permissions[capability]);
 }
 
@@ -4911,6 +4914,7 @@ const state = {
   apptView: 'dayGridMonth', apptDate: null, openAppointmentId: null,
 };
 window.pecState = state;
+const advertiserView = createAdvertiserView({ supabase, getUser: () => state.adminUser, signOut: async () => { pecClearAuthIdentity(); renderGlobalAuthGate(); await supabase.auth.signOut(); } });
 const ownerStudio = createOwnerStudio({
   getSession: () => state.session,
   onAccess: allowed => {
@@ -4968,6 +4972,8 @@ function pecClearAuthIdentity() {
   _pecAuthEpoch++;
   if (_pecMfaCancel) _pecMfaCancel();
   state.session = null; state.adminUser = null;
+  // Remove advertiser data synchronously on logout or account replacement.
+  advertiserView.unmount();
   // Revoke the embedded editor's identity before any asynchronous sign-out.
   document.querySelectorAll('iframe.pec-estimator-frame, iframe.pec-estimator-inline').forEach(frame => {
     try { frame.contentWindow?.postMessage({ type: 'pec-auth-cleared' }, location.origin); } catch (_) {}
@@ -5032,7 +5038,7 @@ async function initAuth() {
   wireAuthListener();
   if (!result?.error && result?.data?.session) await pecAcceptAuthSession(result.data.session, epoch);
   // Run only after verified sign-in; it can read staff scheduling records.
-  if (state.adminUser) runScheduleStatusSync();
+  if (state.adminUser && state.adminUser.role !== 'advertiser') runScheduleStatusSync();
 }
 
 async function resolveAdminUser() {
@@ -5068,6 +5074,10 @@ async function resolveAdminUser() {
   // lets a user read only their own row. If the row (or the table, pre-migration)
   // is missing, default EVERY capability to true so nobody is locked out before
   // the backfill runs. Admins ignore this anyway (isAdmin() is a super-role).
+  if (state.adminUser?.role === 'advertiser') {
+    state.adminUser.permissions = Object.fromEntries(PERMS_KEYS.map(key => [key, false]));
+    return;
+  }
   if (state.adminUser) {
     state.adminUser.permissions = PERMS_ALL_TRUE();
     try {
@@ -5293,6 +5303,7 @@ async function pecMfaLoginChallenge(isCurrent = () => true) {
 }
 
 function renderAuthUI() {
+  if (state.adminUser?.role === 'advertiser') { advertiserView.mount(); return; }
   // Boot diagnostics for the blank-CRM bug. Cowork's 2026-05-24 diagnosis
   // ruled out the "switchView throws" and "pecViewRoot is null" hypotheses;
   // they confirmed in their repro that pecViewRoot was MOUNTED but never got
@@ -6106,6 +6117,12 @@ function setAuthGateState(stateName) {
 // owner/employee shell. Called after initAuth() and on every auth change.
 // Mirrors renderAuthUI's session/pending/approved branches but at the app level.
 function renderGlobalAuthGate() {
+  if (state.session && state.adminUser?.role === 'advertiser') {
+    setAuthGateState('hidden');
+    advertiserView.mount();
+    return;
+  }
+  advertiserView.unmount();
   syncWhatsNewSession();
   ownerStudio.sessionChanged();
   console.log('[crm] global auth gate', { hasSession: !!state.session, hasAdmin: !!state.adminUser });
@@ -6401,6 +6418,7 @@ window.addEventListener('popstate', (e) => {
 // View switching
 // ============================================================
 function switchView(v) {
+  if (state.adminUser?.role === 'advertiser') { advertiserView.mount(); return; }
   if (v !== 'owner-studio' && ownerStudio.due()) v = 'owner-studio';
   // A blocked navigation must not erase in-progress morning answers by
   // replacing the same owner's DOM with a spinner and saved responses.
@@ -17288,7 +17306,7 @@ function openResetPasswordForm(t) {
 function openTeamForm(t, opts = {}) {
   const isNew = !t;
   openModal(`
-    <h3>${isNew ? (opts.name ? 'Create login' : 'Add Staff') : 'Edit Staff'}</h3>
+    <h3>${isNew ? (opts.role === 'advertiser' ? 'Add advertiser' : opts.name ? 'Create login' : 'Add Staff') : 'Edit Staff'}</h3>
     ${isNew ? `<p style="font-size:.8rem;color:var(--muted);margin-bottom:10px">
       Creates a sign-in account for this person. They can change their password later via "Forgot password?" on the sign-in screen.
     </p>` : ''}
@@ -17301,8 +17319,15 @@ function openTeamForm(t, opts = {}) {
           <option value="office" ${t?.role==='office'?'selected':''}>Office</option>
           <option value="pm" ${t?.role==='pm'?'selected':''}>PM</option>
           <option value="admin" ${t?.role==='admin'?'selected':''}>Admin</option>
+          <option value="advertiser" ${(t?.role || opts.role)==='advertiser'?'selected':''}>Advertiser (leads and sales, view only)</option>
         </select>
       </div>
+      <div class="pec-field"><label>Company access</label><select name="company">
+        <option value="PEC" ${(t?.company || opts.company)==='PEC'?'selected':''}>Prescott Epoxy</option>
+        <option value="FTP" ${(t?.company || opts.company)==='FTP'?'selected':''}>Finishing Touch</option>
+        <option value="both" ${!(t?.company || opts.company) || (t?.company || opts.company)==='both'?'selected':''}>Both companies</option>
+      </select></div>
+      <p style="font-size:.8rem;color:var(--muted)">Advertisers can only view leads, sales and source/campaign results for their selected companies. They cannot edit records or access other TopCoat areas.</p>
       <div id="pecTeamErr" style="color:var(--danger);font-size:.8rem;min-height:18px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
@@ -17314,6 +17339,9 @@ function openTeamForm(t, opts = {}) {
       e.preventDefault();
       const errEl = modal.querySelector('#pecTeamErr');
       errEl.textContent = '';
+      const submit = e.target.querySelector('[type=submit]');
+      if (submit.disabled) return;
+      submit.disabled = true;
       const body = Object.fromEntries(new FormData(e.target));
       try {
         if (isNew) {
@@ -17331,13 +17359,13 @@ function openTeamForm(t, opts = {}) {
             return;
           }
         } else {
-          const { error } = await supabase.from('admin_users').update({ name: body.name, role: body.role }).eq('id', t.id);
+          const { error } = await supabase.from('admin_users').update({ name: body.name, role: body.role, company: body.company }).eq('id', t.id);
           if (error) { errEl.textContent = error.message; return; }
         }
       } catch (err) {
         errEl.textContent = 'Save failed: ' + err.message;
         return; // do not close on error so user can retry
-      }
+      } finally { submit.disabled = false; }
       closeModal();
       // opts.onCreated (prompt 57 Part H): the person modal's Create-login
       // flow links the fresh admin_users row back to its person before the
@@ -22688,7 +22716,7 @@ async function renderSettingsPeople() {
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_sales_team_members').select('*'),
     supabase.from('pec_prod_crew_members').select('*'),
-    supabase.from('admin_users').select('id,name,email,role,auth_user_id,login_revoked_at,login_revoked_by').order('name'),
+    supabase.from('admin_users').select('id,name,email,role,company,auth_user_id,login_revoked_at,login_revoked_by').order('name'),
     supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days', 'login_revoked_poll_seconds', 'booking_require_google_connected']),
     isLoginAdmin ? supabase.from('user_permissions').select('*') : Promise.resolve({ data: [] }),
     isLoginAdmin ? supabase.from('sign_in_log').select('email,ip_address,user_agent,signed_in_at').order('signed_in_at', { ascending: false }).limit(20) : Promise.resolve({ data: [] }),
@@ -22721,7 +22749,7 @@ async function renderSettingsPeople() {
   // the public. Default block without a connected Google Calendar.
   const bookingRequireGoogle = String(settingsMap.booking_require_google_connected == null ? 'true' : settingsMap.booking_require_google_connected) !== 'false';
   const suggestions = pecPeopleMergeSuggestions(people, dismissed);
-  const noBirthday = people.filter(p => p.active !== false && (p.birth_month == null || p.birth_day == null));
+  const noBirthday = people.filter(p => adminById[p.admin_user_id]?.role !== 'advertiser' && p.active !== false && (p.birth_month == null || p.birth_day == null));
 
   root.innerHTML = `
     ${settingsTabBar('people')}
@@ -22758,11 +22786,12 @@ async function renderSettingsPeople() {
       <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Month and day only, no year. Click Edit on a row to set it. Reminders (dashboard banner + bell for everyone) fire ${esc(settingsMap.birthday_reminder_lead_days || '7')} days out.</div>
     </div>` : ''}
     <div class="pec-card">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px">
         <div style="flex:1">
           <h3 style="margin:0">People</h3>
           <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Everyone once, whatever mix of roles they hold. Edits here write through to Users, Sales Team, and Team Members automatically. Wage, crew, and commission % are edited inline below and live on the same records the Bonus Report, schedule, and Commission view read.</div>
         </div>
+        <button class="pec-btn sm" id="pecAdvertiserAddBtn">+ Add advertiser</button>
         <button class="pec-btn primary sm" id="pecPersonAddBtn">+ Add person</button>
       </div>
       <div class="pec-table-wrap"><table class="pec-table">
@@ -22834,6 +22863,7 @@ async function renderSettingsPeople() {
       if (w.error) throw w.error;
     } catch (err) { showToast('Could not save the interval: ' + (err.message || err), { ttl: 6000 }); }
   });
+  $('pecAdvertiserAddBtn').addEventListener('click', () => openTeamForm(null, { role: 'advertiser', company: 'PEC' }));
   $('pecPersonAddBtn').addEventListener('click', () => openPersonModal(null));
   root.querySelectorAll('[data-person-edit]').forEach(b => b.addEventListener('click', () => {
     openPersonModal(b.closest('tr[data-person-id]').dataset.personId);
@@ -23054,6 +23084,7 @@ function openPersonModal(personId) {
             <option value="office" ${au.role === 'office' ? 'selected' : ''}>Office</option>
             <option value="pm" ${au.role === 'pm' ? 'selected' : ''}>PM</option>
             <option value="admin" ${au.role === 'admin' ? 'selected' : ''}>Admin</option>
+            <option value="advertiser" ${au.role === 'advertiser' ? 'selected' : ''}>Advertiser (view only)</option>
           </select>
         </div>
         <div class="pec-field" style="align-self:end">
@@ -23063,6 +23094,13 @@ function openPersonModal(personId) {
         </div>
       </div>
       <div style="font-size:.7rem;color:var(--muted);margin-bottom:2px">Permissions <span style="text-transform:none">(saved with this person; the user sees changes on their next load)</span></div>
+      <div data-perms-advertiser><p>View-only leads and sales. All other access is blocked.</p>
+        <div class="pec-field"><label>Company access</label><select id="personAdvertiserCompany">
+          <option value="PEC" ${au.company === 'PEC'?'selected':''}>Prescott Epoxy</option>
+          <option value="FTP" ${au.company === 'FTP'?'selected':''}>Finishing Touch</option>
+          <option value="both" ${au.company === 'both'?'selected':''}>Both companies</option>
+        </select></div>
+      </div>
       ${permsStaffHtml}
       ${permsAdminHtml}` : `
       ${existing ? '<button type="button" class="pec-btn sm primary" id="personCreateLogin">Create login</button> <span style="color:var(--muted);font-size:.72rem">makes a sign-in account for this person and links it here</span>' : ''}`}
@@ -23129,7 +23167,10 @@ function openPersonModal(personId) {
       const isAdminRole = roleSel && roleSel.value === 'admin';
       const staffBlk = modal.querySelector('[data-perms-staff]');
       const adminBlk = modal.querySelector('[data-perms-admin]');
-      if (staffBlk) staffBlk.style.display = isAdminRole ? 'none' : '';
+      const isAdvertiser = roleSel?.value === 'advertiser';
+      const advertiserBlk = modal.querySelector('[data-perms-advertiser]');
+      if (advertiserBlk) advertiserBlk.style.display = isAdvertiser ? '' : 'none';
+      if (staffBlk) staffBlk.style.display = isAdminRole || isAdvertiser ? 'none' : '';
       if (adminBlk) adminBlk.style.display = isAdminRole ? '' : 'none';
     };
     if (roleSel) { syncPermBlocks(); roleSel.addEventListener('change', syncPermBlocks); }
@@ -23224,15 +23265,17 @@ function openPersonModal(personId) {
           // at open time), never to a just-relinked one.
           if (au && roleSel) {
             const newRole = roleSel.value;
-            if (newRole !== au.role) {
+            if (newRole === 'advertiser' && au.id === state.adminUser?.id) throw new Error('Ask another admin to change your own login to Advertiser.');
+            if (newRole !== au.role || newRole === 'advertiser') {
               const adminCount = (state.peopleAdminUsers || []).filter(u => u.role === 'admin').length;
               if (au.role === 'admin' && newRole !== 'admin' && adminCount <= 1) throw new Error('Cannot demote the last admin.');
-              const r = await withFreshWrite(() => supabase.from('admin_users').update({ role: newRole }).eq('id', au.id), { label: 'person-login-role' });
+              const r = await withFreshWrite(() => supabase.from('admin_users').update({ role: newRole, ...(newRole === 'advertiser' ? { company: modal.querySelector('#personAdvertiserCompany').value } : {}) }).eq('id', au.id), { label: 'person-login-role' });
               if (r.error) throw r.error;
             }
             const permBlock = modal.querySelector(newRole === 'admin' ? '[data-perms-admin]' : '[data-perms-staff]');
             const row = { admin_user_id: au.id };
-            (permBlock ? permBlock.querySelectorAll('[data-person-perm]') : []).forEach(cb => { row[cb.dataset.personPerm] = cb.checked; });
+            if (newRole === 'advertiser') for (const key of PERMS_KEYS) row[key] = false;
+            (permBlock && newRole !== 'advertiser' ? permBlock.querySelectorAll('[data-person-perm]') : []).forEach(cb => { row[cb.dataset.personPerm] = cb.checked; });
             if (Object.keys(row).length > 1) {
               let { error: pe } = await supabase.from('user_permissions').upsert(row, { onConflict: 'admin_user_id' });
               // Deploy-order safety (same as the old Users grid): before the

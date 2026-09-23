@@ -79,3 +79,9 @@ test('missing bearer token does not make network requests', async () => {
   assert.equal((await helper.requireStaff({ headers: {} })).status, 401);
   assert.equal(calls.length, 0);
 });
+
+test('advertiser identity never grants operational server access', async () => {
+  const { helper } = fixture({ staff: { id: 'fixture-staff', auth_user_id: 'fixture-user', role: 'advertiser' } });
+  assert.equal((await helper.requireStaff(event)).status, 403);
+  assert.equal((await helper.requireStaff(event, { adminOnly: true })).status, 403);
+});
