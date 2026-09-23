@@ -1,3 +1,10 @@
+## [2026-09-23 13:45 MST] leads: Perstrive Meta lead source added; Zapier intake staged for partner meeting
+By: Cowork
+
+Changed: inserted pec_lead_sources row 'Perstrive Meta' (id e6018c54-8b60-485c-995c-cd41cbacc070, aliases perstrive_meta, perstrive, active). Perstrive (ad partner running Meta ads for PEC) will push leads Perstrive -> Zapier Catch Hook -> POST pec-lead-intake with source 'perstrive_meta'. Dylan chose Zapier in the middle so PEC_WEBHOOK_SECRET (shared with the DripJobs webhooks) is never handed to an outside vendor. PEC-only confirmed, so the hardcoded brand 'PEC' in pec-lead-intake is fine. No code change.
+Not done: the Zap itself. The built-in browser was signed out of Zapier; waiting on Dylan to sign in. Field mapping cannot be written until Perstrive sends one test lead to the Catch Hook (same blocker pattern as the Angi zap 377216775).
+Next: build Zap (Catch Hook -> Webhooks POST, Json, source=perstrive_meta, x-webhook-secret header), hand the Catch Hook URL to Perstrive, fire one test lead, map full_name/phone/email/address/city/state/zip/notes/source_ref (their lead id), then publish.
+
 ## [2026-09-23 10:36 MST] quo: prompt 107, push lead/customer names to Quo contacts (migration applied live; backfill dry run pending)
 By: Claude Code
 
