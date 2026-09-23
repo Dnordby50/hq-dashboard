@@ -1,3 +1,8 @@
+## [2026-09-23 09:09 MST] sales: restore exact-proposal historical booking date
+By: Codex
+
+Continued the authorized historical audit. Recovered one additional missing signed_date from the exact linked DripJobs proposal Activity Log (accepted and customer signed April 26, 2026). Applied the existing idempotent date-only repair pattern with reviewed customer/job/external-proposal identity, current price precondition, row lock, source hash and full before/after audit. Live readback verified every other job field unchanged. Missing booking dates decreased from 10 to 9; all other unresolved historical issues remain open. Source amount and completion-date discrepancies were preserved for review, not guessed or changed. Private reviewed SQL and evidence remain outside the public build. No application code changed.
+
 ## [2026-09-22 19:15 MST] sales: verify historical first-send release live
 By: Codex
 
