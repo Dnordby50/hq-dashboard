@@ -3770,6 +3770,13 @@
           "name": "leads_customer_brand_truth_idx"
         }
       ]
+    },
+    {
+      "file": "20260923020511_historical_first_send_confirmations.sql",
+      "date": null,
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
     }
   ],
   "knownTables": [
@@ -3812,6 +3819,7 @@
     "pec_email_log",
     "pec_email_senders",
     "pec_email_templates",
+    "pec_estimate_first_send_confirmations",
     "pec_estimate_first_sends",
     "pec_estimate_line_templates",
     "pec_estimate_send_attempts",

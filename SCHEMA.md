@@ -133,6 +133,13 @@ Note (2026-09-22): action `historical_booking_date`, entity_type `jobs`, records
 Note (2026-09-21): entity_type 'pec_appointments' rows are written by the trigger trg_pec_appointments_audit (see pec_appointments); admin_email holds the ACTOR LABEL for those rows (a staff name, or 'Customer (online booking)', 'Customer via manage link', 'Routemize booking', 'Google Calendar sync', 'System'), auth_user_id the staff uid when there was one, after_json the changed tracked fields plus actor_label / source / title. Partial index idx_audit_log_appointments (entity_id, created_at desc) where entity_type = 'pec_appointments'.
 Security update (2026-09-14): `pec_payment_audit` writes payment_insert/payment_update/payment_delete events with entity_type='pec_payments', payment id, complete before/after payment snapshots, and JWT actor attribution when present. The payment and audit event share a transaction; audit failure rolls back the payment. No-op updates do not add events. Browser audit UPDATE/DELETE remain revoked.
 
+### pec_estimate_first_send_confirmations
+RLS: enabled. No anon/authenticated privileges or policies. Service role SELECT/INSERT only; UPDATE/DELETE revoked. Owner reporting reads through its existing authorization-gated server endpoint.
+
+Columns: estimate_id uuid PK/FK estimates(id), brand text PEC/FTP, first_sent_on date, confirmed_by text, evidence_ref text, confirmed_at timestamptz default now(). Legacy owner testimony is kept separate from provider receipts; no channel or time-of-day is inferred. Applied 2026-09-22 Arizona, migration 20260923020511_historical_first_send_confirmations.sql. Three explicit owner confirmations inserted and audit-linked; readback verified original proposal rows unchanged. Adapter rejects contradictory earlier receipts and dates before proposal creation.
+
+Audit additions: `historical_first_send_confirmed` records original estimate snapshot and confirmed date; `historical_completion_date` records five completed-date repairs. Original five completion audit rows used `after_json.source` as evidence metadata; live job source and all other non-date columns were verified unchanged against before_json. Future emitter uses evidence_source so snapshot source stays intact.
+
 ### colors
 RLS: enabled · rows: 21
 

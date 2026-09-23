@@ -13,7 +13,7 @@ function sourceDb(sources={},failure){
     return rows.slice(offset,offset+limit);
   };
 }
-const base=()=>({leads:[{id:'lead0',created_at:'2026-08-01T15:00:00Z'},{id:'lead',customer_id:'customer',created_at:'2026-09-14T15:00:00Z'}],customers:[{id:'customer',name:'Synthetic contact',created_at:'2026-09-14T15:00:00Z'}],estimates:[estimate,{id:'old',created_at:'2026-08-01T12:00:00Z'}],pec_estimate_first_sends:[{estimate_id:'old',first_sent_at:'2026-08-01T15:00:00Z',channel:'email'}],pec_email_log:[email('first','2026-09-14T15:30:00Z')],pec_sms_log:[],pec_estimate_send_attempts:[]});
+const base=()=>({leads:[{id:'lead0',created_at:'2026-08-01T15:00:00Z'},{id:'lead',customer_id:'customer',created_at:'2026-09-14T15:00:00Z'}],customers:[{id:'customer',name:'Synthetic contact',created_at:'2026-09-14T15:00:00Z'}],estimates:[{...estimate},{id:'old',created_at:'2026-08-01T12:00:00Z'}],pec_estimate_first_sends:[{estimate_id:'old',first_sent_at:'2026-08-01T15:00:00Z',channel:'email'}],pec_email_log:[email('first','2026-09-14T15:30:00Z')],pec_sms_log:[],pec_estimate_send_attempts:[]});
 const load=(data=base(),failure)=>fetchSalesMetrics({db:sourceDb(data,failure),start:'2026-01-01',until:'2026-09-23T07:00:00Z'});
 test('first send is across all history before date filtering; email/text/resends count once',()=>{
   const recovered=recoverFirstSends({estimates:[estimate],firstSends:[],emails:[email('first','2026-09-14T15:30:00Z'),email('resend','2026-09-22T15:00:00Z')],sms:[text('both','2026-09-14T15:31:00Z')]});
@@ -90,4 +90,30 @@ test('source adapter reads actual communication company keys and does not filter
   await fetchSalesMetrics({db:async path=>{paths.push(path);return db(path);},start:'2026-01-01',until:'2026-09-23T07:00:00Z'});
   for(const source of ['pec_email_log','pec_sms_log'])assert.match(paths.find(p=>p.startsWith(`/${source}?`)),/brand=in\.\(PEC,prescott-epoxy\)/);
   const estimates=paths.find(p=>p.startsWith('/estimates?'));assert.doesNotMatch(estimates,/status=|deleted_at=/);
+});
+test('owner-confirmed legacy dates count once without inventing timestamps or channels',async()=>{
+ const data=base();data.estimates[0].created_at='2026-08-01T15:00:00Z';
+ data.pec_estimate_first_send_confirmations=[{estimate_id:estimate.id,first_sent_on:'2026-08-08'}];
+ const source=await load(data),row=source.firstSends.find(r=>r.estimate_id===estimate.id);
+ assert.equal(row.first_sent_at,null);assert.equal(row.channel,null);assert.equal(row.evidence,'owner_confirmation');
+ assert.equal(source.unresolved.length,0);
+ assert.equal(salesWeek(source,'2026-08-02','2026-08-08').estimates.length,1);
+ assert.equal(salesWeek(source,'2026-08-09','2026-08-15').estimates.length,0);
+ assert.equal(salesWeek(source,'2026-09-13','2026-09-19').estimates.length,0);
+});
+test('confirmation clears missing receipt and deleted proposal history; future resends cannot move it',async()=>{
+ const data=base();data.pec_email_log=[];data.estimates[0].created_at='2026-08-01T15:00:00Z';data.estimates[0].deleted_at='2026-09-22T15:00:00Z';
+ data.pec_estimate_first_send_confirmations=[{estimate_id:estimate.id,first_sent_on:'2026-08-10'}];
+ data.pec_estimate_send_attempts=[{id:'resend',estimate_id:estimate.id,started_at:'2026-09-14T15:00:00Z',status:'pending'}];
+ const source=await load(data);assert.equal(source.unresolved.length,0);
+ assert.equal(salesWeek(source,'2026-08-09','2026-08-15').available.estimates,true);
+ assert.equal(salesWeek(source,'2026-08-09','2026-08-15').estimates.length,1);
+ assert.equal(salesWeek(source,'2026-09-13','2026-09-19').pending.length,0);
+});
+test('confirmation conflicting with earlier delivery or proposal creation remains unresolved',async()=>{
+ for(const day of ['2026-09-15','2026-09-01']){
+  const data=base();data.pec_estimate_first_send_confirmations=[{estimate_id:estimate.id,first_sent_on:day}];
+  const source=await load(data);assert.ok(source.unresolved.length);assert.equal(salesWeek(source,'2026-09-13','2026-09-19').available.estimates,false);
+ }
+ const source=await load(base(),'pec_estimate_first_send_confirmations');assert.equal(source.estimatesAvailable,false);
 });

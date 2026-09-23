@@ -1,5 +1,15 @@
 [
   {
+    "id": "historical-first-send-confirmations",
+    "date": "2026-09-22",
+    "title": "Confirmed historical proposal dates stay in the right week.",
+    "summary": "Sales Plan now includes owner-confirmed first-send dates when older delivery records are incomplete. Each proposal still counts once.",
+    "howto": [
+      "Refresh PEC values in Growth and Development. Resending a confirmed proposal does not move it into a later week.",
+      "Dates that conflict with recorded delivery evidence remain unverified for review."
+    ]
+  },
+  {
     "id": "sales-sunday-saturday-weeks",
     "date": "2026-09-22",
     "title": "Sales reporting weeks run Sunday through Saturday.",

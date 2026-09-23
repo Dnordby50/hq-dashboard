@@ -2,6 +2,8 @@
 const DAY=86400000;
 const phoenixDay=value=>new Date(Date.parse(value)-7*3600000).toISOString().slice(0,10);
 const validTime=value=>typeof value==='string'&&Number.isFinite(Date.parse(value));
+const validDay=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&validTime(value)&&new Date(value).toISOString().slice(0,10)===value;
+const sendDay=row=>row.first_sent_on||(validTime(row.first_sent_at)?phoenixDay(row.first_sent_at):null);
 async function allRows(db,path,order='id'){
   const result=[];
   for(let offset=0;offset<10000;offset+=1000){
@@ -33,7 +35,7 @@ function messageEstimateIds(body,byToken){
   }
   return ids;
 }
-function recoverFirstSends({estimates,firstSends,emails,sms,trackingStartedAt=null}){
+function recoverFirstSends({estimates,firstSends,emails,sms,confirmations=[],trackingStartedAt=null}){
   const byId=new Map(estimates.map(row=>[row.id,row]));
   const byToken=new Map(estimates.filter(row=>row.public_token).map(row=>[row.public_token,row.id]));
   const records=new Map();
@@ -49,15 +51,32 @@ function recoverFirstSends({estimates,firstSends,emails,sms,trackingStartedAt=nu
   for(const row of sms)if(row.quo_message_id&&row.direction==='out'&&!['failed','queued','received'].includes(row.status)){
     for(const id of messageEstimateIds(row.body,byToken))add(id,row.created_at,'sms','sms_receipt');
   }
+  const conflicts=[];
+  for(const row of confirmations){
+    const estimate=byId.get(row.estimate_id),receipt=records.get(row.estimate_id);
+    if(!estimate||!validDay(row.first_sent_on))continue;
+    const created=validTime(estimate.created_at)?phoenixDay(estimate.created_at):null;
+    const receiptDay=receipt?sendDay(receipt):null;
+    // Contradictory earlier delivery evidence must remain visible for reconciliation.
+    if((created&&row.first_sent_on<created)||(receiptDay&&receiptDay<row.first_sent_on)){
+      conflicts.push({estimate_id:row.estimate_id,estimate_number:estimate.estimate_number,
+        from:[created,receiptDay,row.first_sent_on].filter(Boolean).sort()[0],
+        through:[created,receiptDay,row.first_sent_on].filter(Boolean).sort().at(-1)});
+      continue;
+    }
+    records.set(row.estimate_id,{estimate_id:row.estimate_id,estimate_number:estimate.estimate_number,
+      first_sent_on:row.first_sent_on,first_sent_at:null,channel:null,evidence:'owner_confirmation'});
+  }
   // A sent stamp without a receipt can be an on-site presentation or missing history.
   // Never silently substitute the mutable most-recent-send date for the first send.
-  const unresolved=estimates.filter(row=>row.sent_at&&!records.has(row.id)).map(row=>({
+  const unresolved=conflicts.concat(estimates.filter(row=>row.sent_at&&!records.has(row.id)).map(row=>({
     estimate_id:row.id,estimate_number:row.estimate_number,
     from:validTime(row.created_at)?phoenixDay(row.created_at):'0000-01-01',
     through:validTime(row.sent_at)?phoenixDay(row.sent_at):'9999-12-31',
-  }));
+  })));
   const weekStart=value=>{const date=phoenixDay(value),stamp=Date.parse(`${date}T00:00:00Z`);return new Date(stamp-new Date(stamp).getUTCDay()*DAY).toISOString().slice(0,10);};
   for(const record of records.values()){
+    if(record.evidence==='owner_confirmation')continue;
     const estimate=byId.get(record.estimate_id);
     const created=estimate?.created_at;
     const fullyTracked=record.evidence==='first_send_record'&&validTime(created)&&validTime(trackingStartedAt)&&Date.parse(created)>=Date.parse(trackingStartedAt);
@@ -80,14 +99,15 @@ async function fetchSalesMetrics({db,start,until}){
     allRows(db,`/pec_email_log?select=id,sent_at,status,resend_id,body_html&brand=in.(PEC,prescott-epoxy)&template_key=eq.estimate&resend_id=not.is.null&sent_at=lt.${until}`),
     allRows(db,`/pec_sms_log?select=id,created_at,status,direction,quo_message_id,body&brand=in.(PEC,prescott-epoxy)&kind=eq.estimate&direction=eq.out&quo_message_id=not.is.null&created_at=lt.${until}`),
     allRows(db,`/pec_estimate_send_attempts?select=id,estimate_id,started_at,status&brand=eq.PEC&started_at=lt.${until}`),
+    allRows(db,`/pec_estimate_first_send_confirmations?select=estimate_id,first_sent_on&brand=eq.PEC`,'estimate_id'),
   ]);
   const ok=index=>results[index].status==='fulfilled';
   const rows=index=>ok(index)?results[index].value:[];
   const leads=canonicalLeads(rows(0)),linked=new Set(rows(0).filter(r=>r.customer_id&&!r.deleted_at).map(r=>r.customer_id));
   const missingLeads=rows(1).filter(row=>!linked.has(row.id));
-  const estimatesAvailable=[2,3,4,5,6].every(ok);
+  const estimatesAvailable=[2,3,4,5,6,7].every(ok);
   const trackingStartedAt=rows(6).map(row=>row.started_at).filter(validTime).sort()[0]||null;
-  const recovered=recoverFirstSends({estimates:rows(2),firstSends:rows(3),emails:rows(4),sms:rows(5),trackingStartedAt});
+  const recovered=recoverFirstSends({estimates:rows(2),firstSends:rows(3),emails:rows(4),sms:rows(5),confirmations:rows(7),trackingStartedAt});
   const pending=rows(6).filter(row=>row.status==='pending');
   const warnings=[];
   if(!ok(0)||!ok(1))warnings.push('PEC lead data could not be refreshed. Existing entries were retained.');
@@ -97,20 +117,20 @@ async function fetchSalesMetrics({db,start,until}){
   if(recovered.unresolved.length)warnings.push(`${recovered.unresolved.length} older proposal(s) lack complete first-send evidence. Affected historical weeks remain unverified.`);
   return {leads,missingLeads,firstSends:recovered.records,unresolved:recovered.unresolved,pending,
     leadsAvailable:ok(0)&&ok(1),estimatesAvailable,warnings,
-    coverageStarts:{leads:firstFullSunday(leads.map(r=>r.created_at).sort()[0]),estimates:firstFullSunday(recovered.records.map(r=>r.first_sent_at).sort()[0])}};
+    coverageStarts:{leads:firstFullSunday(leads.map(r=>r.created_at).sort()[0]),estimates:firstFullSunday(recovered.records.map(r=>sendDay(r)+'T07:00:00Z').sort()[0])}};
 }
 function salesWeek(source,start,end){
   const within=value=>validTime(value)&&phoenixDay(value)>=start&&phoenixDay(value)<=end;
   const leads=source.leads.filter(row=>within(row.created_at));
-  const estimates=source.firstSends.filter(row=>within(row.first_sent_at));
+  const estimates=source.firstSends.filter(row=>sendDay(row)>=start&&sendDay(row)<=end);
   const missingLeads=source.missingLeads.filter(row=>within(row.created_at));
   const unresolved=source.unresolved.filter(row=>row.from<=end&&row.through>=start);
   // Pending sends for an already counted proposal are resends, so cannot add a new proposal.
-  const known=new Map(source.firstSends.map(row=>[row.estimate_id,row.first_sent_at]));
+  const known=new Map(source.firstSends.map(row=>[row.estimate_id,row]));
   const pending=source.pending.filter(row=>{
     const first=known.get(row.estimate_id);
-    if(first&&validTime(row.started_at)&&Date.parse(first)<=Date.parse(row.started_at))return false;
-    return (!validTime(row.started_at)||phoenixDay(row.started_at)<=end)&&(!first||phoenixDay(first)>=start);
+    if(first&&validTime(row.started_at)&&(first.first_sent_on?first.first_sent_on<=phoenixDay(row.started_at):Date.parse(first.first_sent_at)<=Date.parse(row.started_at)))return false;
+    return (!validTime(row.started_at)||phoenixDay(row.started_at)<=end)&&(!first||sendDay(first)>=start);
   });
   return {leads,estimates,missingLeads,unresolved,pending,available:{
     leads:source.leadsAvailable&&!!source.coverageStarts.leads&&start>=source.coverageStarts.leads&&!missingLeads.length,

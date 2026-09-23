@@ -1,3 +1,14 @@
+## [2026-09-22 19:15 MST] sales: preserve owner-confirmed historical first-send dates
+By: Codex
+
+Dylan confirmed the three outstanding native proposal first-send dates. Added an immutable service-only confirmation table and a reporting source that uses date-only owner evidence without inventing a receipt, channel, or timestamp. Resends and later deletion do not duplicate or move counts; contradictory earlier receipts keep affected weeks unverified. Migration and all three confirmations applied; readback found all proposal snapshots unchanged.
+
+Also applied five previously missing completion dates from owner-accepted DripJobs schedule ends. Exact reviewed job identities and prices were locked, audited, and read back with zero non-date changes. Private candidate lists and source evidence remain outside the repository/public build. Original five audit after_json snapshots used source for evidence metadata; actual jobs.source was preserved. Corrected emitter metadata to evidence_source and added a regression assertion without rewriting audit history.
+
+Validation: npm test including posttest passed; 17 sales reporting tests passed; isolated PGlite rehearsal verified dry-run, idempotency, audit, identity/conflict rollback and denied client access/service update-delete; seven completion repair rehearsal checks passed. Source syntax/manifests/diff checks recorded with release verification.
+
+Still open: two completion-date choices, remaining missing booking dates and amount discrepancies, historical inquiry backfill, and the requested distinct returning-customer inquiry model. This entry does not certify all historical totals.
+
 ## [2026-09-22 11:20 MST] sales: reconcile booking dates and use Sunday-through-Saturday reporting
 By: Codex
 
