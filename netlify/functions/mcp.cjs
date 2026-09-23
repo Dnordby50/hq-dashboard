@@ -713,9 +713,9 @@ exports.handler = async (event) => {
     if (form.grant_type !== 'client_credentials') {
       return { statusCode: 400, headers: tokenHeaders, body: JSON.stringify({ error: 'unsupported_grant_type' }) };
     }
-    const expectedId = process.env.MCP_OAUTH_CLIENT_ID_V2;
-    const expectedSecret = process.env.MCP_OAUTH_CLIENT_SECRET_V2;
-    const bearer = process.env.MCP_BEARER_TOKEN_V2;
+    const expectedId = String(process.env.MCP_OAUTH_CLIENT_ID_V2 || '').trim();
+    const expectedSecret = String(process.env.MCP_OAUTH_CLIENT_SECRET_V2 || '').trim();
+    const bearer = String(process.env.MCP_BEARER_TOKEN_V2 || '').trim();
     if (!expectedId || !expectedSecret || !bearer) {
       return { statusCode: 503, headers: tokenHeaders, body: JSON.stringify({ error: 'temporarily_unavailable' }) };
     }
@@ -746,12 +746,14 @@ exports.handler = async (event) => {
   // URLs containing the token may land in Netlify access logs; prefer the
   // header where possible, and rotate MCP_BEARER_TOKEN_V2 if the URL leaks.
   const auth = event.headers['authorization'] || event.headers['Authorization'] || '';
-  const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  const queryToken = (event.queryStringParameters && event.queryStringParameters.token) || '';
+  // Trim both sides: a secret pasted into Netlify or a connector URL often
+  // carries a trailing newline or space, which silently broke auth (2026-09-23).
+  const headerToken = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const queryToken = String((event.queryStringParameters && event.queryStringParameters.token) || '').trim();
   const presented = headerToken || queryToken;
   // Deliberately no fallback to the retired credential names. Until replacement
   // credentials are provisioned, external MCP access stays paused.
-  const expected = process.env.MCP_BEARER_TOKEN_V2;
+  const expected = String(process.env.MCP_BEARER_TOKEN_V2 || '').trim();
   if (!expected) {
     return {
       statusCode: 503,
