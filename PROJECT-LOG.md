@@ -1,3 +1,10 @@
+## [2026-09-22 19:15 MST] sales: verify historical first-send release live
+By: Codex
+
+Netlify reports production main@dbb6094 published, deployed in 52 seconds. Authenticated Growth and Development Sales Plan refreshed successfully at 19:13 Arizona. Weekly source details no longer show the three older first-send exceptions; remaining warnings correctly show 10 missing booking dates, 2 missing completion dates and 128 contacts without pipeline leads. Original saved/manual cells remain preserved. Database verification found three immutable confirmations, expected service SELECT/INSERT, no unexpected client or service rewrite/delete access, and unchanged original proposal snapshots.
+
+This closes the confirmed three-proposal correction and five approved schedule-end repairs, not the full historical audit. Two completion choices, remaining booking/amount discrepancies, inquiry backfill and returning-customer request handling remain open.
+
 ## [2026-09-22 19:15 MST] sales: preserve owner-confirmed historical first-send dates
 By: Codex
 
