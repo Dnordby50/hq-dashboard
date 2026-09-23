@@ -337,6 +337,8 @@ Choice group (prompt 106, 2026-09-21): choice_group / is_recommended mirror the 
 Note (2026-08-20): est_hours + sqft are the one-off/add-on line's expected crew hours and square footage (unit_cost is its material budget), the same facts a per-area custom line keeps on estimate_areas (custom_labor_hours / sqft). Recorded for costing honesty, never customer-facing, never priced from. Same migration seeded settings key estimate_line_polish_enabled ('true'): the estimator's Polish with AI button (description cleanup only), separate from estimate_line_generate_enabled which stays 'false'.
 
 ### estimates
+Staff contract acceptance (verified 2026-09-23): existing `signature` JSONB can carry `via='staff_external_contract'`, `accepted_by` (authenticated staff UUID), `recorded_by`, `recorded_at`, `accepted_date`, `contract_reference`, frozen `selected_optional_ids`, `total`, choice and schedule. This is an acceptance audit record, not an e-signature; `signed_name`, `signed_at`, and `signed_ip` remain null. `accepted_at` stores the chosen Arizona business date at midnight; booking records use that date. No columns were added. Migration `staff_contract_acceptance_portal_guard` is applied live: `portal_confirm_job` refuses a second signature for accepted, nondeleted estimates carrying this marker or a real signed_at. Existing ownership, grants, empty search_path and color confirmation are unchanged. Before/after fingerprints matched for all 65 estimates and 120 jobs; no customer records were changed by the migration.
+
 RLS: enabled · rows: 9
 
 | column | type | nullable | default |

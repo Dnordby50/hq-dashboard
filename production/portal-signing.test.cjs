@@ -299,3 +299,13 @@ test('signed estimate link still shows the existing read-only contract and depos
   assert.match(response.body, /href="\/pay\/synthetic-token"/);
   assert.doesNotMatch(response.body, /id="goAccept"|id="openAccept"/);
 });
+
+test('staff external contract acceptance blocks signatures while preserving separate color confirmation', async () => {
+  const h = harness({ type: 'epoxy', estimate_signature: { acceptance_method: 'staff_external_contract', accepted_at: '2026-09-20T07:00:00Z', signed_at: null } }, catalog);
+  await h.render();
+  assert.match(h.root.textContent, /Accepted under your contract/);
+  assert.doesNotMatch(h.root.textContent, /Your signed estimate/);
+  assert.equal(h.root.querySelector('canvas'), null);
+  assert.ok(h.root.textContent.includes('Choose your colors'));
+  assert.equal(h.writes().length, 0);
+});

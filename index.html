@@ -33560,7 +33560,7 @@ async function renderEstimateDetail(estimateId) {
         ` : ''}
         <button class="pec-btn sm" id="estPresent" title="Full-screen on-site presentation: your story, process, photos, and reviews, ending on this estimate. The customer can sign right on your device.">Present</button>
         <button class="pec-btn sm ghost" id="estPrint" title="Print or save the customer proposal as a PDF. Works before sending too.">Print / PDF</button>
-        ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
+        ${est.status === 'accepted' ? (est.signature?.via === 'staff_external_contract' && (!est.job_id || !est.pec_prod_job_id) ? '<button class="pec-btn sm" id="estMarkAccepted">Finish creating job</button>' : '') : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
         ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
         <button class="pec-btn sm ghost" id="estCopyLink" ${est.sent_at ? '' : 'disabled title="The link is private (404) until the estimate is sent. Send it first."'}>Copy link</button>
         ${isArchived
@@ -33747,6 +33747,7 @@ async function renderEstimateDetail(estimateId) {
         <div>
         <div class="pec-card">
           <h3>Customer view</h3>
+          ${est.signature?.via === 'staff_external_contract' ? `<div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;font-size:.85rem"><strong>Accepted under customer's contract</strong><div>Accepted ${esc(est.signature.accepted_date || '')}. Recorded by ${esc(est.signature.recorded_by || 'staff')}.</div><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(est.signature.contract_reference || '')}</div><div style="color:var(--muted)">No customer signature was collected on this proposal.</div></div>` : ''}
           ${!est.sent_at ? `
             <div style="color:var(--muted);font-size:.82rem;line-height:1.5">Not sent yet. The public link stays private (it 404s) until you send the estimate.</div>
           ` : `
@@ -34055,21 +34056,7 @@ async function renderEstimateDetail(estimateId) {
     }
   };
   const acceptBtn = $('estMarkAccepted');
-  if (acceptBtn) acceptBtn.addEventListener('click', async () => {
-    // Prompt 94 C2: the manual accept stamps sold_on_site too (same rule the
-    // public accept runs server-side). Best-effort: a failed derivation
-    // stamps nothing (null = unknown) and never blocks the accept.
-    const acceptedAt = new Date().toISOString();
-    let sos = {};
-    try {
-      const ctx = await pecSoldOnSiteContext(est, acceptedAt);
-      if (ctx.enabled) sos = { sold_on_site: ctx.sold };
-    } catch (_) { /* stamp nothing */ }
-    setStatus(
-      { status: 'accepted', accepted_at: acceptedAt, ...sos },
-      'Mark this estimate accepted? This records the win only; the JOB is created automatically when the customer accepts through their link (Send to customer). For an in-person win, open the sent link on your phone and have them sign there, or add the job manually.',
-    );
-  });
+  if (acceptBtn) acceptBtn.addEventListener('click', () => openStaffEstimateAcceptance(est));
   const lostBtn = $('estMarkLost');
   if (lostBtn) lostBtn.addEventListener('click', () => setStatus({ status: 'lost' }, 'Mark this estimate lost?'));
 
@@ -34403,6 +34390,67 @@ async function pecSoldOnSiteContext(est, acceptedAtIso) {
   return { enabled: true, sold: d.sold, appointment: d.appointment, reason: d.reason };
 }
 // Browser mirror of production/estimate-send-readiness.cjs, covered by parity tests.
+// Staff records an external contract; this never signs the customer's name.
+async function openStaffEstimateAcceptance(est) {
+  if (!(await flushEstimateBeforeSend(est))) return;
+  let fresh;
+  try {
+    const result = await supabase.from('estimates').select('*,estimate_line_items(*)').eq('id', est.id).is('deleted_at', null).single();
+    if (result.error || !result.data) throw result.error || new Error('Proposal not found.');
+    fresh = result.data;
+  } catch (err) { showToast('Could not load proposal: ' + (err.message || err), { ttl: 5000 }); return; }
+  const items = fresh.estimate_line_items || [];
+  const recovering = fresh.status === 'accepted';
+  const choices = estChoiceLines(items);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const rowHtml = li => `<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere">${estChoiceKey(li) ? `<input type="radio" style="width:auto;flex:none;margin-top:3px" name="staffAcceptChoice" value="${esc(li.id)}" ${String(fresh.choice_picked_line_id) === String(li.id) ? 'checked' : ''}>` : estLineOptional(li) ? `<input type="checkbox" style="width:auto;flex:none;margin-top:3px" data-accept-optional value="${esc(li.id)}" ${li.selected_by_customer ? 'checked' : ''}>` : '<span aria-hidden="true">✓</span>'}<span style="flex:1;min-width:0">${esc(li.label || 'Line item')}</span><strong style="white-space:nowrap">${fmtMoney(Number(li.total) || 0)}</strong></label>`;
+  openModal(`<form id="staffAcceptForm">
+    <h3 style="margin-top:0">Accept on behalf of customer</h3>
+    <p style="color:var(--muted);font-size:.85rem">Use this when we sign the customer's contract instead of collecting a signature on our proposal. Acceptance creates the job and adds it to the Job Schedule.</p>
+    ${recovering ? '<p>Acceptance is saved. Continue to finish creating the same job.</p>' : `
+    ${choices.length ? '<strong>Choose the agreed project</strong>' : ''}
+    <div>${items.map(rowHtml).join('')}</div>
+    <div style="font-weight:700;margin:14px 0">Accepted total: <span id="staffAcceptTotal"></span></div>
+    <div class="pec-field"><label for="staffAcceptDate">Date accepted</label><input id="staffAcceptDate" type="date" required max="${today}" value="${today}"></div>
+    <div class="pec-field"><label for="staffAcceptReference">Contract reference or acceptance note</label><textarea id="staffAcceptReference" required maxlength="1000" rows="3" placeholder="For example: signed customer contract, project name or PO number"></textarea></div>`}
+    <p style="font-size:.8rem;color:var(--muted)">Recorded under your staff login. No customer signature is created.</p>
+    <div id="staffAcceptError" role="alert" style="color:#dc2626;white-space:pre-wrap;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button type="button" class="pec-btn" id="staffAcceptCancel">Cancel</button><button type="submit" class="pec-btn primary" id="staffAcceptSubmit">${recovering ? 'Finish creating job' : 'Accept and create job'}</button></div>
+  </form>`, { title: 'Proposal acceptance', onMount(modal) {
+    const form = modal.querySelector('form');
+    const selection = () => {
+      const selectedIds = [...form.querySelectorAll('[data-accept-optional]:checked')].map(el => el.value);
+      const choice = form.querySelector('[name="staffAcceptChoice"]:checked')?.value || null;
+      const total = Math.round(items.reduce((sum, li) => sum + ((estChoiceKey(li) ? li.id === choice : !estLineOptional(li) || selectedIds.includes(li.id)) ? Number(li.total) || 0 : 0), 0) * 100) / 100;
+      return { selected_optional_ids: selectedIds, choice, expected_total: total };
+    };
+    const update = () => { if (!recovering) modal.querySelector('#staffAcceptTotal').textContent = choices.length && !selection().choice ? 'Choose a project' : fmtMoney(selection().expected_total); };
+    form.addEventListener('change', update); update();
+    modal.querySelector('#staffAcceptCancel').onclick = closeModal;
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = modal.querySelector('#staffAcceptSubmit');
+      if (button.disabled) return;
+      const error = modal.querySelector('#staffAcceptError'); error.textContent = '';
+      const selected = selection();
+      if (!recovering && ((choices.length && !selected.choice) || !(selected.expected_total > 0))) { error.textContent = 'Choose the agreed work with a total above $0.'; return; }
+      button.disabled = true; button.textContent = 'Recording acceptance…';
+      try {
+        const response = await fetch('/api/estimate/action', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
+          body: JSON.stringify({ action: 'accept_staff', estimate_id: fresh.id, expected_rev: fresh.rev, ...selected,
+            accepted_date: modal.querySelector('#staffAcceptDate')?.value,
+            contract_reference: modal.querySelector('#staffAcceptReference')?.value }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || 'Acceptance could not be completed.');
+        closeModal(); showToast('Proposal accepted and job created.', { ttl: 5000 }); renderEstimateDetail(fresh.id);
+      } catch (err) { error.textContent = err.message || 'Could not confirm acceptance. Retry to finish creating the same job.'; }
+      finally { button.disabled = false; button.textContent = recovering ? 'Finish creating job' : 'Accept and create job'; }
+    });
+  } });
+}
+
 function estimatePricingSendBlockers(est, settings = {}) {
   const finite = value => value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
   const configured = (key, fallback) => finite(settings[key]) ?? fallback;
@@ -43148,6 +43196,7 @@ function portalScheduleText(job) {
   return dates.length ? dates.map(portalDate).join(' · ') : 'Schedule to be confirmed';
 }
 function portalEstimateStatus(estimate) {
+  if (estimate.status === 'accepted' && !estimate.signed_at) return { key: 'signed', label: 'Accepted' };
   if (estimate.signed_at || ['accepted', 'signed'].includes(estimate.status)) return { key: 'signed', label: 'Signed' };
   if (['sent', 'viewed'].includes(estimate.status)) return { key: 'sent', label: 'Ready to sign' };
   if (['rejected', 'declined'].includes(estimate.status)) return { key: 'archived', label: 'Declined' };
@@ -43264,7 +43313,7 @@ function portalHelpHtml(bundle) {
 // portal canvas records jobs.confirmed. Either signed record closes signing.
 // Do not use job.status: even an unsigned legacy job can have status 'signed'.
 function portalJobIsSigned(job) {
-  return !!(job && (job.confirmed || (job.estimate_signature && job.estimate_signature.signed_at)));
+  return !!(job && (job.confirmed || (job.estimate_signature && (job.estimate_signature.signed_at || job.estimate_signature.acceptance_method === 'staff_external_contract'))));
 }
 
 function portalRefreshAfterDocument(token) {
@@ -43419,6 +43468,7 @@ async function portalJobDetail(token, jobId, bundle, requestVersion = portalLoad
         </div>
       </div>` : ''}
 
+    ${job.estimate_signature?.acceptance_method === 'staff_external_contract' ? `<div class="pec-card"><h3>Accepted under your contract</h3><p>Our team recorded acceptance on ${fmtDate(job.estimate_signature.accepted_at)}. No additional proposal signature is needed.</p></div>` : ''}
     ${job.estimate_signature && job.estimate_signature.signed_at ? `
       <div class="pec-card">
         <h3>Your signed estimate</h3>
@@ -43430,7 +43480,7 @@ async function portalJobDetail(token, jobId, bundle, requestVersion = portalLoad
     ${isSigned && !job.confirmed && catalogGridCount ? `
       <div class="pec-card">
         <h3>${job.colors_confirmed ? 'Your colors' : 'Choose your colors'}</h3>
-        <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">Your estimate is signed. Confirm the colors for each area below.</p>
+        <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">Your project is accepted. Confirm the colors for each area below.</p>
         <div id="pecPortalCatalog">${catalogHtml}</div>
         <div style="margin-top:6px;font-size:.8rem;color:#b45309;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.3);border-radius:8px;padding:10px">
           Changing colors after confirmation could result in project delays and additional charges.

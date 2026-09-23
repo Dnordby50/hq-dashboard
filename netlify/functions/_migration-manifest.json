@@ -3913,6 +3913,13 @@
           "name": "ops_check_quo_contact_sync"
         }
       ]
+    },
+    {
+      "file": "20260923204034_staff_contract_acceptance_portal_guard.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": "extend portal_confirm_job to recognize staff-recorded external contract acceptance",
+      "artifacts": []
     }
   ],
   "knownTables": [

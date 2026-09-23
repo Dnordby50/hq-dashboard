@@ -380,3 +380,14 @@ test('missing or invalid financial amounts fail visibly rather than being coerce
     assert.deepEqual(Object.keys(JSON.parse(res.body)), ['error']);
   }
 });
+
+test('external contract acceptance projects only public method and date, including unsent proposals', async () => {
+  const fx = fixture();
+  Object.assign(fx.tables.estimates[0], { sent_at: null, signed_at: null, signed_name: null, accepted_at: '2026-09-20T07:00:00Z', signature: { via: 'staff_external_contract', accepted_by: 'PRIVATE STAFF', contract_reference: 'PRIVATE CONTRACT', recorded_by: 'PRIVATE PERSON' } });
+  const out = await body(fx);
+  assert.equal(out.jobs[0].estimate_signature.acceptance_method, 'staff_external_contract');
+  assert.equal(out.jobs[0].estimate_signature.accepted_at, '2026-09-20T07:00:00Z');
+  assert.equal(out.jobs[0].estimate_signature.url, null);
+  assert.equal(out.estimates.length, 0);
+  assert.doesNotMatch(JSON.stringify(out), /PRIVATE|contract_reference|accepted_by|recorded_by/);
+});

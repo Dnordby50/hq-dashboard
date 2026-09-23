@@ -37,7 +37,7 @@
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages, requireStaff } = require('./_pec-supabase.cjs');
 const { estimatePricingSendError } = require('./_pec-estimate-send.cjs');
-const { mdToSafeHtml } = require('../../production/estimate-formatting.cjs');
+const { mdToSafeHtml, scopePlainText } = require('../../production/estimate-formatting.cjs');
 const { prepareDepositInstallment, resolveCurrentAsk, round2 } = require('./_pec-installments.cjs');
 // Estimate-side payment schedule (prompt 74): the same math module the
 // estimator's schedule card runs, so the customer render, the accept-time
@@ -445,12 +445,14 @@ function acceptedPayChooserHtml(payCta, b, financingOffered) {
 // Status banner + whether the action buttons render. accepted / rejected /
 // lost are terminal: a signed document must not be re-signable. `ui` carries
 // the brand row + whether the financing card renders, for the pay chooser.
+function isStaffAcceptance(est) { return est?.signature?.via === 'staff_external_contract'; }
+
 function stateForStatus(est, payCta, ui) {
   if (est.status === 'accepted') {
     const payHtml = payCta ? acceptedPayChooserHtml(payCta, (ui && ui.brand) || {}, !!(ui && ui.financingOffered)) : '';
     return {
       live: false,
-      banner: `<div class="banner ok"><strong>Accepted and signed${est.signed_name ? ' by ' + esc(est.signed_name) : ''}</strong>${est.signed_at ? ' on ' + esc(fmtStamp(est.signed_at)) : ''}. We will be in touch to schedule your project. You can print or save this page for your records.${payHtml}</div>`,
+      banner: `<div class="banner ok"><strong>${isStaffAcceptance(est) ? 'Accepted under your contract' : 'Accepted and signed' + (est.signed_name ? ' by ' + esc(est.signed_name) : '')}</strong>${est.signed_at ? ' on ' + esc(fmtStamp(est.signed_at)) : ''}. We will be in touch to schedule your project. You can print or save this page for your records.${payHtml}</div>`,
     };
   }
   if (est.status === 'rejected') {
@@ -692,7 +694,8 @@ function estimatePage(est, brand, opts) {
         <a href="${esc(signedPay.url)}" style="display:inline-block;background:${primary};color:#fff;font-weight:700;font-size:15px;padding:12px 22px;border-radius:10px;text-decoration:none">${signedPay.isDeposit ? 'Pay your ' + usd(signedPay.amount) + ' deposit' : 'Pay ' + usd(signedPay.amount) + ' now'}</a>
         <div style="margin-top:8px;font-size:13px;color:#6b7280">Card or bank transfer (ACH), secured by Stripe. Your full invoice is there too.</div>
       </div>`;
-  const signedBlock = est.status !== 'accepted' ? '' : `
+  const signedBlock = est.status !== 'accepted' ? '' : isStaffAcceptance(est) ? `
+    <div class="card pad" style="margin-top:18px"><div class="eyebrow">Acceptance</div><h3 class="sec">Accepted under your contract</h3><p>Our team recorded acceptance on ${esc(fmtStamp(est.accepted_at))}. No customer signature was collected on this proposal.</p>${signedPayHtml}</div>` : `
     <div class="card pad" style="margin-top:18px">
       <div class="eyebrow">Signature</div>
       <h3 class="sec">Signed</h3>
@@ -1200,7 +1203,7 @@ async function loadEstimate(token) {
   return est;
 }
 
-async function loadLineItems(estimateId) {
+async function loadLineItems(estimateId, strict = false) {
   try {
     // estimate_area_id rides along (prompt 69) so ensureJobCreated can carry
     // each line's price + scope onto its job_areas row; the page render
@@ -1209,7 +1212,7 @@ async function loadLineItems(estimateId) {
     // recompute can run server-side; it is never rendered on the page.
     const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,addon_id,estimate_area_id,label,description,qty,unit_price,unit_cost,total,is_optional,selected_by_customer,sort_order,choice_group,is_recommended&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
-  } catch (_) { return []; }
+  } catch (err) { if (strict) throw err; return []; }
 }
 
 // The estimate's payment schedule rows (prompt 74). Tolerant of a database
@@ -1278,16 +1281,16 @@ async function loadAcceptedPay(est) {
 // Load an estimate BY ID for the staff preview (no token, no sent_at gate: the
 // whole point of a preview is to see an unsent estimate). Staff-authenticated
 // at the call site.
-async function loadEstimateById(id) {
+async function loadEstimateById(id, strict = false) {
   if (!UUID_RE.test(String(id || ''))) return null;
   const rows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(id)}&deleted_at=is.null&select=*&limit=1`);
   const est = Array.isArray(rows) && rows[0] ? rows[0] : null;
   if (!est) return null;
-  est.line_items = await loadLineItems(est.id);
+  est.line_items = await loadLineItems(est.id, strict);
   return est;
 }
 
-async function loadAreas(estimateId) {
+async function loadAreas(estimateId, strict = false) {
   try {
     // id / is_custom / custom_label added for the accept path (prompt 69).
     // estimate_areas.notes is INTERNAL and is deliberately NOT selected here:
@@ -1297,7 +1300,7 @@ async function loadAreas(estimateId) {
     // choices only, nothing sensitive; notes stays excluded.
     const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed,is_custom,custom_label,answers&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
-  } catch (_) { return []; }
+  } catch (err) { if (strict) throw err; return []; }
 }
 
 // ---------------------------------------------------------------------------
@@ -1729,7 +1732,7 @@ async function moveLead(est, toStage, extra) {
     if (lead.stage !== toStage) {
       const patch = { stage: toStage };
       // First-touch timestamps (mirrors LEAD_STAGE_TS in index.html).
-      if (toStage === 'accepted' && !lead.accepted_at) patch.accepted_at = new Date().toISOString();
+      if (toStage === 'accepted' && !lead.accepted_at) patch.accepted_at = est.accepted_at || new Date().toISOString();
       if (toStage === 'lost') {
         if (!lead.lost_at) patch.lost_at = new Date().toISOString();
         if (extra && extra.lost_reason) patch.lost_reason = extra.lost_reason;
@@ -1748,7 +1751,7 @@ async function moveLead(est, toStage, extra) {
         payload: {
           estimate_id: est.id,
           estimate_number: est.estimate_number,
-          via: 'public_estimate_page',
+          via: isStaffAcceptance(est) ? 'staff_external_contract' : 'public_estimate_page',
           ...(extra || {}),
         },
       });
@@ -1766,7 +1769,7 @@ async function moveLead(est, toStage, extra) {
 // ---------------------------------------------------------------------------
 async function ensureJobCreated(est) {
   const intake = est.intake || {};
-  const allAreas = await loadAreas(est.id);
+  const allAreas = await loadAreas(est.id, isStaffAcceptance(est));
   // Custom sqft (prompt 32): a custom estimate has no area rows, so totalSqft
   // is 0 and jobs.sqft used to land null (every $/sqft readout showed "no
   // sqft on file"). The typed estimates.custom_sqft fills that gap. Standard
@@ -1779,7 +1782,12 @@ async function ensureJobCreated(est) {
   // or absent on a raw re-read); reloading makes ensureJobCreated correct no
   // matter which caller reached it, including the crash-heal path. The signed
   // selection was frozen onto the rows by applySelection before this runs.
-  const items = await loadLineItems(est.id);
+  let items = await loadLineItems(est.id, isStaffAcceptance(est));
+  // Restore the committed selection before healing a partially-created job.
+  if (Array.isArray(est.signature?.selected_optional_ids)) {
+    await applySelection(est.id, items, est.signature.selected_optional_ids);
+    items = freezeLineItems(items, est.signature.selected_optional_ids);
+  }
   // Choice group (prompt 106, decision 11): the pick is read from the
   // estimate row (the CAS wrote it before this runs); the option the customer
   // did NOT take is excluded from the job exactly like a declined line.
@@ -2093,12 +2101,6 @@ async function ensureJobCreated(est) {
     }
   }
 
-  // -- Point the estimate at both jobs (idempotent PATCH; same values every run).
-  await sb('PATCH', `/estimates?id=eq.${encodeURIComponent(est.id)}`, {
-    job_id: jobId,
-    pec_prod_job_id: prodJobId,
-  });
-
   // -- Payment schedule / deposit (prompt 74 C5 replaces prompt 45 here).
   // When the signature carries a FROZEN schedule, that schedule becomes the
   // job's real installments, REPLACING the old auto-prepared 50% deposit
@@ -2140,6 +2142,7 @@ async function ensureJobCreated(est) {
         }
       }
     } catch (err) {
+      if (isStaffAcceptance(est)) throw err;
       console.error('public-estimate: schedule copy failed (acceptance unaffected, heals on retry):', String(err && err.message || err));
     }
   } else {
@@ -2153,9 +2156,13 @@ async function ensureJobCreated(est) {
     try {
       await prepareDepositInstallment(sb, jobId, { systemTypeId: est.system_type_id || null });
     } catch (err) {
+      if (isStaffAcceptance(est)) throw err;
       console.error('public-estimate: deposit prepare failed (acceptance unaffected):', String(err && err.message || err));
     }
   }
+
+  // Publish the links only after the job and payment setup finish.
+  await sb('PATCH', `/estimates?id=eq.${encodeURIComponent(est.id)}`, { job_id: jobId, pec_prod_job_id: prodJobId });
 
   // -- Lead to accepted (first-touch accepted_at + one deterministic event).
   await moveLead(est, 'accepted', null);
@@ -2191,20 +2198,53 @@ async function acceptPayUrl(est, jobId) {
   } catch (_) { return null; }
 }
 
-async function handleAccept(est, body, event) {
+function selectionPricePatch(est, frozen, pickedId, total) {
+  const included = includedLines(frozen, pickedId);
+
+  // GP over the SAME included set, with the honesty rule: a zero unit_cost on
+  // a PRICED line means the cost data is missing, not that the margin is 100
+  // percent, and a fabricated margin is worse than a stale one because it
+  // looks authoritative in the pipeline. Any such line = write NO gp at all.
+  const costless = included.filter(li => !(Number(li.unit_cost) > 0) && Number(li.total) > 0);
+  const patch = { price: total };
+  if (costless.length) {
+    console.warn(`public-estimate select: gp skipped for estimate ${est.id}, zero unit_cost on priced line(s): ${costless.map(li => li.id).join(', ')}`);
+  } else {
+    const cost = included.reduce((s, li) => {
+      const rowCost = (Number(li.unit_cost) || 0) * (Number(li.qty) || 0);
+      // Standalone discounts have no materials or labor. Their negative
+      // revenue reduces commission by the same rule as lineItemsGp in the
+      // estimator; area rows already include commission in unit_cost.
+      const discountCommission = !li.estimate_area_id && !li.addon_id && Number(li.total) < 0
+        ? Number(li.total) * (Number(est.commission_pct) || 0) / 100 : 0;
+      return s + rowCost + discountCommission;
+    }, 0);
+    const gpDollars = Math.round((total - cost) * 100) / 100;
+    patch.gp_dollars = gpDollars;
+    // gp_pct is stored as a FRACTION (0-1), not a percent: the estimator
+    // writes gpDollars / finalSell (EstimatorScreen ~993) and every dashboard
+    // render multiplies by 100. Match that convention exactly.
+    patch.gp_pct = total > 0 ? gpDollars / total : null;
+  }
+
+  return patch;
+}
+
+async function handleAccept(est, body, event, staffAuth = null) {
   // Already accepted: heal any half-finished job creation, then confirm. This
   // is the double-click / refresh / retry path; it must not 409, and thanks to
   // deterministic ids + existence checks it cannot double-create anything.
   if (est.status === 'accepted') {
     const healed = await ensureJobCreated(est);
-    return json(200, { ok: true, already: true, pay_url: await acceptPayUrl(est, healed && healed.jobId) });
+    return json(200, { ok: true, already: true, job_id: healed && healed.jobId, pay_url: await acceptPayUrl(est, healed && healed.jobId) });
   }
   if (est.status === 'rejected' || est.status === 'lost') {
     return json(409, { ok: false, error: 'This estimate is no longer open. Please contact us at (928) 800-8154.' });
   }
 
+  if (staffAuth && est.signed_at) return json(409, { ok: false, error: 'This proposal already has a customer signature. It cannot be replaced by staff acceptance.' });
   const name = String(body.name || '').trim().slice(0, 120);
-  if (!name) return json(400, { ok: false, error: 'Please type your full name to sign.' });
+  if (!staffAuth && !name) return json(400, { ok: false, error: 'Please type your full name to sign.' });
   const selectedIds = Array.isArray(body.selected_optional_ids) ? body.selected_optional_ids.slice(0, 50).map(String) : [];
 
   // Choice group (prompt 106, locked decision 7): a group with no valid pick
@@ -2219,7 +2259,7 @@ async function handleAccept(est, body, event) {
   const choiceErr = choiceAcceptError(est.line_items, pickedId);
   if (choiceErr) return json(400, { ok: false, error: choiceErr, needs_choice: true });
   const pickPatch = bodyChoice && pickedId === bodyChoice && pickedId !== pickedIdOf(est)
-    ? { choice_picked_line_id: pickedId, choice_picked_at: new Date().toISOString(), choice_picked_by: null, choice_picked_source: 'customer' }
+    ? { choice_picked_line_id: pickedId, choice_picked_at: new Date().toISOString(), choice_picked_by: staffAuth ? staffAuth.user.id : null, choice_picked_source: staffAuth ? 'staff' : 'customer' }
     : {};
 
   const frozenItems = freezeLineItems(est.line_items, selectedIds);
@@ -2232,6 +2272,27 @@ async function handleAccept(est, body, event) {
     return json(400, { ok: false, error: 'Please select at least one item before signing.' });
   }
   const nowIso = new Date().toISOString();
+  let acceptedAt = nowIso;
+  let contractReference = '';
+  if (staffAuth) {
+    contractReference = String(body.contract_reference || '').trim().slice(0, 1000);
+    const date = String(body.accepted_date || '');
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date + 'T00:00:00Z')) || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date || date > today) {
+      return json(400, { ok: false, error: 'Enter the actual acceptance date, today or earlier.' });
+    }
+    if (!contractReference) return json(400, { ok: false, error: 'Enter a contract reference or acceptance note.' });
+    if (Number(body.expected_rev) !== Number(est.rev) || !Number.isFinite(Number(body.expected_total)) || Math.round(Number(body.expected_total) * 100) !== Math.round(total * 100)) {
+      return json(409, { ok: false, error: 'The proposal changed. Close this form and review it again before accepting.' });
+    }
+    // Store a date-only business event at Arizona midnight; recording time is separate.
+    acceptedAt = new Date(date + 'T00:00:00-07:00').toISOString();
+    const pricingError = emptySendError(frozenItems) || await estimatePricingSendError(sb, { ...est, line_items: frozenItems, estimate_line_items: frozenItems, choice_picked_line_id: pickedId });
+    if (pricingError) return json(409, { ok: false, error: pricingError });
+    if (est.scope_stale || frozenItems.some(li => !scopePlainText(li.description).trim())) {
+      return json(409, { ok: false, error: 'Review and complete the proposal scopes before accepting.' });
+    }
+  }
   const ip = (event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim() || null;
   const ua = String(event.headers['user-agent'] || '').slice(0, 300) || null;
 
@@ -2242,7 +2303,8 @@ async function handleAccept(est, body, event) {
   // pec_invoice_installments. Loaded BEFORE the CAS so the winner writes it
   // atomically with the signature. No schedule rows = no key, and the legacy
   // auto-deposit flow stays exactly as today.
-  const schedRows = await loadInstallments(est.id);
+  const schedRows = staffAuth ? await sb('GET', `/estimate_installments?estimate_id=eq.${encodeURIComponent(est.id)}&select=seq,label,amount_kind,amount_value,trigger_kind,due_date,is_deposit&order=seq.asc`) : await loadInstallments(est.id);
+  if (staffAuth && schedRows.length && scheduleValidationError(schedRows, Math.round(total * 100))) return json(409, { ok: false, error: 'The payment schedule does not match the accepted total.' });
   const frozenSched = schedRows.length ? freezeSchedule(schedRows, Math.round(total * 100)) : null;
 
   // Prompt 94 C2: derive sold-on-site BEFORE the CAS so the winner stamps it
@@ -2255,7 +2317,7 @@ async function handleAccept(est, body, event) {
   try {
     const set = await sb('GET', '/settings?key=in.(sold_on_site_enabled,sold_on_site_grace_minutes,sold_on_site_appt_types,sold_on_site_lookback_hours)&select=key,value');
     const cfg = Object.fromEntries((Array.isArray(set) ? set : []).map((r) => [r.key, r.value]));
-    if (String(cfg.sold_on_site_enabled || 'true') !== 'false') {
+    if (!staffAuth && String(cfg.sold_on_site_enabled || 'true') !== 'false') {
       const apptSel = 'select=id,appt_type,status,start_at,end_at,source';
       let appts = [];
       if (est.lead_id) {
@@ -2265,7 +2327,7 @@ async function handleAccept(est, body, event) {
         appts = await sb('GET', `/pec_appointments?customer_id=eq.${encodeURIComponent(est.customer_id)}&${apptSel}`);
       }
       soldOnSite = deriveSoldOnSite({
-        acceptedAt: nowIso,
+        acceptedAt,
         appointments: Array.isArray(appts) ? appts : [],
         graceMinutes: cfg.sold_on_site_grace_minutes,
         lookbackHours: cfg.sold_on_site_lookback_hours,
@@ -2280,20 +2342,20 @@ async function handleAccept(est, body, event) {
   // selection is recorded in the signature jsonb (the audit record) AND
   // written onto the estimate_line_items rows below.
   const updated = await sb('PATCH',
-    `/estimates?id=eq.${encodeURIComponent(est.id)}&status=in.(sent,signed,change_requested,draft)`,
+    `/estimates?id=eq.${encodeURIComponent(est.id)}&deleted_at=is.null&status=in.(sent,signed,change_requested,draft)${staffAuth ? '&rev=eq.' + Number(est.rev) : ''}`,
     {
       status: 'accepted',
-      accepted_at: nowIso,
-      signed_name: name,
-      signed_at: nowIso,
-      signed_ip: ip,
+      accepted_at: acceptedAt,
+      signed_name: staffAuth ? null : name,
+      signed_at: staffAuth ? null : nowIso,
+      signed_ip: staffAuth ? null : ip,
       signature: {
-        typed_name: name, signed_at: nowIso, ip, user_agent: ua,
-        selected_optional_ids: selectedIds, total, via: 'public_estimate_page',
+        ...(staffAuth ? { accepted_by: staffAuth.user.id, recorded_by: staffAuth.staff.name || staffAuth.user.email || staffAuth.user.id, recorded_at: nowIso, accepted_date: body.accepted_date, contract_reference: contractReference } : { typed_name: name, signed_at: nowIso, ip, user_agent: ua }),
+        selected_optional_ids: selectedIds, total, via: staffAuth ? 'staff_external_contract' : 'public_estimate_page',
         ...(pickedId ? { choice_picked_line_id: pickedId } : {}),
         ...(frozenSched ? { schedule: frozenSched } : {}),
       },
-      price: total,
+      ...(staffAuth ? selectionPricePatch(est, frozenItems, pickedId, total) : { price: total }),
       ...pickPatch,
       ...(soldOnSite == null ? {} : { sold_on_site: soldOnSite }),
     }, true);
@@ -2308,7 +2370,7 @@ async function handleAccept(est, body, event) {
     const now = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (now && now.status === 'accepted') {
       const healed = await ensureJobCreated(now);
-      return json(200, { ok: true, already: true, pay_url: await acceptPayUrl(now, healed && healed.jobId) });
+      return json(200, { ok: true, already: true, job_id: healed && healed.jobId, pay_url: await acceptPayUrl(now, healed && healed.jobId) });
     }
     return json(409, { ok: false, error: 'This estimate is no longer open. Please contact us at (928) 800-8154.' });
   }
@@ -2321,7 +2383,7 @@ async function handleAccept(est, body, event) {
   const result = await ensureJobCreated(fresh);
   // Notify only from the request that won the CAS, so a retry storm sends one
   // notification, not five. Best-effort by construction.
-  await notifyOffice(fresh, 'accepted', `Signed by ${name}. Total: ${usd(total)}.`);
+  await notifyOffice(fresh, 'accepted', staffAuth ? `Acceptance recorded by staff under the customer's contract. Total: ${usd(total)}.` : `Signed by ${name}. Total: ${usd(total)}.`);
   // pay_url sends the signer straight to the deposit ask on the /pay page
   // (Kyle Kirby fix: a reload used to strand them at the bottom of the
   // estimate with the pay chooser out of sight at the top).
@@ -2407,33 +2469,7 @@ async function handleSelect(est, body) {
 
   const frozen = freezeLineItems(est.line_items, selectedIds);
   const total = Math.round(includedTotal(frozen, pickedId) * 100) / 100;
-  const included = includedLines(frozen, pickedId);
-
-  // GP over the SAME included set, with the honesty rule: a zero unit_cost on
-  // a PRICED line means the cost data is missing, not that the margin is 100
-  // percent, and a fabricated margin is worse than a stale one because it
-  // looks authoritative in the pipeline. Any such line = write NO gp at all.
-  const costless = included.filter(li => !(Number(li.unit_cost) > 0) && Number(li.total) > 0);
-  const patch = { price: total };
-  if (costless.length) {
-    console.warn(`public-estimate select: gp skipped for estimate ${est.id}, zero unit_cost on priced line(s): ${costless.map(li => li.id).join(', ')}`);
-  } else {
-    const cost = included.reduce((s, li) => {
-      const rowCost = (Number(li.unit_cost) || 0) * (Number(li.qty) || 0);
-      // Standalone discounts have no materials or labor. Their negative
-      // revenue reduces commission by the same rule as lineItemsGp in the
-      // estimator; area rows already include commission in unit_cost.
-      const discountCommission = !li.estimate_area_id && !li.addon_id && Number(li.total) < 0
-        ? Number(li.total) * (Number(est.commission_pct) || 0) / 100 : 0;
-      return s + rowCost + discountCommission;
-    }, 0);
-    const gpDollars = Math.round((total - cost) * 100) / 100;
-    patch.gp_dollars = gpDollars;
-    // gp_pct is stored as a FRACTION (0-1), not a percent: the estimator
-    // writes gpDollars / finalSell (EstimatorScreen ~993) and every dashboard
-    // render multiplies by 100. Match that convention exactly.
-    patch.gp_pct = total > 0 ? gpDollars / total : null;
-  }
+  const patch = selectionPricePatch(est, frozen, pickedId, total);
 
   // Status guard on the PATCH so a signature landing mid-flight can never be
   // clobbered: the accept CAS flips status to accepted, which this filter
@@ -2588,6 +2624,20 @@ exports.handler = async (event) => {
     let body;
     try { body = JSON.parse(event.body || '{}'); }
     catch { return json(400, { ok: false, error: 'Invalid request' }); }
+    if (body.action === 'accept_staff') {
+      const auth = await requireStaff(event);
+      if (!auth.ok) return json(auth.status, { ok: false, error: auth.error });
+      try {
+        const est = await loadEstimateById(body.estimate_id, true);
+        if (!est) return json(404, { ok: false, error: 'Proposal not found.' });
+        // A legacy status-only win has no frozen scope; do not invent one on retry.
+        if (est.status === 'accepted' && !est.signed_at && !isStaffAcceptance(est)) return json(409, { ok: false, error: 'This proposal was previously marked accepted without a contract record. Review its existing job before proceeding.' });
+        return await handleAccept(est, body, event, auth);
+      } catch (err) {
+        console.error('staff-estimate acceptance error:', err.message);
+        return json(500, { ok: false, error: 'Could not finish acceptance. Your acceptance may already be saved. Retry this action to finish creating the same job.' });
+      }
+    }
     const token = String(body.token || '').trim();
     if (!UUID_RE.test(token)) return json(404, { ok: false, error: 'Not found' });
     try {
@@ -2689,5 +2739,5 @@ exports._internals = {
   loadEstimate, loadEstimateById, estimatePage, notFoundPage, stateForStatus, moveLead,
   mdToSafeHtml, applySelection, loadLiterature, literatureBlockHtml, presentationBrandKey,
   loadInstallments, loadAcceptedPay, liSubtitleHtml, handleSelect,
-  loadWarranty, warrantyBlockHtml,
+  loadWarranty, warrantyBlockHtml, handleAccept, isStaffAcceptance,
 };

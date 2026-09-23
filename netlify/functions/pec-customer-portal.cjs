@@ -147,14 +147,15 @@ async function loadEstimates(db, customerId, jobs, leads) {
 
 async function loadJobSignatures(db, customerId, jobs) {
   const rows = await byIds(db, 'estimates', 'job_id', jobs.map(job => job.id),
-    'id,job_id,customer_id,estimate_number,signed_at,signed_name,public_token,sent_at,status,deleted_at',
-    '&status=eq.accepted&signed_at=not.is.null&deleted_at=is.null');
+    'id,job_id,customer_id,estimate_number,signed_at,signed_name,public_token,sent_at,status,deleted_at,accepted_at,signature',
+    '&status=eq.accepted&deleted_at=is.null');
   for (const job of jobs) {
     const row = rows.filter(estimate => estimate.job_id === job.id && (!estimate.customer_id || estimate.customer_id === customerId)
-      && estimate.status === 'accepted' && estimate.signed_at && !estimate.deleted_at)
+      && estimate.status === 'accepted' && (estimate.signed_at || estimate.signature?.via === 'staff_external_contract') && !estimate.deleted_at)
       .sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)) || a.id.localeCompare(b.id))[0];
     if (row) job.estimate_signature = {
       ...only(row, ['estimate_number', 'signed_name', 'signed_at']),
+      ...(row.signature?.via === 'staff_external_contract' ? { acceptance_method: 'staff_external_contract', accepted_at: row.accepted_at } : {}),
       url: row.sent_at ? docUrl('e', row.public_token) : null,
     };
   }
