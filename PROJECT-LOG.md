@@ -1,3 +1,12 @@
+## [2026-09-23 09:31 MST] sales: draft inquiry and event integrity safeguards; continue historical audit
+By: Codex
+
+Dylan requested continued historical reconciliation and draft changes to prevent repeat cleanup. Prepared an isolated, non-production design and executable policy prototype in drafts/sales-integrity on codex/sales-integrity-draft. Defines one opportunity per distinct quote request, stable retry identity, explicit appointment/proposal links, original business-event dates, atomic paired completion, visible reporting exceptions, and audited amendments. First-send and Sunday–Saturday Arizona rules are preserved. Dollar snapshots and material-only sale classification remain proposed/pending. The prototype is not imported by the app and does not implement database transactions or permissions. No preventive migration, application change or deployment occurred.
+
+Live historical work: restored four signed_date values from original DripJobs proposal Activity Logs, with exact reviewed identity/current-state preconditions, row locks and before/after audit. Two original acceptances were in 2025. Readback verified zero changes to other job fields, including amounts and statuses. Active missing booking dates decreased from 9 to 5; completed jobs missing dates remain 2. Conflicting amounts and unproven job matches remain open. Refreshed private inquiry inventory found 127 customer records without a nondeleted lead; 99 have one external contact-date candidate, 4 have multiple and 24 lack a matched external contact. These are review candidates, not certified missing inquiries; no bulk lead backfill or automatic test-record exclusion was applied.
+
+Validation: nine draft policy tests passed; both touched CJS files pass node --check; full npm test including posttest passed; node scripts/check-source.mjs passed including six dashboard scripts; public allowlist rejects all three draft paths; git diff --check passed. No application UI changed. Tests do not establish integration, concurrency, role enforcement or rollback behavior for the proposed future implementation. Private source evidence, reviewed SQL, inventory and current-audit-status-2026-09-23.md remain outside repository/public assets in the existing historical audit folder. Full historical audit remains open. Draft retained locally for review, not merged or deployed.
+
 ## [2026-09-23 09:30 MST] mcp: diagnose Claude connector "Couldn't register" error
 By: Cowork
 Changed: Nothing in code. Diagnosis only, live probes of prescottepoxy.netlify.app.
