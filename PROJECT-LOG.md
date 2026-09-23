@@ -1,3 +1,13 @@
+## [2026-09-23 09:30 MST] mcp: diagnose Claude connector "Couldn't register" error
+By: Cowork
+Changed: Nothing in code. Diagnosis only, live probes of prescottepoxy.netlify.app.
+Why: Dylan hit "Couldn't register with Topcoat's sign-in service" adding the connector in Claude.
+Findings: (1) /mcp and /oauth/token both return 503 temporarily_unavailable, so MCP_BEARER_TOKEN_V2 (and likely the V2 client id/secret) are still not set in Netlify; the 2026-09-14 handoff to provision them was never completed. (2) /register and /oauth/authorize return 403 by design since the 2026-09-14 security hardening, and metadata advertises only client_credentials. Claude's connector falls back to dynamic registration when it gets no working token, which is the exact error shown. Entering a Client ID/Secret in the connector will not help either: the connector uses an interactive authorization-code flow, which the server deliberately refuses.
+Files touched: PROJECT-LOG.md
+Next steps: Working path is the direct key in the connector URL (/mcp?token=<V2 bearer>), OAuth fields blank. Longer term, a real consent-based authorization-code flow would remove the key from the URL; that is a build decision, not done here.
+Handoff to Cowork: None
+Handoff to Dylan: Set MCP_BEARER_TOKEN_V2 in Netlify (secret, Functions, Production), redeploy, then remove and re-add the Topcoat connector with URL https://prescottepoxy.netlify.app/mcp?token=<value> and no OAuth client fields.
+
 ## [2026-09-23 09:09 MST] sales: restore exact-proposal historical booking date
 By: Codex
 
