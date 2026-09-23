@@ -1,3 +1,12 @@
+## [2026-09-23 14:53 MST] access: verify advertiser login release live
+By: Codex
+
+Published application commit 4218b2399de05a3be40a8250857dfea4ae3f9238 to origin/main. GitHub verify check succeeded. Live dashboard, production/advertiser.js and production/advertiser.css returned HTTP 200 and matched committed bytes exactly; dashboard SHA-256 a57b243f780b51c10c36a38c504cfcf60521c59b2a2dae48c7a1a0fb30d59f4f. Unauthenticated account creation returned 401. Database restrictions were applied and verified before deployment as recorded below.
+
+Authenticated Dylan/Admin verification: Settings > People > Add advertiser opened the new form. Role defaults to advertiser, company defaults to PEC, and the name/email/initial-password fields plus read-only access description are present. Verified the live form at 360px, then canceled without entering credentials or creating an account. The advertiser report's leads/sales/campaign interactions were verified with synthetic data on desktop/mobile; no production advertiser identity was created for testing. Existing staff remained signed in and Settings loaded successfully. No customer messages or transactions were sent. Unrelated TopCoat-Audit-Checklist.xlsx remains untouched.
+
+Handoff to Dylan: Complete and live. Add advertisers from Settings > People > Add advertiser; they use the regular TopCoat sign-in. View-only scope is limited to leads and sales for the selected companies. No release blocker remains.
+
 ## [2026-09-23 14:50 MST] access: add company-scoped read-only advertiser logins
 By: Codex
 
