@@ -1,3 +1,14 @@
+## [2026-09-24 11:07 MST] customers: add per-customer automatic drip control
+By: Codex
+
+Customer profiles now have an Automatic drips On/Off switch for linked lead, estimate, invoice-reminder and review sequences. Off stops active enrollments and cancels pending/queued drip rows, including approved messages on completed enrollments. On permits future enrollment without restarting old sequences. Manual messages, blasts and initial transactional notifications retain existing behavior. Saving is bounded, single-attempt and verified; errors preserve the previous visible state, duplicate clicks are blocked, and navigation during saving cannot update another profile. No customer preference was changed for testing.
+
+Migration 20260924175618_customer_drip_preferences.sql was rehearsed against isolated PGlite, applied with Supabase apply_migration and verified on zdfpzmmrgotynrwkeakd before shipping code. customers.drips_enabled is NOT NULL DEFAULT true; existing staff RLS controls changes. Trigger-only private SECURITY DEFINER functions have empty search_path and no anon/authenticated/service_role EXECUTE grants. Enrollment guard serializes with preference updates. Production verification: 164 customers, zero disabled; enrollment status fingerprint d111967cfeb794c9143172e796c6b42c and send status fingerprint 94264ee324ffbead65ca3d48926f0800 unchanged across migration. Existing records and queues were preserved.
+
+Sender checks cover scheduled sends, day-zero instant touch, approval and queued flush, with a fresh preference/enrollment check immediately before each provider call. Canceled legs are skipped without a false communication log; provider requests already in flight cannot be recalled. Tests cover customer isolation, lead/job kinds, copy-generation races, SMS-to-email changes, lookup failure, queued/pending cancellation, future-only re-enable, save/error/navigation behavior and role boundaries.
+
+Validation: npm test including posttest passed; new focused tests 12/12; existing drip-runner 56/56, phase3 63/63, approval 46/46. Exact migration isolated rehearsal passed. All touched CJS parse; npm run check:source passed; both HEAD and working dashboard have six parsing scripts; changed JSON and git diff --check passed. Synthetic browser desktop and 360px mobile checked off/on, refresh persistence, save failure, wrapping and 44px touch target. No production messages or test fixtures were created. Main checkout's staged Cowork log, ahead commit, audit workbook and locks were left untouched; work isolated in codex/customer-drip-control. Release verification follows after push.
+
 ## [2026-09-23 14:53 MST] access: verify advertiser login release live
 By: Codex
 

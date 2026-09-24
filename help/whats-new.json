@@ -1,5 +1,16 @@
 [
   {
+    "id": "customer-drip-control",
+    "date": "2026-09-24",
+    "title": "Turn off automatic drips for individual customers.",
+    "summary": "Each customer profile now has an Automatic drips switch. Turning it off stops their current sequences and cancels pending drip messages.",
+    "howto": [
+      "Open Customers and select a customer. Set Automatic drips to Off.",
+      "This covers lead, estimate, invoice-reminder and review follow-ups. Manual messages are unaffected.",
+      "Turn it back On to allow future sequences. Stopped sequences do not restart."
+    ]
+  },
+  {
     "id": "advertiser-read-only-login",
     "date": "2026-09-23",
     "title": "Give your advertiser view-only access to leads and sales.",

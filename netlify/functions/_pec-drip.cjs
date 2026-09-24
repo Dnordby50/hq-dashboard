@@ -664,6 +664,7 @@ async function enrollSubject(sb, kind, subjectType, subjectId, leadId, now, opts
     return { enrolled: true, campaign_id: camp.id };
   } catch (err) {
     const m = String(err && err.message || err);
+    if (m.includes('customer_drips_disabled')) return { enrolled: false, reason: 'customer_drips_disabled' };
     if (/23505|409|duplicate/i.test(m)) return { enrolled: false, reason: 'already_active' };
     console.warn(`enroll ${kind} failed (non-fatal):`, m);
     return { enrolled: false, reason: 'error', error: m };
@@ -736,6 +737,7 @@ async function sendInstantTouch(sb, leadId, opts = {}) {
     const rcpt = await resolveRecipient(sb, 'lead', leadId);
     if (!rcpt.ok) return done(rcpt.reason || 'lead_missing');
     if (rcpt.lead.archived_at) return done('archived');
+    if (rcpt.dripsDisabled) return done('customer_drips_disabled');
     if (rcpt.optedOut) return done('opted_out');
 
     // Idempotency: a Zapier retry must not double-send. ANY step-0 row for
@@ -795,15 +797,15 @@ async function sendInstantTouch(sb, leadId, opts = {}) {
         out.failed.push('sms');
       } else {
         let res;
-        try { res = await senders.sendSms({ from: sender.from_number, to: rcpt.smsTo, content: smsBody }); }
+        try { res = await sendCustomerDrip(sb, rcpt, enr.id, senders.sendSms, { from: sender.from_number, to: rcpt.smsTo, content: smsBody }); }
         catch (err) { res = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
-        await sb('POST', '/pec_sms_log', {
+        if (!res.skipped) await sb('POST', '/pec_sms_log', {
           direction: 'out', brand: DRIP_BRAND, from_number: sender.from_number, to_number: rcpt.smsTo,
           customer_id: rcpt.customer_id, body: smsBody, kind: 'drip',
-          status: res.ok ? 'sent' : 'failed', quo_message_id: res.id, error_message: res.error,
+          status: res.skipped ? 'skipped' : res.ok ? 'sent' : 'failed', quo_message_id: res.id, error_message: res.error,
         }).catch(e => console.error('sendInstantTouch: sms log failed', e && e.message));
-        await writeLedger({ channel: 'sms', status: res.ok ? 'sent' : 'failed', body: smsBody, provider_id: res.id, sent_at: res.ok ? now().toISOString() : null, error_message: res.error });
-        if (res.ok) { anySent = true; out.sent.push('sms'); } else out.failed.push('sms');
+        await writeLedger({ channel: 'sms', status: res.skipped ? 'skipped' : res.ok ? 'sent' : 'failed', body: smsBody, provider_id: res.id, sent_at: res.ok ? now().toISOString() : null, error_message: res.error });
+        if (res.ok) { anySent = true; out.sent.push('sms'); } else (res.skipped ? out.skipped : out.failed).push('sms');
       }
     }
     if (canEmail) {
@@ -816,18 +818,18 @@ async function sendInstantTouch(sb, leadId, opts = {}) {
       } else {
         let res;
         try {
-          res = await senders.sendEmail({
+          res = await sendCustomerDrip(sb, rcpt, enr.id, senders.sendEmail, {
             from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
             subject: emailSubject, html: dripEmailHtml(emailBody, { accent: await getBrandAccent(sb) }), reply_to: sender.reply_to || undefined,
           });
         } catch (err) { res = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
-        await sb('POST', '/pec_email_log', {
+        if (!res.skipped) await sb('POST', '/pec_email_log', {
           customer_id: rcpt.customer_id, brand: DRIP_BRAND, template_key: 'drip',
           to_email: rcpt.email, from_email: sender.from_email, subject: emailSubject,
-          status: res.ok ? 'sent' : 'failed', resend_id: res.id, error_message: res.error,
+          status: res.skipped ? 'skipped' : res.ok ? 'sent' : 'failed', resend_id: res.id, error_message: res.error,
         }).catch(e => console.error('sendInstantTouch: email log failed', e && e.message));
-        await writeLedger({ channel: 'email', status: res.ok ? 'sent' : 'failed', subject: emailSubject, body: emailBody, provider_id: res.id, sent_at: res.ok ? now().toISOString() : null, error_message: res.error });
-        if (res.ok) { anySent = true; out.sent.push('email'); } else out.failed.push('email');
+        await writeLedger({ channel: 'email', status: res.skipped ? 'skipped' : res.ok ? 'sent' : 'failed', subject: emailSubject, body: emailBody, provider_id: res.id, sent_at: res.ok ? now().toISOString() : null, error_message: res.error });
+        if (res.ok) { anySent = true; out.sent.push('email'); } else (res.skipped ? out.skipped : out.failed).push('email');
       }
     }
 
@@ -931,6 +933,24 @@ async function enrollReviewDrip(sb, jobId, now = new Date()) {
 //             silences the SMS leg, not email (STOP is an SMS-scope signal).
 // Never throws; ok:false means the subject is gone and the drip should stop.
 // ---------------------------------------------------------------------------
+async function customerDripsDisabled(sb, customerId) {
+  if (!customerId) return false;
+  const rows = await sb('GET', `/customers?id=eq.${encodeURIComponent(customerId)}&select=id,drips_enabled&limit=1`);
+  if (!Array.isArray(rows) || !rows[0]) throw new Error('drip customer preference unavailable');
+  return rows[0].drips_enabled === false;
+}
+
+// Arguments (including branding/template preparation) finish before this final check.
+// A provider request already in flight cannot be recalled.
+async function sendCustomerDrip(sb, rcpt, enrollmentId, provider, args) {
+  const rows = await sb('GET', `/pec_drip_enrollments?id=eq.${encodeURIComponent(enrollmentId)}&select=id,status,stop_reason&limit=1`);
+  if (!Array.isArray(rows) || !rows[0]) throw new Error('drip enrollment unavailable');
+  if (rows[0].stop_reason === 'customer_drips_disabled' || await customerDripsDisabled(sb, rcpt.customer_id)) {
+    return { ok: false, skipped: true, id: null, error: 'customer_drips_disabled' };
+  }
+  return provider(args);
+}
+
 async function resolveRecipient(sb, subjectType, subjectId) {
   const id = encodeURIComponent(subjectId);
   if (subjectType === 'job') {
@@ -939,13 +959,13 @@ async function resolveRecipient(sb, subjectType, subjectId) {
     const job = (Array.isArray(jobs) && jobs[0]) || null;
     if (!job) return { ok: false, reason: 'job_missing' };
     const custs = job.customer_id
-      ? await sb('GET', `/customers?id=eq.${encodeURIComponent(job.customer_id)}&select=id,name,first_name,phone,phone_norm,email,sms_opt_out&limit=1`)
+      ? await sb('GET', `/customers?id=eq.${encodeURIComponent(job.customer_id)}&select=id,name,first_name,phone,phone_norm,email,sms_opt_out,drips_enabled&limit=1`)
       : [];
     const customer = (Array.isArray(custs) && custs[0]) || null;
     if (!customer) return { ok: false, reason: 'job_missing' };
     const smsTo = toE164(customer.phone);
     return {
-      ok: true, kind: 'job', job, customer,
+      ok: true, kind: 'job', job, customer, dripsDisabled: customer.drips_enabled === false,
       phone: customer.phone, phone_norm: customer.phone_norm, email: customer.email, smsTo,
       smsAllowed: !customer.sms_opt_out && !!smsTo,
       smsSkipReason: customer.sms_opt_out ? 'sms_opted_out' : (!smsTo ? 'no_valid_phone' : null),
@@ -961,7 +981,7 @@ async function resolveRecipient(sb, subjectType, subjectId) {
   if (!lead) return { ok: false, reason: 'lead_missing' };
   const smsTo = toE164(lead.phone);
   return {
-    ok: true, kind: 'lead', lead,
+    ok: true, kind: 'lead', lead, dripsDisabled: await customerDripsDisabled(sb, lead.customer_id),
     phone: lead.phone, phone_norm: lead.phone_norm, email: lead.email, smsTo,
     smsAllowed: !!lead.sms_consent && !!smsTo,
     smsSkipReason: !lead.sms_consent ? 'no_sms_consent' : (!smsTo ? 'no_valid_phone' : null),
@@ -1135,6 +1155,7 @@ async function checkReplied(sb, enr, rcpt) {
 
 async function checkKillSwitches(sb, enr, campaign, rcpt) {
   if (!rcpt || !rcpt.ok) return { action: 'stopped', reason: (rcpt && rcpt.reason) || 'lead_missing' };
+  if (rcpt.dripsDisabled) return { action: 'stopped', reason: 'customer_drips_disabled' };
   if (rcpt.optedOut) return { action: 'stopped', reason: 'opted_out' };
   if (enr.next_step_index >= campaign.max_touches) return { action: 'completed', reason: 'max_touches' };
   const kindCheck = await (KIND_CHECKS[campaign.kind] || KIND_CHECKS.lead)(sb, enr, rcpt);
@@ -1493,16 +1514,16 @@ async function runDrips(deps) {
           summary.failed++;
         } else {
           let out;
-          try { out = await sendSms({ from: sender.from_number, to: smsTo, content: smsBody }); }
+          try { out = await sendCustomerDrip(sb, rcpt, enr.id, sendSms, { from: sender.from_number, to: smsTo, content: smsBody }); }
           catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
-          await sb('POST', '/pec_sms_log', {
+          if (!out.skipped) await sb('POST', '/pec_sms_log', {
             direction: 'out', brand: DRIP_BRAND, from_number: sender.from_number, to_number: smsTo,
             customer_id: rcpt.customer_id, job_id: subjectType === 'job' ? subjectId : null,
             body: smsBody, kind: 'drip',
-            status: out.ok ? 'sent' : 'failed', quo_message_id: out.id, error_message: out.error,
+            status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', quo_message_id: out.id, error_message: out.error,
           }).catch(e => console.error('pec-drip: sms log failed', e.message));
-          await writeLedger({ channel: 'sms', status: out.ok ? 'sent' : 'failed', body: smsBody, provider_id: out.id, sent_at: out.ok ? now().toISOString() : null, error_message: out.error });
-          if (out.ok) { anySent = true; summary.sent++; } else summary.failed++;
+          await writeLedger({ channel: 'sms', status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', body: smsBody, provider_id: out.id, sent_at: out.ok ? now().toISOString() : null, error_message: out.error });
+          if (out.ok) { anySent = true; summary.sent++; } else if (out.skipped) summary.skipped++; else summary.failed++;
         }
       }
       if (canEmail && emailBody) {
@@ -1513,19 +1534,19 @@ async function runDrips(deps) {
         } else {
           let out;
           try {
-            out = await sendEmail({
+            out = await sendCustomerDrip(sb, rcpt, enr.id, sendEmail, {
               from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
               subject: emailSubject, html: dripEmailHtml(emailBody, { accent: await getBrandAccent(sb) }), reply_to: sender.reply_to || undefined,
             });
           } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
-          await sb('POST', '/pec_email_log', {
+          if (!out.skipped) await sb('POST', '/pec_email_log', {
             customer_id: rcpt.customer_id, job_id: subjectType === 'job' ? subjectId : null,
             brand: DRIP_BRAND, template_key: 'drip',
             to_email: rcpt.email, from_email: sender.from_email, subject: emailSubject,
-            status: out.ok ? 'sent' : 'failed', resend_id: out.id, error_message: out.error,
+            status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', resend_id: out.id, error_message: out.error,
           }).catch(e => console.error('pec-drip: email log failed', e.message));
-          await writeLedger({ channel: 'email', status: out.ok ? 'sent' : 'failed', subject: emailSubject, body: emailBody, provider_id: out.id, sent_at: out.ok ? now().toISOString() : null, error_message: out.error });
-          if (out.ok) { anySent = true; summary.sent++; } else summary.failed++;
+          await writeLedger({ channel: 'email', status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', subject: emailSubject, body: emailBody, provider_id: out.id, sent_at: out.ok ? now().toISOString() : null, error_message: out.error });
+          if (out.ok) { anySent = true; summary.sent++; } else if (out.skipped) summary.skipped++; else summary.failed++;
         }
       }
 
@@ -1576,16 +1597,16 @@ async function sendApprovedLeg(sb, providers, ctx) {
       return false;
     }
     let out;
-    try { out = await providers.sendSms({ from: sender.from_number, to: rcpt.smsTo, content: body }); }
+    try { out = await sendCustomerDrip(sb, rcpt, row.enrollment_id, providers.sendSms, { from: sender.from_number, to: rcpt.smsTo, content: body }); }
     catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
-    await sb('POST', '/pec_sms_log', {
+    if (!out.skipped) await sb('POST', '/pec_sms_log', {
       direction: 'out', brand: DRIP_BRAND, from_number: sender.from_number, to_number: rcpt.smsTo,
       customer_id: rcpt.customer_id, job_id: subjectType === 'job' ? subjectId : null,
       body, kind: 'drip',
-      status: out.ok ? 'sent' : 'failed', quo_message_id: out.id, error_message: out.error,
+      status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', quo_message_id: out.id, error_message: out.error,
     }).catch(e => console.error('pec-drip-approve: sms log failed', e.message));
-    await finalize({ status: out.ok ? 'sent' : 'failed', body, sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
-    return out.ok;
+    await finalize({ status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', body, sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
+    return out.skipped ? null : out.ok;
   }
   const sender = await getEmailSender(sb, emailSenderCache);
   if (!sender || !sender.from_email) {
@@ -1594,19 +1615,19 @@ async function sendApprovedLeg(sb, providers, ctx) {
   }
   let out;
   try {
-    out = await providers.sendEmail({
+    out = await sendCustomerDrip(sb, rcpt, row.enrollment_id, providers.sendEmail, {
       from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
       subject: subject || 'From Prescott Epoxy', html: dripEmailHtml(body, { accent: await getBrandAccent(sb) }), reply_to: sender.reply_to || undefined,
     });
   } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
-  await sb('POST', '/pec_email_log', {
+  if (!out.skipped) await sb('POST', '/pec_email_log', {
     customer_id: rcpt.customer_id, job_id: subjectType === 'job' ? subjectId : null,
     brand: DRIP_BRAND, template_key: 'drip',
     to_email: rcpt.email, from_email: sender.from_email, subject: subject || 'From Prescott Epoxy',
-    status: out.ok ? 'sent' : 'failed', resend_id: out.id, error_message: out.error,
+    status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', resend_id: out.id, error_message: out.error,
   }).catch(e => console.error('pec-drip-approve: email log failed', e.message));
-  await finalize({ status: out.ok ? 'sent' : 'failed', subject: subject || null, body, sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
-  return out.ok;
+  await finalize({ status: out.skipped ? 'skipped' : out.ok ? 'sent' : 'failed', subject: subject || null, body, sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
+  return out.skipped ? null : out.ok;
 }
 
 // opts: { enrollmentId, stepIndex, action: 'approve'|'skip',
@@ -1730,7 +1751,7 @@ async function resolvePendingStep(deps, { enrollmentId, stepIndex, action, edits
     const sentOk = await sendApprovedLeg(sb, providers, {
       row, body, subject, rcpt, subjectType, subjectId, smsSenderCache, emailSenderCache, finalize, now,
     });
-    if (sentOk) { anySent = true; result.sent++; } else result.failed++;
+    if (sentOk) { anySent = true; result.sent++; } else if (sentOk === null) result.voided_legs++; else result.failed++;
   }
   // First-touch stamp, same write-once rule as the runner.
   if (anySent && rcpt.lead && !rcpt.lead.contacted_at) {
@@ -1768,6 +1789,7 @@ async function flushApprovedDrips(deps) {
       const rcpt = await resolveRecipient(sb, subjectType, subjectId);
       let stop = null;
       if (!rcpt.ok) stop = rcpt.reason;
+      else if (rcpt.dripsDisabled) stop = 'customer_drips_disabled';
       else if (rcpt.optedOut) stop = 'opted_out';
       else if (row.channel === 'sms' && !rcpt.smsAllowed) stop = rcpt.smsSkipReason || 'sms_not_allowed';
       else if (row.channel === 'email' && !rcpt.emailAllowed) stop = rcpt.emailSkipReason || 'email_not_allowed';
@@ -1799,7 +1821,7 @@ async function flushApprovedDrips(deps) {
           await sb('PATCH', `/leads?id=eq.${encodeURIComponent(rcpt.lead.id)}&contacted_at=is.null`, { contacted_at: now().toISOString() })
             .catch(e => console.error('pec-drip-flush: contacted_at stamp failed', e.message));
         }
-      } else summary.failed++;
+      } else if (sentOk === null) summary.skipped++; else summary.failed++;
     } catch (err) {
       await finalize({ status: 'failed', error_message: String(err && err.message || err).slice(0, 400) });
       summary.failed++;

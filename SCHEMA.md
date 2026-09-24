@@ -211,6 +211,7 @@ RLS: enabled · rows: 91
 | lead_source | text | yes |  |
 | tags | ARRAY | no | '{}' |
 | stripe_customer_id | text | yes |  |
+| drips_enabled | boolean | no | true |
 | sms_opt_out | boolean | no | false |
 | sms_opt_out_at | timestamptz | yes |  |
 | phone_norm | text | yes | 
@@ -1081,6 +1082,8 @@ PK: id
 FK: lead_id → leads.id (nullable since Phase 3); campaign_id → pec_drip_campaigns.id
 Note: subject_type CHECK in ('lead','job'); subject_id is polymorphic (no FK). For subject_type='lead', lead_id stays populated and equals subject_id (CHECK chk_pec_drip_enroll_lead_link; the contact counter + Quo STOP join on lead_id). PARTIAL UNIQUE idx_pec_drip_enroll_one_active_subj on (subject_type, subject_id, campaign_id) WHERE status='active' (replaced the Phase 2 one-active-per-lead index). Index idx_pec_drip_enroll_due on (status, next_send_at). RLS staff-only.
 
+Customer preference (2026-09-24): `customers.drips_enabled` defaults true. The private `customer_drips_changed()` trigger stops linked active lead/job enrollments with `stop_reason='customer_drips_disabled'` and clears `next_send_at`; it skips their pending/queued sends, including sends on already completed enrollments. Sent and in-flight records and blast rows are preserved. `guard_customer_drip_enrollment()` rejects active enrollment while the linked customer is disabled. Enabling permits future enrollment, without reviving old sequences. These trigger-only SECURITY DEFINER functions have an empty search path and no caller EXECUTE grants. Existing customer staff RLS governs preference writes.
+
 ### pec_drip_sends
 RLS: enabled · rows: 0
 
@@ -1106,7 +1109,7 @@ RLS: enabled · rows: 0
 
 PK: id
 FK: enrollment_id → pec_drip_enrollments.id; lead_id → leads.id; campaign_id → pec_drip_campaigns.id; blast_id → pec_blasts.id (on delete set null)
-Note: the send ledger for BOTH drips and blasts, and the 4th source for the Phase 1 times-contacted count (status='sent' only). channel CHECK in ('sms','email'); status CHECK pec_drip_sends_status_check in ('queued','sending','sent','failed','skipped','dry_run'); subject_type CHECK in ('lead','job','customer'). CHECK chk_pec_drip_sends_origin: enrollment_id IS NOT NULL OR blast_id IS NOT NULL (every row belongs to a drip enrollment or a blast). Drip rows keep enrollment_id/campaign_id/lead_id; blast rows have those null, blast_id set, step_index 0. Indexes: idx_pec_drip_sends_lead (lead_id, status), idx_pec_drip_sends_enrollment, idx_pec_drip_sends_blast (blast_id, status) WHERE blast_id IS NOT NULL, idx_pec_drip_sends_subject (subject_type, subject_id). RLS staff-only.
+Note: the send ledger for BOTH drips and blasts, and the 4th source for the Phase 1 times-contacted count (status='sent' only). channel CHECK in ('sms','email'); status CHECK pec_drip_sends_status_check in ('pending','queued','sending','sent','failed','skipped','dry_run'); subject_type CHECK in ('lead','job','customer'). CHECK chk_pec_drip_sends_origin: enrollment_id IS NOT NULL OR blast_id IS NOT NULL (every row belongs to a drip enrollment or a blast). Drip rows keep enrollment_id/campaign_id/lead_id; blast rows have those null, blast_id set, step_index 0. Indexes: idx_pec_drip_sends_lead (lead_id, status), idx_pec_drip_sends_enrollment, idx_pec_drip_sends_blast (blast_id, status) WHERE blast_id IS NOT NULL, idx_pec_drip_sends_subject (subject_type, subject_id). RLS staff-only.
 
 ### pec_drip_steps
 RLS: enabled · rows: 21

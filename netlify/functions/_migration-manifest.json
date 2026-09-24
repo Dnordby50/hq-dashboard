@@ -3927,6 +3927,18 @@
       "hasHeader": true,
       "none": "Advertiser role, session boundaries and a limited read-only reporting RPC.",
       "artifacts": []
+    },
+    {
+      "file": "20260924175618_customer_drip_preferences.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "customers.drips_enabled"
+        }
+      ]
     }
   ],
   "knownTables": [

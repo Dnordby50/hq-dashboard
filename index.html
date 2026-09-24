@@ -7291,12 +7291,54 @@ async function renderCustomers() {
 // avg_ticket; active jobs card (status in signed/scheduled/in_progress);
 // completed/archived jobs collapsible. One supabase round-trip beyond the
 // customer fetch (jobs query feeds revenue + both job lists).
+function customerDripPreferenceHtml(c) {
+  const enabled = c.drips_enabled !== false;
+  return `<div class="pec-card" id="pecCustDripsCard">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h3 style="margin:0" id="pecCustDripsLabel">Automatic drips</h3>
+      <button class="pec-btn sm" id="pecCustDripsToggle" style="min-width:64px;min-height:44px" role="switch" aria-labelledby="pecCustDripsLabel" aria-describedby="pecCustDripsDescription" aria-checked="${enabled}">${enabled ? 'On' : 'Off'}</button>
+    </div>
+    <p id="pecCustDripsDescription" style="font-size:.85rem;color:var(--muted);margin:10px 0 0">Lead, estimate, invoice-reminder and review follow-ups. Turning off stops current sequences and cancels pending drip messages for this customer. Turning on allows future sequences without restarting old ones. Manual messages are unaffected.</p>
+    <div id="pecCustDripsStatus" role="status" style="font-size:.8rem;margin-top:8px"></div>
+  </div>`;
+}
+
+function wireCustomerDripPreference(c) {
+  const button = $('pecCustDripsToggle');
+  const status = $('pecCustDripsStatus');
+  if (!button || !status) return;
+  let saving = false;
+  button.addEventListener('click', async () => {
+    if (saving) return;
+    saving = true;
+    const enabled = c.drips_enabled === false;
+    button.disabled = true;
+    status.textContent = 'Saving…';
+    try {
+      const result = await withFreshWrite(() => supabase.from('customers')
+        .update({ drips_enabled: enabled }).eq('id', c.id).select('id,drips_enabled').single());
+      if (result.error) throw result.error;
+      if (!result.data || result.data.id !== c.id || result.data.drips_enabled !== enabled) throw new Error('The setting could not be verified. Please reload and try again.');
+      c.drips_enabled = enabled;
+      if (!button.isConnected) return;
+      button.setAttribute('aria-checked', String(enabled));
+      button.textContent = enabled ? 'On' : 'Off';
+      status.textContent = enabled ? 'Future drips are allowed. Stopped sequences stay stopped.' : 'Drips are off for this customer.';
+    } catch (err) {
+      if (button.isConnected) status.textContent = 'Could not save: ' + (err.message || 'Please try again.');
+    } finally {
+      saving = false;
+      if (button.isConnected) button.disabled = false;
+    }
+  });
+}
+
 async function renderCustomerDetail(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading customer…</div>';
   const [custRes, jobsRes, sysRes] = await withFreshSession(() => Promise.all([
     supabase.from('customers')
-      .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+      .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,drips_enabled,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
       .eq('id', id).single(),
     supabase.from('jobs')
       .select('id,address,type,status,price,created_at,archived_at,job_areas(system_type_id,order_index)')
@@ -7371,6 +7413,8 @@ async function renderCustomerDetail(id) {
       ` : ''}
     </div>
 
+    ${customerDripPreferenceHtml(c)}
+
     ${pecTouchNotesCardHtml('pecCustTouchCard')}
 
     ${customerSmsCardHtml()}
@@ -7414,6 +7458,7 @@ async function renderCustomerDetail(id) {
     ${recordEmailsCardHtml('pecCustEmailsCard')}
   `;
 
+  wireCustomerDripPreference(c);
   $('pecCustBack').addEventListener('click', () => {
     state.openCustomerId = null;
     switchView('customers');
