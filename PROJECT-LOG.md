@@ -1,3 +1,10 @@
+## [2026-09-24 11:10 MST] customers: verify customer drip switch live
+By: Codex
+
+Application commit f939b2cf59ec955c1cff8a71a012eb0d30e08f97 is deployed. GitHub verify completed successfully. Live index.html and help/whats-new.json both returned HTTP 200 and matched committed bytes exactly; dashboard SHA-256 d1b6e243fd7d37a65e482c69976bfda93706b72c9bc750d01bdd7f2b4c409ad3. Authenticated Dylan/Admin navigation loaded an existing customer profile and showed Automatic drips On with the new scope and future-only re-enable explanation, above Touches & notes. The production switch was not clicked. No test customer or message was created. Synthetic off/on, reload, save failure and desktop/360px checks passed before release; database migration verification is in the previous entry.
+
+Handoff to Dylan: complete and live. Open Customers, select the customer, then set Automatic drips to Off. Turning On later permits future sequences without restarting canceled ones. No release blocker remains. Main checkout's unrelated work was preserved.
+
 ## [2026-09-24 11:07 MST] customers: add per-customer automatic drip control
 By: Codex
 
