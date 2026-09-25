@@ -1,3 +1,33 @@
+## [2026-09-25 11:04 MST] owner: workbook preview polish and a full formula reconciliation
+By: Claude Code
+
+Dylan's four notes on the prompt 108 preview.
+
+1. "If text goes outside of the box, make the boxes adapt to the text size." Columns now start at the workbook's own width and grow when their own text does not fit, measured from per-character widths rather than a character count (`textWidthPx`). A plain cell widens its own column; a merged cell or a spilling label only takes the shortfall its span does not already cover; a wrapped cell needs its longest word plus an even share at the workbook's row height. Nothing shrinks, and row heights are untouched. The previous hard clip on wrapped cells is gone, so no label is cut mid-line any more. Sales Plan - (Wk) Painting goes from 1,713px to 2,024px wide; 17 of its 39 visible columns widened. Budget - 2 and Income Statement - 2 widened none at the source widths but pick up room as account names need it.
+
+2. "We don't need the column and row marks outside of the actual columns and rows." The outline margin on Budget - 2 and Income Statement - 2 no longer draws a background or a border, so it reads as blank space with the occasional +/- control rather than a row-number gutter. There were never any column letters or row numbers; the grey strip was the outline margin. If Dylan meant the near-invisible quarter labels the source paints in column A (#0D3C5D text on #073763 fill, visible once per quarter by design), those are still there as the workbook draws them; say the word and they come out.
+
+3. "Some of the numbers go to the very edge of the cell, so give everything a little bit more room." Cell padding 3px to 5px each side, accounting gap 3px to 6px, and the inline editors no longer add their own padding on top. The widening in item 1 accounts for the extra room, so nothing got tighter.
+
+4. "Make the headers a little bit more defined." Every frozen header row is slightly heavier, and the last frozen row carries a 2px #073763 rule with a soft shadow under it, so the header block separates from the week rows and stays readable while scrolling.
+
+5. "Double-check that all of the formulas match the original sheet." Done, both halves, with one thing to report.
+
+MBP sheets: ran the calculation engine on the reference workbook's OWN inputs and actuals and compared every cached result. 5,859 cells across all six sheets, EVERY ONE MATCHES at the source's own tolerance. Worth recording: the workbook's TREND divides cumulative actual by cumulative allocation at the row TODAY() lands on, not at the last week with data. At the last data week (2026-05-10) the nine trend cells disagree; at the week the file was exported in (2026-09-27, row 39) they match exactly. The engine's own as-of selection is explicit and correct, this only affects how the reconciliation has to be set up.
+
+Budget - 2 and Income Statement - 2: compared formula TEXT cell by cell. 16,642 formula cells match exactly once the `$` anchors and the spacing the import drops are normalised. Everything else is explained: the import expands ARRAYFORMULA spills into scalar references, so the private document carries formulas where this .xlsx keeps only the anchor (Budget - 2 A/B/G/H rows 756:784, 29 rows each; Income Statement columns C and I, 20 cells each); and 60 Income cells were written as `__xludf.DUMMYFUNCTION` placeholders by the export that produced this file, where the private document has the real formula (C28 is `=" "&UPPER('Budget - 2'!H6)`).
+
+ONE GENUINE DIFFERENCE, NEEDS DYLAN. Income Statement - 2 row 827, Corporate Net Income, in every month column C through N:
+  private document  =X821-sum(X824:X826)+X822+X820
+  saved workbook    =X821-sum(X824:X826)
+TopCoat's version adds the two Other Income rows (820 FTP, 822 PEC), which features.json already documents as the intent, so the saved .xlsx looks like the older of the two. Nothing was changed either way. Dylan: confirm which is right, and if the workbook is, that is a one-cell correction to make deliberately rather than silently.
+
+Validation: npm test including posttest PASS, owner suite 148 tests (two new: a cell that does not fit widens its column and a wrapped one only needs its longest word; and the geometry check now asserts columns are at or above the source width rather than equal to it). check:source passed; git diff --check clean. All nine 1920x1080 screenshots regenerated at ~/Documents/TopCoat-MBP-Workbook-Preview-2026-09-25/ with synthetic values only. Fidelity checklist re-run: all eight sheets still pass on columns, rows shown, hidden columns, merges, frozen panes, flag columns, top boxes, bottom totals and outline groups, with widths now reported as at-or-above the source.
+
+Files touched: production/owner-mbp-workbook.js, production/owner-mbp-workbook.test.js, production/owner-studio.css, production/owner-mbp.md, PROJECT-LOG.md.
+
+Next steps: Dylan, reload the preview and look again. Outstanding: the row 827 formula question above, and the approval for step 4 (one MBP tab replacing the four, dropped controls, old deep-link redirects, What's New entry).
+
 ## [2026-09-25 10:12 MST] owner: prompt 108 answers, open the buried income rows; no outline bar on SP/RP
 By: Claude Code
 

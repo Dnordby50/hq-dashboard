@@ -209,8 +209,21 @@ test('rendered geometry matches the workbook: widths, merges, hidden columns, fr
   assert.match(html, /data-cell="C4" rowspan="1" colspan="2"/, 'the C4:D4 merge is kept');
   const cols = [...html.matchAll(/<col style="width:(\d+)px">/g)].map(m => Number(m[1]));
   assert.equal(cols.length, spec.cols - spec.hiddenCols.length);
-  assert.equal(cols[0], Math.round(spec.colWidths[1] * 7) + 1);
+  // Columns start at the workbook's width and only ever grow, so nothing is clipped.
+  const visible = [];
+  for (let c = 1; c <= spec.cols; c++) if (!spec.hiddenCols.includes(c)) visible.push(c);
+  for (const [i, c] of visible.entries()) assert.ok(cols[i] >= Math.round((spec.colWidths[c] ?? spec.defaultColWidth) * 7) + 1, `column ${c} shrank`);
+  assert.ok(cols[0] > Math.round(spec.colWidths[1] * 7) + 1, 'column A grew to fit QUARTER:');
   assert.match(html, /position:sticky/, 'the frozen header and week column are pinned');
+});
+
+test('a cell that does not fit widens its column, and a wrapped one only needs its longest word', () => {
+  const { body, computed } = plan();
+  const html = renderWorkbookSheet('sales_painting', { sheet: sheetOf(computed, 'sales', 'painting'), body, today: '2026-06-14' });
+  const widths = [...html.matchAll(/<col style="width:(\d+)px">/g)].map(m => Number(m[1]));
+  assert.ok(widths[0] >= 66, 'column A fits QUARTER: rather than clipping it');
+  assert.ok(html.includes('>QUARTER:<') || html.includes('QUARTER:'), 'the header is still there');
+  assert.ok(widths.every(w => w > 0));
 });
 
 test('the generated layout carries presentation only, never owner numbers or account names', async () => {

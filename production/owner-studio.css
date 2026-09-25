@@ -278,14 +278,13 @@
 .tc-wb-tabs button{font:inherit;font-size:12px;white-space:nowrap;border:1px solid #c6d2dd;border-bottom:0;border-radius:5px 5px 0 0;background:#e6ecf3;color:#3b4b59;padding:4px 12px;min-height:28px;cursor:pointer}
 .tc-wb-tabs button[aria-current="true"]{background:#fff;color:#073763;font-weight:600;box-shadow:0 -2px 0 #3d85c6 inset}
 .tc-wb-table{table-layout:fixed;border-collapse:separate;border-spacing:0;font-family:Roboto,system-ui,sans-serif;font-size:10pt;line-height:1.1}
-.tc-wb-table td,.tc-wb-table th{box-sizing:border-box;padding:0 3px;overflow:hidden;white-space:nowrap;text-overflow:clip;border:1px solid #e3e6e8;background:#fff;text-align:right;vertical-align:middle}
-.tc-wb-table th.wb-outline{width:18px;background:#f1f4f8;border-color:#dfe4e9;padding:0;text-align:center}
+.tc-wb-table td,.tc-wb-table th{box-sizing:border-box;padding:0 5px;overflow:hidden;white-space:nowrap;text-overflow:clip;border:1px solid #e3e6e8;background:#fff;text-align:right;vertical-align:middle}
+.tc-wb-table th.wb-outline{width:18px;background:transparent;border:0;padding:0;text-align:center}
 .tc-wb-table th.wb-outline button{width:14px;height:14px;line-height:1;padding:0;border:1px solid #8ea2b4;border-radius:2px;background:#fff;color:#3b4b59;font-size:11px;cursor:pointer}
-.wb-acc{display:flex;justify-content:space-between;align-items:baseline;gap:3px}
+.wb-acc{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .wb-acc i,.wb-acc em{font-style:normal}
 .tc-wb-table td.wb-spill{overflow:visible;position:relative;z-index:1}
 .tc-wb-table .wb-spill-text{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:middle}
-.tc-wb-table .wb-clip{overflow:hidden}
 .tc-wb-table td.is-negative{color:#cc0000}
 .tc-wb-table .wb-incomplete{color:#a62622;font-weight:700;padding-left:2px}
 .tc-wb-table td.wb-edit{position:relative}
@@ -293,11 +292,14 @@
 .tc-wb-table td.wb-text{text-align:left}
 .tc-wb-table td.wb-error{color:#a62622;background:#fff0e8}
 .tc-wb-table td.wb-edit{padding:0}
-.tc-wb-table td.wb-edit .wb-input{display:block;width:100%;height:100%;min-width:0;border:0;border-radius:0;padding:0 3px;background:transparent;color:inherit;font:inherit;text-align:inherit}
+.tc-wb-table td.wb-edit .wb-input{display:block;width:100%;height:100%;min-width:0;border:0;border-radius:0;padding:0;background:transparent;color:inherit;font:inherit;text-align:inherit}
 .tc-wb-table td.wb-edit .wb-input:focus{outline:2px solid #1a73e8;outline-offset:-2px;background:#fff}
 .tc-wb-table td.wb-edit.is-manual{background:#ffe599;border-color:#ffe599}
 .tc-wb-table td.is-flag-red{background:#cc4125;border-color:#cc4125;color:#cc4125}
 .tc-wb-table td.is-selected{outline:2px solid #1a73e8;outline-offset:-2px}
+.tc-wb-table td.wb-frozen{font-weight:500}
+.tc-wb-table td.wb-freeze-edge{box-shadow:0 2px 0 0 #073763,0 6px 8px -6px rgba(7,55,99,.55)}
+.tc-wb-table td.wb-frozen.wb-edit{font-weight:inherit}
 @media(max-width:620px){.tc-wb-notes{position:absolute;right:0;top:0;bottom:0;width:86vw;max-width:none;box-shadow:-6px 0 18px rgba(0,0,0,.18)}}
 
 /* MBP summary page: the workbook's own top boxes, side by side. */

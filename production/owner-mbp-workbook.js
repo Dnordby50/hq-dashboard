@@ -319,12 +319,50 @@ function coordinate(address) {
  * body; everything else (widths, heights, merges, frozen panes, hidden rows and columns)
  * comes from the generated layout so the grid matches the .xlsx cell for cell.
  */
-function renderGrid({ geometry, rows, cols, merges, classOf, contentOf, freeze, gutter = null, label }) {
-  const { spec, widths, heights } = geometry;
+/* ------------------------------------------------------------- text measurement */
+
+// Roboto is proportional, so a cell's text is measured from per-character widths in ems
+// rather than a character count. Deliberately a shade generous: the grid should give
+// every value room rather than clip it.
+const CHAR_EM = { narrow: 0.30, digit: 0.56, lower: 0.52, upper: 0.66, wide: 0.86 };
+const NARROW = new Set([...' .,:;\'"|!ilj()[]-']);
+const WIDE = new Set([...'MW@%']);
+export function textWidthPx(text, { bold = false, size = 10 } = {}) {
+  const em = size * 4 / 3;
+  let total = 0;
+  for (const ch of String(text ?? '')) {
+    total += em * (NARROW.has(ch) ? CHAR_EM.narrow : WIDE.has(ch) ? CHAR_EM.wide
+      : ch >= '0' && ch <= '9' ? CHAR_EM.digit : ch >= 'a' && ch <= 'z' ? CHAR_EM.lower : CHAR_EM.upper);
+  }
+  return Math.ceil(total * (bold ? 1.06 : 1));
+}
+/** Room a cell needs: its text, the cell padding, borders and the accounting gap. */
+export const CELL_PADDING = 5;
+function contentWidth(content, style, lines = 1) {
+  const text = String(content.text ?? '');
+  if (!text) return 0;
+  const size = style?.size ?? 10, bold = !!style?.bold;
+  let width = textWidthPx(text, { bold, size });
+  // A wrapped cell keeps the workbook's row height, so it only needs the room its longest
+  // word takes and an even share of the rest.
+  if (lines > 1) {
+    const longest = Math.max(...text.split(/\s+/).map(word => textWidthPx(word, { bold, size })));
+    width = Math.max(longest, Math.ceil(width / lines));
+  }
+  if (content.lead) width += textWidthPx(content.lead, { bold, size }) + 6;
+  if (content.marker) width += textWidthPx('*', { bold: true, size }) + 2;
+  return width + CELL_PADDING * 2 + 2;
+}
+/** Lines a wrapped cell has room for at the workbook's own row height. */
+const wrapLines = (height, style) => Math.max(1, Math.round(height / ((style?.size ?? 10) * 4 / 3 * 1.1)));
+
+/* --------------------------------------------------------------- grid engine */
+
+function renderGrid({ geometry, rows, cols, merges, classOf, contentOf, styleOf = () => null, freeze, gutter = null, label }) {
+  const { spec, heights } = geometry;
+  const widths = new Map(geometry.widths);
   const visibleRows = new Set(rows), visibleCols = new Set(cols);
   const freezeCols = freeze?.col || 0, freezeRows = freeze?.row || 0;
-  const leftOf = frozenOffsets(geometry, freezeCols, new Set([...Array(spec.cols).keys()].map(i => i + 1).filter(c => !visibleCols.has(c))));
-  const topOf = frozenRowOffsets(geometry, freezeRows, new Set([...Array(spec.rows).keys()].map(i => i + 1).filter(r => !visibleRows.has(r))));
   const spans = new Map(), covered = new Set();
   for (const merge of merges) {
     const [a, b = a] = merge.split(':'), [r1, c1] = coordinate(a), [r2, c2] = coordinate(b);
@@ -334,26 +372,64 @@ function renderGrid({ geometry, rows, cols, merges, classOf, contentOf, freeze, 
     spans.set(anchor, { rowspan: rr.length, colspan: cc.length, source: a });
     for (const r of rr) for (const c of cc) { const key = `${financeColumn(c)}${r}`; if (key !== anchor) covered.add(key); }
   }
+  // Build every cell first, then widen any column whose own text does not fit. A merged or
+  // spilling cell is skipped: it already has more than its own column to sit in.
+  const grid = rows.map(r => cols.map(c => {
+    const address = `${financeColumn(c)}${r}`;
+    return covered.has(address) ? null : (contentOf(r, c, spans.get(address)?.source || address) || {});
+  }));
+  // Pass 1: a cell that sits in one column widens that column.
+  for (const [rowIndex, r] of rows.entries()) {
+    for (const [index, c] of cols.entries()) {
+      const content = grid[rowIndex][index];
+      if (!content || content.spill || spans.has(`${financeColumn(c)}${r}`)) continue;
+      const style = styleOf(r, c);
+      const needed = contentWidth(content, style, content.clip ? wrapLines(heights.get(r), style) : 1);
+      if (needed > widths.get(c)) widths.set(c, needed);
+    }
+  }
+  // Pass 2: a merged cell has its whole span to sit in, and a spilling label has its own
+  // column plus the empty run after it. Only the shortfall goes on the last column it owns.
+  for (const [rowIndex, r] of rows.entries()) {
+    for (const [index, c] of cols.entries()) {
+      const content = grid[rowIndex][index];
+      if (!content) continue;
+      const span = spans.get(`${financeColumn(c)}${r}`);
+      if (!span && !content.spill) continue;
+      let owned = [c];
+      if (span) owned = cols.slice(index, index + span.colspan);
+      else for (let n = index + 1; n < grid[rowIndex].length; n++) {
+        if (grid[rowIndex][n] === null) continue;
+        if (grid[rowIndex][n].html) break;
+        owned.push(cols[n]);
+      }
+      const available = owned.reduce((sum, n) => sum + widths.get(n), 0);
+      const style = styleOf(r, c);
+      const rowsOwned = span ? rows.slice(rowIndex, rowIndex + span.rowspan) : [r];
+      const height = rowsOwned.reduce((sum, n) => sum + heights.get(n), 0);
+      const needed = contentWidth(content, style, content.clip ? wrapLines(height, style) : 1);
+      if (needed > available) { const last = owned.at(-1); widths.set(last, widths.get(last) + needed - available); }
+    }
+  }
+  const hiddenCols = new Set([...Array(spec.cols).keys()].map(i => i + 1).filter(c => !visibleCols.has(c)));
+  const hiddenRows = new Set([...Array(spec.rows).keys()].map(i => i + 1).filter(r => !visibleRows.has(r)));
+  const leftOf = frozenOffsets({ ...geometry, widths }, freezeCols, hiddenCols);
+  const topOf = frozenRowOffsets(geometry, freezeRows, hiddenRows);
+  const lastFrozenRow = Math.max(...[...topOf.keys()], -Infinity);
   const gutterWidth = gutter ? 18 : 0;
   const head = `<colgroup>${gutter ? `<col style="width:${gutterWidth}px">` : ''}${cols.map(c => `<col style="width:${widths.get(c)}px">`).join('')}</colgroup>`;
-  const body = rows.map(r => {
+  const body = rows.map((r, rowIndex) => {
     const sticky = topOf.has(r);
-    const contents = cols.map(c => {
-      const address = `${financeColumn(c)}${r}`;
-      return covered.has(address) ? null : (contentOf(r, c, spans.get(address)?.source || address) || {});
-    });
+    const contents = grid[rowIndex];
     const cells = cols.map((c, index) => {
       const address = `${financeColumn(c)}${r}`;
       if (covered.has(address)) return '';
       const span = spans.get(address);
       const content = contents[index];
-      // Excel spills a label into the next cell while that cell is empty, and clips it once
-      // the neighbour has something in it.
       // Excel spills a label across the empty cells that follow it and clips at the first
-      // one with something in it, so the spill box is exactly that wide.
+      // one with something in it, so the spill box is exactly that wide. A merged cell
+      // centres inside its merge and never spills, which is what Excel does too.
       let spillWidth = 0;
-      // Only a plain left-aligned label spills. A merged cell centres inside its merge and
-      // never spills, which is what Excel does too.
       if (content.spill && !span) {
         for (let n = index + 1; n < contents.length; n++) {
           if (contents[n] === null) continue;
@@ -371,11 +447,11 @@ function renderGrid({ geometry, rows, cols, merges, classOf, contentOf, freeze, 
         sticky ? `top:${topOf.get(r)}px` : '',
         pinnedCol || sticky ? `position:sticky;z-index:${layer}` : '',
       ].filter(Boolean).join(';');
-      const classes = ['wb-cell', classOf(r, c, span?.source || address), ...(content.classes || []), spill ? 'wb-spill' : ''].filter(Boolean).join(' ');
-      // A wrapped cell never grows its row in Excel; it is clipped to the row's saved height.
-      const clipHeight = content.clip ? (span ? rows.filter(n => n >= r).slice(0, span.rowspan) : [r]).reduce((sum, n) => sum + heights.get(n), 0) : 0;
-      const html = content.clip ? `<div class="wb-clip" style="height:${clipHeight}px">${content.html ?? ''}</div>`
-        : spill ? `<span class="wb-spill-text" style="width:${widths.get(c) + spillWidth - 6}px">${content.html ?? ''}</span>`
+      const classes = ['wb-cell', classOf(r, c, span?.source || address), ...(content.classes || []),
+        spill ? 'wb-spill' : '', sticky ? 'wb-frozen' : '', r === lastFrozenRow ? 'wb-freeze-edge' : ''].filter(Boolean).join(' ');
+      // A wrapped cell has already widened its column to fit at the workbook's row height,
+      // so it is left to wrap rather than clipped part way through a line.
+      const html = spill ? `<span class="wb-spill-text" style="width:${widths.get(c) + spillWidth - CELL_PADDING * 2}px">${content.html ?? ''}</span>`
         : (content.html ?? '');
       return `<td class="${classes}" data-cell="${e(address)}"${span ? ` rowspan="${span.rowspan}" colspan="${span.colspan}"` : ''}`
         + `${position ? ` style="${position}"` : ''}${content.title ? ` title="${e(content.title)}"` : ''}>${html}</td>`;
@@ -462,10 +538,10 @@ export function renderWorkbookSheet(sheetId, {
     const field = fields.get(address);
     if (field) return inputContent(body, field, cellState, spec, address, null, nf);
     if (address in sheet.top) return valueContent(sheet.top[address], nf, spec, address, null);
-    if (label !== undefined && !DROPPED_LABELS.has(`${spec.kind}:${address}`)) return { html: e(label), spill: !style?.wrap && (!style?.h || style.h === 'left'), clip: !!style?.wrap };
+    if (label !== undefined && !DROPPED_LABELS.has(`${spec.kind}:${address}`)) return { html: e(label), text: label, spill: !style?.wrap && (!style?.h || style.h === 'left'), clip: !!style?.wrap };
     return {};
   };
-  return renderGrid({ geometry, rows, cols, merges: spec.merges, classOf, contentOf, freeze: spec.freeze, label: `${spec.tab}. Workbook grid.` });
+  return renderGrid({ geometry, rows, cols, merges: spec.merges, classOf, contentOf, styleOf, freeze: spec.freeze, label: `${spec.tab}. Workbook grid.` });
 }
 
 function valueContent(value, nf, spec, address, coverage) {
@@ -474,6 +550,7 @@ function valueContent(value, nf, spec, address, coverage) {
   return {
     html: cellHtml(formatted, incomplete ? '<span class="wb-incomplete" aria-label="Missing inputs">*</span>' : ''),
     classes: formatted.red ? ['is-negative'] : [],
+    text: formatted.text, lead: formatted.lead, marker: !!incomplete,
     title: `${spec.tab}!${address}${incomplete ? ' · Missing inputs; not a confirmed zero' : ''}`,
   };
 }
@@ -499,11 +576,13 @@ function inputContent(body, field, cellState, spec, address, coverage, nf) {
   const resettable = field.live && state.sourceAvailable === true && state.origin !== 'topcoat' && manual;
   const context = `${field.lineId === 'painting' ? 'FTP' : field.lineId === 'epoxy' ? 'PEC' : 'TOTAL'} ${field.kind === 'sales' ? 'Sales' : 'Revenue'} `
     + `${field.weekEnding === 'annual' ? 'annual' : mbpSaturday(field.weekEnding)} ${field.label}`;
+  const formatted = formatExcel(value, nf);
   return {
     classes: ['wb-edit', manual ? 'is-manual' : '', automatic ? 'is-automatic' : ''].filter(Boolean),
+    text: formatted.text, lead: formatted.lead, marker: !!incomplete,
     title: `${spec.tab}!${address} · ${manual ? 'Manually edited' : automatic ? (state.sourceAvailable === false ? 'TopCoat · last available' : 'TopCoat') : field.actual ? 'Manual input' : 'Plan input'}`,
     html: inputHtml(`data-mbp-key="${e(field.key)}" data-cell="${e(address)}"${resettable ? ` data-mbp-reset="${e(field.key)}"` : ''} aria-label="${e(context)}"`,
-      { raw: mbpInputValue(value, field), formatted: formatExcel(value, nf), incomplete }),
+      { raw: mbpInputValue(value, field), formatted, incomplete }),
   };
 }
 
@@ -546,25 +625,29 @@ export function renderWorkbookFinance(sheetId, {
     const cell = { ...raw, ...result?.cells?.[address] };
     const section = c === 2 ? sectionRows.get(r) : null;
     const title = `${spec.tab}!${address}${cell.f ? ` ${cell.f}` : ''}${cell.error ? ' · Source formula needs attention' : ''}`;
-    if (cell.error) return { html: e(cell.error), classes: ['wb-error'], title };
+    if (cell.error) return { html: e(cell.error), classes: ['wb-error'], title, text: cell.error };
     if (section && !readOnly) {
       return {
         classes: ['wb-edit', 'wb-text'], title: `${title} · ${section.label}. Renaming updates the Budget tab.`,
         html: `<input class="wb-input" type="text" data-finance-label="${r}" data-cell="${e(address)}" maxlength="120" autocomplete="off"`
           + ` aria-label="${e(`Account name, row ${r}, ${section.label}`)}" placeholder="Empty slot" value="${e(typeof cell.v === 'string' ? cell.v : '')}">`,
+        text: typeof cell.v === 'string' ? cell.v : '',
       };
     }
     const nf = style?.nf || cell.format || null;
     if (editable) {
+      const shown = formatExcel(cell.v, nf);
       return {
-        classes: ['wb-edit'], title,
+        classes: ['wb-edit'], title, text: shown.text, lead: shown.lead,
         html: inputHtml(`data-finance-cell="${e(address)}" data-cell="${e(address)}" aria-label="${e(`${sheet.name} ${address}`)}"`,
-          { raw: financeInputValue({ ...raw, ...range }), formatted: formatExcel(cell.v, nf), incomplete: false }),
+          { raw: financeInputValue({ ...raw, ...range }), formatted: shown, incomplete: false }),
       };
     }
     const text = typeof cell.v === 'string';
     const formatted = text || !nf ? { lead: '', text: cell.v == null ? '' : text ? cell.v : financeDisplay(cell), red: false, accounting: false } : formatExcel(cell.v, nf);
-    return { html: cellHtml(formatted), classes: formatted.red ? ['is-negative'] : [], title, spill: text && !style?.wrap && (!style?.h || style.h === 'left'), clip: text && !!style?.wrap };
+    return { html: cellHtml(formatted), classes: formatted.red ? ['is-negative'] : [], title,
+      text: formatted.text, lead: formatted.lead,
+      spill: text && !style?.wrap && (!style?.h || style.h === 'left'), clip: text && !!style?.wrap };
   };
   const groups = workbookRowGroups(layout, sheetId, openGroups);
   const summaryOf = new Map(groups.filter(group => group.summary).map(group => [group.summary, group]));
@@ -574,7 +657,7 @@ export function renderWorkbookFinance(sheetId, {
     return `<th class="wb-outline" scope="row"><button type="button" data-action="workbook-group" data-group="${e(group.id)}"`
       + ` aria-expanded="${group.expanded}" aria-label="${group.expanded ? 'Collapse' : 'Expand'} rows ${group.from} to ${group.to}">${group.expanded ? '−' : '+'}</button></th>`;
   };
-  return renderGrid({ geometry, rows, cols, merges: spec.merges, classOf, contentOf, freeze: spec.freeze, gutter, label: `${spec.tab}. Workbook grid.` });
+  return renderGrid({ geometry, rows, cols, merges: spec.merges, classOf, contentOf, styleOf: (r, c) => layout.styles[templates[rowTemplate[r]]?.[c - 1] - 1] || null, freeze: spec.freeze, gutter, label: `${spec.tab}. Workbook grid.` });
 }
 
 function insideGroup(layout, sheetId, row) {
@@ -633,15 +716,16 @@ export function renderWorkbookTopBox(sheetId, { sheet, layout = MBP_WORKBOOK_LAY
     const style = layout.styles[templates[rowTemplate[r]]?.[c - 1] - 1] || null;
     if (address in sheet.top) return valueContent(sheet.top[address], style?.nf || null, spec, address, null);
     const label = spec.labels[address];
-    if (label !== undefined && !DROPPED_LABELS.has(`${spec.kind}:${address}`)) return { html: e(label), spill: !style?.wrap && (!style?.h || style.h === 'left'), clip: !!style?.wrap };
+    if (label !== undefined && !DROPPED_LABELS.has(`${spec.kind}:${address}`)) return { html: e(label), text: label, spill: !style?.wrap && (!style?.h || style.h === 'left'), clip: !!style?.wrap };
     return {};
   };
   const merges = spec.merges.filter(merge => {
     const [a] = merge.split(':'), [r] = coordinate(a);
     return r >= box.from && r <= box.to;
   });
+  const styleOf = (r, c) => layout.styles[templates[rowTemplate[r]]?.[c - 1] - 1] || null;
   return `<div class="tc-wb-box"><h3>${e(spec.tab)}</h3>`
-    + renderGrid({ geometry, rows, cols, merges, classOf, contentOf, freeze: null, label: `${spec.tab} summary box` })
+    + renderGrid({ geometry, rows, cols, merges, classOf, contentOf, styleOf, freeze: null, label: `${spec.tab} summary box` })
     + `<button type="button" class="tc-button" data-action="workbook-open" data-sheet="${e(sheetId)}">Open ${e(spec.tab)}</button></div>`;
 }
 
