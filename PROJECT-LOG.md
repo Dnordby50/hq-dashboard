@@ -1,3 +1,12 @@
+## [2026-09-25 09:52 MST] owner: verify prompt 108 preview live
+By: Claude Code
+
+Published commit 1ca65c9 to origin/main and confirmed the deploy. production/owner-mbp-workbook.js, production/owner-mbp-workbook-layout.js, production/owner-studio.js, production/owner-studio.css and index.html all return HTTP 200 and match the committed bytes exactly. production/owner-mbp.md, SCHEMA.md, scripts/mbp-workbook-layout.py and PROJECT-LOG.md all return 404, so the generator and the internal documents are not published; only the presentation-only layout module is. Settings owner_mbp_autosave_ms and owner_mbp_workbook_default_sheet were verified live before the code shipped.
+
+Nothing in production was clicked or edited. The preview gate changes nothing for staff and nothing for the owner until ?mbp=workbook-preview is in the URL.
+
+Handoff to Dylan: open https://prescottepoxy.netlify.app/?v=owner-studio&mbp=workbook-preview, go to Sales Plan, and use Open workbook. Compare each of the eight sheets against the Excel file and reply approve, or list what is off. Two decisions are waiting in the entry below (Income Statement rows 73 and 74; whether SP and RP should also show Excel's outline bar). Step 4 stays unbuilt until then.
+
 ## [2026-09-25 09:35 MST] owner: prompt 108 step 1-3, full-screen MBP workbook clone behind a preview gate
 By: Claude Code
 
