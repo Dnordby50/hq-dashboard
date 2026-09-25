@@ -1,3 +1,12 @@
+## [2026-09-25 08:35 MST] owner: prompt 108 scoped, MBP full-screen workbook clone
+By: Cowork
+
+Changed: Wrote claude-code-prompt-108-mbp-workbook-fullscreen.md (16 locked decisions from a 15-question session with Dylan). Saved the reference workbook and a LibreOffice render of the 8 sheets OUTSIDE the repo at ~/Desktop/HQ/07 - Coaching & MBP/MBP Workbook Reference/ (private owner data, never commit).
+Findings: All 8 sheets (SP/RP TOTAL, Painting, Epoxy; Budget - 2; Income Statement - 2) already exist with source-faithful math (mbp:2026 rev 4, finance:2026 rev 10). The ask is presentation only. The workbook's only cross-sheet links are TOTAL = brand sum and Budget - 2 <-> IS - 2; SP/RP never feed Budget/IS, and TopCoat already does both. Uploaded file's plan inputs are identical to TopCoat's (annual SP/RP inputs and all 104 seasonal weights per line; budget plan values spot-checked). Live gaps: 1100px boxed grid, TopCoat grey styling on SP/RP, no merged quarters, no red/grey flag columns, rebuilt top boxes, notes wall above the grid. Exact flag rule recorded in the prompt (Grey if future or rounded cum actual >= rounded cum plan, else Red; no green state).
+Decisions: keep live actuals; verify-only plan diff; Saturday labels formatted "3 Jan"; true full screen with Excel-style bottom sheet tabs; one MBP summary tab replaces the 4 tabs; Excel-like autosave editing; keep Use TopCoat (right-click) and the period filter; drop IS company filter, show empty slots, add-account controls, Jump to, Weekly entry/Plan assumptions forms; Excel +/- outline groups on Budget/IS; notes behind one toolbar icon; phone shows summary only.
+Files touched: claude-code-prompt-108-mbp-workbook-fullscreen.md, PROJECT-LOG.md
+Next steps: Claude Code: build prompt 108 preview-first (AGENTS.md redesign rule), stop for Dylan's approval before switching the nav. Note local main is still diverged from origin/main (see entry below); pull/rebase before building.
+
 ## [2026-09-25 08:20 MST] customers: diagnose "can't see automatic drip turn-off button"
 By: Cowork
 
