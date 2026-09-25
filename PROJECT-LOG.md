@@ -1,3 +1,13 @@
+## [2026-09-25 08:20 MST] customers: diagnose "can't see automatic drip turn-off button"
+By: Cowork
+
+Changed: Nothing in the app. Live verification only (repo read, live site fetch, Supabase queries).
+Findings: The per-customer switch Codex shipped 2026-09-24 (f939b2c, "Automatic drips" On/Off card) IS live. prescottepoxy.netlify.app index.html SHA-256 d1b6e243... matches origin/main byte for byte and contains customerDripPreferenceHtml/pecCustDripsToggle; customers.drips_enabled exists (boolean, not null, default true). It renders ONLY on Customers > customer detail (renderCustomerDetail), between the customer header and Touches & notes, with no role gate. It is NOT on the lead detail (that page keeps the older per-enrollment "Drip" card with Stop), the estimate/job page, or the pipeline card. Coverage is complete today: 7 active enrollments (6 estimate follow-up on leads, 1 review on a job), all 7 resolve to a customer; 30/30 open leads have customer_id. customers_off = 0, so the switch has never been used.
+Likely cause: (1) looking on the lead or estimate page, or (2) a dashboard tab opened before 2026-09-24 11:07 still running the old bundle. The app has no new-version check, so a long-lived tab never picks up a deploy until a manual reload. Not a code defect.
+Repo state flag: local main is diverged from origin/main. Local has 54e47ee (cowork log, unpushed); origin has f939b2c + e7221a1 (Codex) not pulled. The two 2026-09-23 Cowork entries below were staged but never committed; committed now with this entry. Expect a PROJECT-LOG.md top-of-file conflict on the next pull.
+Files touched: PROJECT-LOG.md
+Next steps: Dylan: hard-refresh the dashboard, open Customers > the customer, set Automatic drips to Off. If he wants the switch on the lead/estimate pages too, that is a new scoped prompt. Dylan or Claude Code: pull/rebase local main onto origin/main and push 54e47ee + this commit.
+
 ## [2026-09-24 11:10 MST] customers: verify customer drip switch live
 By: Codex
 
@@ -15,6 +25,21 @@ Migration 20260924175618_customer_drip_preferences.sql was rehearsed against iso
 Sender checks cover scheduled sends, day-zero instant touch, approval and queued flush, with a fresh preference/enrollment check immediately before each provider call. Canceled legs are skipped without a false communication log; provider requests already in flight cannot be recalled. Tests cover customer isolation, lead/job kinds, copy-generation races, SMS-to-email changes, lookup failure, queued/pending cancellation, future-only re-enable, save/error/navigation behavior and role boundaries.
 
 Validation: npm test including posttest passed; new focused tests 12/12; existing drip-runner 56/56, phase3 63/63, approval 46/46. Exact migration isolated rehearsal passed. All touched CJS parse; npm run check:source passed; both HEAD and working dashboard have six parsing scripts; changed JSON and git diff --check passed. Synthetic browser desktop and 360px mobile checked off/on, refresh persistence, save failure, wrapping and 44px touch target. No production messages or test fixtures were created. Main checkout's staged Cowork log, ahead commit, audit workbook and locks were left untouched; work isolated in codex/customer-drip-control. Release verification follows after push.
+## [2026-09-23 15:55 MST] leads: Perstrive Zap v2 adds #epoxysales Slack alert
+By: Cowork
+
+Changed: Zap "Perstrive Meta leads to TopCoat" republished as v2 with step 3 Slack "Send Private Channel Message" to #epoxysales (C09AZE8CU0Z), bot name "PEC Leads": name, phone, email, city+zip, garage size, timeline, lead temp, link to TopCoat #leads. Step 3 only runs after the POST succeeds. Test message posted.
+Finding: TopCoat's own new-lead Slack alert (_pec-lead-notify.cjs notifyLeadSlack) did NOT fire for the 2026-09-23 test lead; the Netlify env has neither SLACK_LEADS_WEBHOOK nor SLACK_OFFICE_WEBHOOK set (function logs "lead alert skipped"). Every lead source is affected, not just Perstrive. If that env var is ever set, Perstrive leads will post twice; remove Zap step 3 at that point.
+
+## [2026-09-23 15:45 MST] quo: verify prompt 107 live
+By: Cowork
+Changed: Nothing. Live verification only (Supabase queries, repo read).
+Findings: Worker is live and working. 5 queue rows: Bill Phelps, Dan Toth, Parker Jones created in Quo (Parker queued 22:36 UTC, pushed 22:40 UTC, one tick); Kyle LeVasseur old number skipped. Three problems: (1) customer 9c6df566 Kyle LeVasseur has phone 9288008154, which is PEC's own Quo inbox (his lead 2dfefc36 has 5083306727); the sync created Quo contact 6ab443b7a9ac2fc635ba3b0e naming PEC's main line "Kyle LeVasseur". (2) runSyncPass returns ok:false when the contact list call fails without incrementing attempts or writing a heartbeat, so a Quo outage or bad key stalls silently and never reaches the Ops Queue. (3) The heartbeat only stamps on runs with work, so idle and dead look the same. Backfill dry run not run yet (needs the webhook secret or a staff session). Quo MCP credential expired in this session, so the Quo contact itself was not read.
+Files touched: PROJECT-LOG.md
+Next steps: Claude Code: skip any phone matching a pec_sms_senders / quo inbox number (never create or rename a contact on our own lines), count a contact-list failure as an attempt on every due row, stamp the heartbeat on every scheduled run.
+Handoff to Cowork: Run the backfill dry run once Dylan provides access.
+Handoff to Dylan: Fix Kyle LeVasseur's customer phone to 508-330-6727 and delete the "Kyle LeVasseur" contact on 928-800-8154 in Quo.
+
 ## [2026-09-23 15:45 MST] leads: Perstrive Meta Zap built, tested, published
 By: Cowork
 
