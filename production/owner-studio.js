@@ -3,7 +3,8 @@ import { mbpInputFields, applyMbpLive, applyMbpEdits, currentMbpWeek, mbpSaturda
 import { renderMbpInput, mbpSheetFields, parseMbpInput } from './owner-mbp-ui.js';
 import { FOCUS_FIELDS, routineStatus } from './owner-routine.js';
 import { calculateFinance } from './owner-finance.js';
-import { renderFinanceSheet, financeSnapshotView, financeInputCell, financeInputValue, parseFinanceInput, financeCompanyView, financeEmptySlot, financeSetAccountLabel, financeLabelTarget, financeSaveSizeError, FINANCE_COMPANIES } from './owner-finance-ui.js';
+import { renderWorkbookSheet, renderWorkbookFinance, renderWorkbookTopBox, renderSummaryPL, workbookStyleCss, workbookNotes, workbookNavigate, workbookSheet as workbookSheetMeta, isWorkbookSheetId, WORKBOOK_SHEETS } from './owner-mbp-workbook.js';
+import { renderFinanceSheet, financeSnapshotView, financeSectionRows, financeInputCell, financeInputValue, parseFinanceInput, financeCompanyView, financeEmptySlot, financeSetAccountLabel, financeLabelTarget, financeSaveSizeError, FINANCE_COMPANIES } from './owner-finance-ui.js';
 
 // Public application code only. Owner data lives behind the authenticated API,
 // in memory while signed in, and never in localStorage or a shared AI cache.
@@ -113,6 +114,10 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   let uid=null, epoch=0, allowed=false, status=null, mount=null, page='focus', docs=new Map(), requests=new Set(), pending=new Map(), dirty=false, busy=false, message='', bootstrapPromise=null;
   let brand='total', period='all', week=null, editor=false, sourceView=false, insight='';
   let mbpLiveMessage='',mbpLastCheck=0,mbpSaveRequest=null,mbpSourceFeed=null;
+  // Full-screen workbook state. workbookRoot is attached to document.body, outside the
+  // redrawn shell, so the Fullscreen API keeps one element for the whole visit.
+  let workbookSheetId=null,workbookRoot=null,workbookGroups=new Map(),workbookScroll=new Map();
+  let workbookNotesOpen=false,workbookStatus='',workbookTimer=null,workbookFocus=null,workbookBusy=false,workbookQueued=false;
   let financeYear=null, financeYears=[], financeSource=false, financeHidden=false, financeCreate=false, financeCreateRequest=null;
   // Income statement view state. null means "use the owner setting" until the user changes it.
   let financeCompany=null, financeShowEmpty=null, financeAdding=null;
@@ -123,6 +128,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     epoch++; requests.forEach(c=>c.abort()); requests.clear(); uid=null; allowed=false; status=null; docs.clear(); pending.clear(); dirty=false; busy=false; bootstrapPromise=null; insight=''; page='focus'; message='';denied=false;retryAt=0;failures=0;
     mbpLiveMessage='';mbpLastCheck=0;mbpSaveRequest=null;mbpSourceFeed=null;
     financeYear=null;financeYears=[];financeSource=false;financeCreate=false;financeCreateRequest=null;financeHidden=false;financeCompany=null;financeShowEmpty=null;financeAdding=null;
+    closeWorkbook(); workbookGroups.clear(); workbookScroll.clear();
     detach(); if(mount?.isConnected) mount.replaceChildren(); mount=null; onAccess(false);
   };
   const api=async(action,body,params={})=>{
@@ -179,9 +185,11 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       mbpLiveMessage=feed.disabled?'PEC automatic updates are paused.':'Saved historical inputs and manual edits are preserved.';
     } catch(err) {if(generation===epoch)mbpLiveMessage=`PEC refresh unavailable. Your saved inputs are still available. ${err.message}`;}
   }
+  // Edits are read from whatever surface is showing them: the page, or the full-screen workbook.
+  const scope=()=>workbookRoot||mount;
   function collectMbpEdits() {
     const body=docs.get(`mbp:${year()}`).body,fields=new Map(mbpInputFields(body).map(f=>[f.key,f])),edits=new Map();
-    for(const input of mount.querySelectorAll('[data-mbp-key]')) {
+    for(const input of scope().querySelectorAll('[data-mbp-key]')) {
       if(input.value===input.defaultValue)continue;
       const descriptor=fields.get(input.dataset.mbpKey);
       if(!descriptor)throw new Error('This calculated field cannot be changed.');
@@ -260,6 +268,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     if(!doc?.body.mbp) return head('YOUR MBP',kind==='sales'?'Sales Plan':'Revenue Produced','Private workbook connection')+note('Your original workbook is not imported yet. No sample numbers are being substituted.');
     const computed=calculateMbp(doc.body.mbp), sheet=computed.sheets.find(s=>s.kind===kind&&s.businessLineId===brand),canWeekly=brand!=='total'||kind==='revenue';
     return head('YOUR MBP · '+year(),kind==='sales'?'Sales Plan':'Revenue Produced','Edit the original input fields. Calculated totals and cumulative values update when you save.')+
+      (workbookPreview()?workbookSummaryPanel():'')+
       `<div class="tc-mbp-tabs" aria-label="Workbook tabs">${computed.sheets.filter(s=>s.kind===kind).map(s=>`<button type="button" data-action="brand" data-brand="${s.businessLineId}" aria-pressed="${brand===s.businessLineId}">${e(s.sourceTabName)}</button>`).join('')}</div>`+summary(sheet,doc.body,sourceView||editor)+snapshotNotice(doc.body)+mbpLiveNotice(doc.body)+(sourceView?'':renderSalesIntegrity(mbpSourceFeed,{kind,period}))+
       `<div class="tc-mbp-bar">${renderMbpPeriodFilter(period)}<div class="tc-row">${button(sourceView?'Return to working plan':'View original snapshot','source')}${sourceView?'':button('Plan assumptions','assumptions')}${sourceView||!canWeekly?'':button('Weekly entry','edit-week')}${sourceView?'':button('Refresh PEC values','mbp-refresh')}${sourceView||editor?'':button('Save changes','save-mbp-inputs',true)}</div></div>`+
       `<p class="tc-small tc-muted">* Seasonal annualization through ${e(sourceView?doc.body.mbp.asOfWeekEnding:mbpSaturday(doc.body.mbp.asOfWeekEnding))}. Missing inputs remain marked. Totals and formula cells stay calculated. ${brand==='total'?'Edit the business-line tabs for core plans and actuals.':''}</p>`+
@@ -278,7 +287,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     const computed=financeSource?body:calculateFinance(tagged?financeCompanyView(body,incomeCompany()):body),sheet=body.sheets.find(s=>s.kind===page);
     if(!sheet)return intro+controls+note('This year does not contain that workbook tab.');
     const warnings=body.source?.warnings||[],issues=computed.issues||[];
-    return intro+controls+(financeCreate?`<form data-form="finance-create" class="tc-panel"><h2>Add a budget year</h2><p>Copies the ${financeYear} planning structure and values. New income statement actuals start blank; ${financeYear} stays in your history.</p>${field('New year','newYear',Number(financeYear)+1,'number','min="2020" max="2100" step="1"')}<div class="tc-actionbar">${button('Cancel','finance-cancel-new')}${button('Create year','finance-create',true)}</div></form>`:'')+
+    return intro+(workbookPreview()?workbookSummaryPanel():'')+controls+(financeCreate?`<form data-form="finance-create" class="tc-panel"><h2>Add a budget year</h2><p>Copies the ${financeYear} planning structure and values. New income statement actuals start blank; ${financeYear} stays in your history.</p>${field('New year','newYear',Number(financeYear)+1,'number','min="2020" max="2100" step="1"')}<div class="tc-actionbar">${button('Cancel','finance-cancel-new')}${button('Create year','finance-create',true)}</div></form>`:'')+
       `<p class="tc-small tc-muted">${financeSource?'Original imported source.':`Private working copy · revision ${doc.revision}.`} ${e(body.source?.file||'')} ${financeSource?'':'Blank actuals remain blank until entered.'}</p>`+
       (body.carryForward?note(`Last fiscal year uses recorded ${body.carryForward.fromYear} actuals. ${body.carryForward.entered} of ${body.carryForward.expected} source entries were present; incomplete rows are not confirmed full-year totals.`):'')+
       (warnings.length||issues.length?`<details class="tc-notice tc-warning"><summary>Source workbook notes${issues.length?` · ${issues.length} formula cells need attention`:''}</summary>${warnings.map(w=>`<p>${e(w)}</p>`).join('')}${issues.length?`<p>Original formula errors are shown in their cells. They are not replaced by old saved totals.</p><p>${issues.slice(0,12).map(i=>e(`${i.sheetId}!${i.address}: ${i.code}`)).join(' · ')}</p>`:''}</details>`:'')+
@@ -286,9 +295,9 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       renderFinanceSheet(body,computed,sheet.id,{readOnly:financeSource||financeCreate,showHidden:financeHidden,company:tagged?incomeCompany():'combined',showEmpty:tagged&&incomeShowEmpty(),adding:financeAdding})+
       `<div class="tc-actionbar"><span class="tc-small tc-muted">Plans and actuals save together for this year. Other years retain their own values.</span>${financeSource?'':button('Save changes','finance-save',true)}</div>`;
   }
-  function collectFinance() {
-    const body=structuredClone(docs.get(financeKey()).body),sheet=body.sheets.find(s=>s.kind===page);
-    for(const input of mount.querySelectorAll('[data-finance-cell]')) {
+  function collectFinance(kind=page) {
+    const body=structuredClone(docs.get(workbookSheetId?`finance:${financeYear}`:financeKey()).body),sheet=body.sheets.find(s=>s.kind===kind);
+    for(const input of scope().querySelectorAll('[data-finance-cell]')) {
       const address=input.dataset.financeCell,cell=financeInputCell(sheet,address);
       if(!cell.editable||cell.f)throw new Error('Calculated cells cannot be changed.');
       if(input.value===financeInputValue(cell))continue;
@@ -299,7 +308,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       }
     }
     // Account names typed on the income statement land in the linked Budget - 2 column H cell.
-    for(const input of mount.querySelectorAll('[data-finance-label]')) {
+    for(const input of scope().querySelectorAll('[data-finance-label]')) {
       const row=Number(input.dataset.financeLabel),target=financeLabelTarget(body,sheet,row);
       if(!target)throw new Error(`Row ${row} is not linked to a budget account name.`);
       const current=target.sheet.cells[target.address]||{};
@@ -312,7 +321,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   }
   // The displayed name of an account row before this edit (formula-linked placeholders included).
   function computedLabel(row) {
-    const cell=mount.querySelector(`[data-finance-label="${row}"]`);
+    const cell=scope().querySelector(`[data-finance-label="${row}"]`);
     return cell?cell.defaultValue:null;
   }
   function addAccount(sectionId) {
@@ -361,8 +370,249 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   function insightsPage() { return head('PRIVATE · ON REQUEST','Turn numbers into decisions.','A direct, practical second look at your goals and progress.')+`<section class="tc-panel"><p>Generate sends your saved Q4 goals and MBP KPI summaries to Anthropic. Private check-in answers and problem notes are included only if selected below. No request is made until you click the button. Suggestions never change your plan or calendar.</p><label class="tc-check"><input type="checkbox" name="includeFocus"> Include today’s saved check-in answers</label><label class="tc-check"><input type="checkbox" name="includeProblems"> Include saved problem-solving notes</label>${button('Generate insights','generate-insights',true)}<p class="tc-small tc-muted">AI can make mistakes. Verify the numbers and choose the actions yourself.</p></section><section class="tc-panel tc-insight" data-insight aria-live="polite">${e(insight||'Your requested analysis will appear here. Nothing has been sent automatically.')}</section>`; }
   function settingsPage() {
     const c=status.config;
-    return head('YOUR ROUTINE','Protect the time.','Private owner settings. All schedule times use the selected timezone.')+`<form data-form="settings" class="tc-panel">${select('Morning check-in required','owner_studio_enabled',String(c.enabled),[['true','On'],['false','Off']])}${field('Morning start','owner_morning_time',c.morningTime,'time')}<fieldset><legend>PEC Sales and Revenue plans</legend>${select('Automatic PEC values','owner_mbp_live_enabled',String(c.mbpLiveEnabled??true),[['true','On'],['false','Paused']])}${field('Refresh while open (minutes)','owner_mbp_refresh_minutes',c.mbpRefreshMinutes||5,'number','min="1" max="60" step="1"')}<p class="tc-small tc-muted">FTP stays manual. Yellow manual overrides are retained during PEC refreshes.</p></fieldset><fieldset><legend>Income Statement</legend>${select('Default company view','owner_income_default_company',c.incomeDefaultCompany||'combined',FINANCE_COMPANIES)}${select('Show empty slots by default','owner_income_show_empty',String(c.incomeShowEmpty??false),[['false','Off'],['true','On']])}<p class="tc-small tc-muted">Applies when the Income Statement opens. The Company and Show empty slots controls on that page change the view for the current visit only.</p></fieldset><details class="tc-mbp-sources"><summary>Advanced schedule</summary><div class="tc-two-fields">${select('Weekly review day','owner_weekly_day',c.weeklyDay,DAYS.map((d,i)=>[i,d]))}${field('Weekly review start','owner_weekly_time',c.weeklyTime,'time')}${field('Morning target minutes','owner_morning_target_minutes',c.morningMinutes,'number','min="1" max="180"')}${field('Weekly target minutes','owner_weekly_target_minutes',c.weeklyMinutes,'number','min="1" max="180"')}${field('Timezone','owner_timezone',c.timezone)}</div><fieldset><legend>Morning days</legend>${DAYS.map((d,i)=>`<label class="tc-check"><input type="checkbox" name="day" value="${i}" ${c.morningDays.includes(i)?'checked':''}>${d}</label>`).join('')}</fieldset></details><div class="tc-actionbar">${button('Save routine','save-settings',true)}</div><p class="tc-small tc-muted">This controls TopCoat’s opening requirement, not a computer alarm. Calendar block creation and automated calendar adherence checks are not connected in this release.</p></form>`;
+    return head('YOUR ROUTINE','Protect the time.','Private owner settings. All schedule times use the selected timezone.')+`<form data-form="settings" class="tc-panel">${select('Morning check-in required','owner_studio_enabled',String(c.enabled),[['true','On'],['false','Off']])}${field('Morning start','owner_morning_time',c.morningTime,'time')}<fieldset><legend>PEC Sales and Revenue plans</legend>${select('Automatic PEC values','owner_mbp_live_enabled',String(c.mbpLiveEnabled??true),[['true','On'],['false','Paused']])}${field('Refresh while open (minutes)','owner_mbp_refresh_minutes',c.mbpRefreshMinutes||5,'number','min="1" max="60" step="1"')}<p class="tc-small tc-muted">FTP stays manual. Yellow manual overrides are retained during PEC refreshes.</p></fieldset><fieldset><legend>Full-screen workbook</legend>${field('Autosave after idle (milliseconds)','owner_mbp_autosave_ms',c.mbpAutosaveMs??800,'number','min="300" max="5000" step="50"')}${select('Sheet it opens on','owner_mbp_workbook_default_sheet',c.mbpWorkbookSheet||'sales_total',WORKBOOK_SHEETS.map(sheet=>[sheet.id,sheet.label]))}<p class="tc-small tc-muted">Typing in the workbook saves itself after this pause. Sheet tabs, scroll position and expanded groups are remembered separately.</p></fieldset><fieldset><legend>Income Statement</legend>${select('Default company view','owner_income_default_company',c.incomeDefaultCompany||'combined',FINANCE_COMPANIES)}${select('Show empty slots by default','owner_income_show_empty',String(c.incomeShowEmpty??false),[['false','Off'],['true','On']])}<p class="tc-small tc-muted">Applies when the Income Statement opens. The Company and Show empty slots controls on that page change the view for the current visit only.</p></fieldset><details class="tc-mbp-sources"><summary>Advanced schedule</summary><div class="tc-two-fields">${select('Weekly review day','owner_weekly_day',c.weeklyDay,DAYS.map((d,i)=>[i,d]))}${field('Weekly review start','owner_weekly_time',c.weeklyTime,'time')}${field('Morning target minutes','owner_morning_target_minutes',c.morningMinutes,'number','min="1" max="180"')}${field('Weekly target minutes','owner_weekly_target_minutes',c.weeklyMinutes,'number','min="1" max="180"')}${field('Timezone','owner_timezone',c.timezone)}</div><fieldset><legend>Morning days</legend>${DAYS.map((d,i)=>`<label class="tc-check"><input type="checkbox" name="day" value="${i}" ${c.morningDays.includes(i)?'checked':''}>${d}</label>`).join('')}</fieldset></details><div class="tc-actionbar">${button('Save routine','save-settings',true)}</div><p class="tc-small tc-muted">This controls TopCoat’s opening requirement, not a computer alarm. Calendar block creation and automated calendar adherence checks are not connected in this release.</p></form>`;
   }
+  /* ---------------------------------------------------------------- full-screen workbook
+     The overlay lives on document.body, not inside the redrawn shell, so the Fullscreen
+     API keeps one element across redraws. Edits go through the existing mbp-inputs
+     changed-field save and the existing finance save; there is no second write route. */
+  const workbookParam=()=>{try{return new URLSearchParams(globalThis.location?.search||'').get('mbp');}catch{return null;}};
+  const workbookPreview=()=>workbookParam()==='workbook-preview';
+  const autosaveMs=()=>status?.config?.mbpAutosaveMs??800;
+  const workbookDefaultSheet=()=>status?.config?.mbpWorkbookSheet||'sales_total';
+  const groupStoreKey=id=>`topcoat.owner.workbook.groups.${id}`;
+  // Per-viewer convenience only. It never holds owner numbers and a blocked or empty
+  // store simply falls back to the workbook's saved collapsed state.
+  const groupsFor=id=>{
+    if(!workbookGroups.has(id)){
+      let saved=[];
+      try{saved=JSON.parse(globalThis.localStorage?.getItem(groupStoreKey(id))||'[]');}catch{saved=[];}
+      workbookGroups.set(id,new Set(Array.isArray(saved)?saved.filter(v=>typeof v==='string'):[]));
+    }
+    return workbookGroups.get(id);
+  };
+  const rememberGroups=id=>{try{globalThis.localStorage?.setItem(groupStoreKey(id),JSON.stringify([...groupsFor(id)]));}catch{}};
+  async function loadWorkbookSheet() {
+    const meta=workbookSheetMeta(workbookSheetId);
+    if(!meta)return;
+    if(meta.kind==='sales'||meta.kind==='revenue'){await getDoc(`mbp:${year()}`,{});if(!dirty)await refreshMbpLive();return;}
+    financeYears=(await api('finance-years')).documents;
+    financeYear??=financeYears.find(d=>d.doc_key===`finance:${year()}`)?.doc_key.slice(8)||financeYears[0]?.doc_key.slice(8)||String(year());
+    await getDoc(`finance:${financeYear}`,{});
+  }
+  function workbookGrid() {
+    const meta=workbookSheetMeta(workbookSheetId);
+    if(meta.kind==='sales'||meta.kind==='revenue') {
+      const doc=docs.get(`mbp:${year()}`);
+      if(!doc?.body.mbp)return {grid:'<p class="tc-wb-empty">Your workbook is not imported yet. No sample numbers are being substituted.</p>',notes:[]};
+      const computed=calculateMbp(doc.body.mbp);
+      const sheet=computed.sheets.find(s=>s.kind===meta.kind&&s.businessLineId===meta.businessLineId);
+      return {
+        grid:renderWorkbookSheet(workbookSheetId,{sheet,body:doc.body,today:new Date(now()).toISOString().slice(0,10),period,readOnly:false}),
+        notes:workbookNotes({mbpBody:doc.body,liveMessage:mbpLiveMessage,config:status.config,sourceFeed:mbpSourceFeed}),
+      };
+    }
+    const doc=docs.get(`finance:${financeYear}`);
+    if(!doc?.body.sheets)return {grid:'<p class="tc-wb-empty">Your budget and income statement have not been imported yet.</p>',notes:[]};
+    const computed=calculateFinance(doc.body);
+    const sheet=doc.body.sheets.find(s=>s.kind===meta.kind);
+    return {
+      grid:renderWorkbookFinance(workbookSheetId,{body:doc.body,computed,openGroups:groupsFor(workbookSheetId),sectionRows:sheet?financeSectionRows(sheet):new Map()}),
+      notes:workbookNotes({financeBody:doc.body,financeIssues:computed.issues||[],config:status.config}),
+    };
+  }
+  function drawWorkbook() {
+    if(!workbookRoot||!workbookSheetId)return;
+    const meta=workbookSheetMeta(workbookSheetId), weekly=meta.kind==='sales'||meta.kind==='revenue';
+    const {grid,notes}=workbookGrid();
+    const full=typeof document!=='undefined'&&document.fullscreenElement===workbookRoot;
+    const tabs=WORKBOOK_SHEETS.map(sheet=>`<button type="button" data-action="workbook-sheet" data-sheet="${e(sheet.id)}" aria-current="${sheet.id===workbookSheetId}">${e(sheet.label)}</button>`).join('');
+    workbookRoot.innerHTML=`<style>${workbookStyleCss()}</style>`
+      +`<div class="tc-wb-toolbar"><span class="tc-wb-title">${e(meta.label)}</span>`
+      +(weekly?renderMbpPeriodFilter(period).replace('tc-field','tc-field tc-wb-period'):'')
+      +`${full?'':'<button type="button" data-action="workbook-fullscreen">Go full screen</button>'}`
+      +`<button type="button" data-action="workbook-notes" class="${workbookNotesOpen?'tc-wb-notes-open':''}" aria-pressed="${workbookNotesOpen}" aria-label="${notes.length} data notes">⚠ ${notes.length}</button>`
+      +`<span class="tc-wb-status ${workbookStatus==='Conflict'?'is-conflict':''}" role="status" aria-live="polite">${e(workbookStatus)}</span>`
+      +`<button type="button" data-action="workbook-exit">Exit</button></div>`
+      +`<div class="tc-wb-main">${grid}${workbookNotesOpen?`<aside class="tc-wb-notes"><h2>Data notes</h2><ul>${notes.map(n=>`<li>${e(n.text)}</li>`).join('')||'<li>No open notes.</li>'}</ul></aside>`:''}</div>`
+      +`<nav class="tc-wb-tabs" aria-label="Workbook sheets">${tabs}</nav>`;
+    const surface=workbookRoot.querySelector('.tc-wb-surface');
+    if(surface){
+      const saved=workbookScroll.get(workbookSheetId);
+      if(saved){surface.scrollTop=saved.top;surface.scrollLeft=saved.left;}
+      surface.addEventListener('scroll',()=>workbookScroll.set(workbookSheetId,{top:surface.scrollTop,left:surface.scrollLeft}),{passive:true});
+    }
+    if(workbookFocus){
+      const next=workbookRoot.querySelector(`.wb-input[data-cell="${workbookFocus}"]`);
+      if(next){next.focus();next.setSelectionRange?.(next.value.length,next.value.length);}
+    }
+  }
+  function workbookCellList(){return [...workbookRoot.querySelectorAll('.wb-input')].map(el=>el.dataset.cell);}
+  function queueWorkbookSave() {
+    if(workbookTimer)clearTimeout(workbookTimer);
+    workbookStatus='Saving…';
+    const badge=workbookRoot?.querySelector('.tc-wb-status');
+    if(badge)badge.textContent=workbookStatus;
+    workbookTimer=setTimeout(()=>{workbookTimer=null;void runWorkbookSave();},Math.min(5000,Math.max(300,autosaveMs())));
+  }
+  // One save at a time. Further typing during a save schedules the next one rather than
+  // racing it, so the changed-field batch and its request id stay consistent.
+  async function runWorkbookSave() {
+    if(workbookBusy){workbookQueued=true;return;}
+    const meta=workbookSheetMeta(workbookSheetId), generation=epoch;
+    workbookBusy=true;
+    try {
+      if(meta.kind==='sales'||meta.kind==='revenue') {
+        const key=`mbp:${year()}`,doc=docs.get(key),edits=collectMbpEdits();
+        if(!edits.length){workbookStatus='Saved';dirty=false;return;}
+        applyMbpEdits(doc.body,edits,new Date(now()).toISOString());
+        const payload={year:year(),revision:doc.revision,edits},encoded=JSON.stringify(payload);
+        if(mbpSaveRequest?.encoded!==encoded)mbpSaveRequest={encoded,id:crypto.randomUUID()};
+        const result=await api('mbp-inputs',{...payload,requestId:mbpSaveRequest.id});
+        if(generation!==epoch)return;
+        docs.set(key,result.document);mbpSaveRequest=null;
+      } else {
+        const key=`finance:${financeYear}`;
+        docs.get(key).body=collectFinance(meta.kind);
+        await save(key,docs.get(key).body);
+        if(generation!==epoch)return;
+      }
+      dirty=false;workbookStatus='Saved';
+    } catch(err) {
+      if(generation!==epoch)return;
+      // Typed values stay on screen. A conflict is never resolved by overwriting.
+      workbookStatus='Conflict';
+      message=err.status===409?err.message:`Not saved: ${err.message}`;
+      const badge=workbookRoot?.querySelector('.tc-wb-status');
+      if(badge){badge.textContent=workbookStatus;badge.classList.add('is-conflict');badge.title=message;}
+      return;
+    } finally {
+      workbookBusy=false;
+      if(workbookQueued&&generation===epoch){workbookQueued=false;queueWorkbookSave();}
+    }
+    if(generation===epoch&&!workbookQueued&&workbookRoot)drawWorkbook();
+  }
+  async function openWorkbook(sheetId) {
+    workbookSheetId=isWorkbookSheetId(sheetId)?sheetId:workbookDefaultSheet();
+    workbookStatus='';workbookFocus=null;
+    await loadWorkbookSheet();
+    if(!workbookRoot) {
+      workbookRoot=document.createElement('div');
+      workbookRoot.className='tc-wb-overlay';
+      workbookRoot.setAttribute('role','dialog');
+      workbookRoot.setAttribute('aria-label','MBP workbook');
+      workbookRoot.addEventListener('click',workbookClick);
+      workbookRoot.addEventListener('change',workbookChange);
+      workbookRoot.addEventListener('input',workbookInput);
+      workbookRoot.addEventListener('keydown',workbookKeydown);
+      // A cell shows the workbook's formatted value and swaps to the editable number while
+      // it has focus, the way Excel swaps the cell display for the formula bar.
+      workbookRoot.addEventListener('focusin',event=>{
+        const input=event.target;
+        if(!input.classList?.contains('wb-input'))return;
+        workbookFocus=input.dataset.cell;
+        if(input.dataset.raw!==undefined&&input.value===input.dataset.display){input.value=input.dataset.raw;input.defaultValue=input.dataset.raw;}
+      });
+      workbookRoot.addEventListener('focusout',event=>{
+        const input=event.target;
+        if(!input.classList?.contains('wb-input')||input.dataset.display===undefined)return;
+        if(input.value===input.dataset.raw){input.value=input.dataset.display;input.defaultValue=input.dataset.display;}
+      });
+      workbookRoot.addEventListener('contextmenu',workbookContextMenu);
+      document.body.appendChild(workbookRoot);
+    }
+    drawWorkbook();
+    try{await workbookRoot.requestFullscreen?.();}catch{/* the overlay already covers the viewport */}
+    drawWorkbook();
+  }
+  function closeWorkbook() {
+    if(workbookTimer){clearTimeout(workbookTimer);workbookTimer=null;}
+    if(typeof document!=='undefined'&&document.fullscreenElement===workbookRoot)void document.exitFullscreen?.();
+    workbookRoot?.remove();workbookRoot=null;workbookSheetId=null;workbookNotesOpen=false;workbookStatus='';workbookFocus=null;
+  }
+  function workbookInput(event) {
+    if(!event.target.classList?.contains('wb-input'))return;
+    dirty=true;workbookFocus=event.target.dataset.cell;
+    queueWorkbookSave();
+  }
+  function workbookChange(event) {
+    if(event.target.dataset?.change!=='period')return;
+    period=event.target.value;drawWorkbook();
+  }
+  function workbookKeydown(event) {
+    if(event.key==='Escape'&&!event.target.classList?.contains('wb-input')){event.preventDefault();closeWorkbook();draw();return;}
+    if(!event.target.classList?.contains('wb-input'))return;
+    const input=event.target;
+    if(event.key==='Escape'){event.preventDefault();input.value=input.defaultValue;input.blur();return;}
+    if(event.key==='Delete'&&!input.value){event.preventDefault();return;}
+    if(!['Enter','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.key))return;
+    if((event.key==='ArrowLeft'||event.key==='ArrowRight')&&input.value)return;
+    event.preventDefault();
+    const next=workbookNavigate(workbookCellList(),input.dataset.cell,event.key,event.shiftKey);
+    const element=next&&workbookRoot.querySelector(`.wb-input[data-cell="${next}"]`);
+    if(element){workbookFocus=next;element.focus();element.setSelectionRange?.(element.value.length,element.value.length);}
+  }
+  // Right-click (or long-press) on a yellow manual override offers the same Use TopCoat
+  // reset as the button on the working plan; eligibility is unchanged.
+  function workbookContextMenu(event) {
+    const input=event.target.closest?.('.wb-input[data-mbp-reset]');
+    if(!input)return;
+    event.preventDefault();
+    if(!confirm('Use the TopCoat value for this cell? Your manual override is replaced and the cell updates automatically again.'))return;
+    void workbookUseTopCoat(input.dataset.mbpReset);
+  }
+  async function workbookUseTopCoat(resetKey) {
+    const key=`mbp:${year()}`,doc=docs.get(key),generation=epoch;
+    workbookStatus='Saving…';drawWorkbook();
+    try {
+      const edits=[...collectMbpEdits().filter(edit=>edit.key!==resetKey),{key:resetKey,mode:'topcoat'}];
+      applyMbpEdits(doc.body,edits,new Date(now()).toISOString());
+      const payload={year:year(),revision:doc.revision,edits},encoded=JSON.stringify(payload);
+      if(mbpSaveRequest?.encoded!==encoded)mbpSaveRequest={encoded,id:crypto.randomUUID()};
+      const result=await api('mbp-inputs',{...payload,requestId:mbpSaveRequest.id});
+      if(generation!==epoch)return;
+      docs.set(key,result.document);mbpSaveRequest=null;dirty=false;workbookStatus='Saved';
+    } catch(err) {if(generation===epoch){workbookStatus='Conflict';message=err.message;}}
+    if(generation===epoch)drawWorkbook();
+  }
+  async function workbookClick(event) {
+    const target=event.target.closest?.('[data-action]');
+    if(!target||busy)return;
+    const action=target.dataset.action,generation=epoch;
+    busy=true;
+    try {
+      if(action==='workbook-exit'){closeWorkbook();draw();return;}
+      if(action==='workbook-fullscreen'){try{await workbookRoot.requestFullscreen?.();}catch{}drawWorkbook();return;}
+      if(action==='workbook-notes'){workbookNotesOpen=!workbookNotesOpen;drawWorkbook();return;}
+      if(action==='workbook-group'){
+        const id=target.dataset.group,open=groupsFor(workbookSheetId);
+        if(open.has(id))open.delete(id);else open.add(id);
+        rememberGroups(workbookSheetId);drawWorkbook();return;
+      }
+      if(action==='workbook-sheet'){
+        if(workbookTimer){clearTimeout(workbookTimer);workbookTimer=null;await runWorkbookSave();}
+        workbookSheetId=target.dataset.sheet;workbookFocus=null;
+        await loadWorkbookSheet();
+        if(generation===epoch)drawWorkbook();
+        return;
+      }
+    } catch(err) {
+      if(generation!==epoch)return;
+      workbookStatus='Conflict';message=err.message;
+      const badge=workbookRoot?.querySelector('.tc-wb-status');
+      if(badge){badge.textContent=workbookStatus;badge.title=message;}
+    } finally {busy=false;}
+  }
+  /** Preview-gated MBP summary: the workbook's own top boxes plus the Budget - 2 P&L box. */
+  function workbookSummaryPanel() {
+    const mbpDoc=docs.get(`mbp:${year()}`),financeDoc=docs.get(`finance:${financeYear}`);
+    const computed=mbpDoc?.body.mbp?calculateMbp(mbpDoc.body.mbp):null;
+    const boxes=computed?WORKBOOK_SHEETS.filter(sheet=>sheet.businessLineId).map(sheet=>renderWorkbookTopBox(sheet.id,{sheet:computed.sheets.find(s=>s.kind===sheet.kind&&s.businessLineId===sheet.businessLineId)})).join(''):'';
+    const pl=financeDoc?.body.sheets?renderSummaryPL(financeDoc.body,calculateFinance(financeDoc.body)):'<p class="tc-small tc-muted">Open Budget Plans once to load the P&amp;L box.</p>';
+    return `<section class="tc-panel"><div class="tc-row"><h2>MBP summary preview</h2>${button('Open workbook','workbook-open',true,`data-sheet="${e(workbookDefaultSheet())}"`)}</div>`
+      +`<div class="tc-wb-boxes">${boxes}</div>${pl}</section>`;
+  }
+
   async function loadPage() {
     if(['budget','income'].includes(page)) {
       financeYears=(await api('finance-years')).documents;
@@ -372,6 +622,13 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     }
     if(page==='focus') { await getDoc(focusKey(),{status:'draft',answers:{}}); await getDoc(planKey(),{items:[]}); }
     if(['sales','revenue','assumptions'].includes(page)) {await getDoc(page==='assumptions'?`mbp:${year()}`:mbpKey(),{});if(!sourceView&&page!=='assumptions')await refreshMbpLive();}
+    // Preview gate only: the summary panel reads the plan and the budget together.
+    if(workbookPreview()&&['sales','revenue','budget','income'].includes(page)) {
+      await getDoc(`mbp:${year()}`,{});
+      if(!financeYears.length)financeYears=(await api('finance-years')).documents;
+      financeYear??=financeYears.find(d=>d.doc_key===`finance:${year()}`)?.doc_key.slice(8)||financeYears[0]?.doc_key.slice(8)||String(year());
+      await getDoc(`finance:${financeYear}`,{});
+    }
     if(page==='review') await getDoc(reviewKey(),{status:'draft'});
     if(page==='rocks') await getDoc(planKey(),{items:[]});
     if(page==='problems') await getDoc('problems',{items:[]});
@@ -385,6 +642,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     const nav=mount.querySelector('.tc-nav'), current=nav.querySelector('[aria-current="page"]');
     // Keep the active tab visible on narrow screens, without scrolling the page.
     if(current) nav.scrollLeft=Math.max(0,current.offsetLeft-(nav.clientWidth-current.offsetWidth)/2);
+    if(workbookSheetId&&workbookRoot)drawWorkbook();
     mount.oninput=event=>{if(!mount||event.target.dataset.change||page==='insights')return;if(event.target.dataset.mbpKey){const entry=event.target.closest('.tc-mbp-entry');entry.classList.toggle('is-manual',entry.dataset.savedManual==='true'||event.target.value!==event.target.defaultValue);entry.querySelector('.tc-mbp-input-source').textContent=event.target.value!==event.target.defaultValue?'Edited · unsaved':entry.dataset.savedManual==='true'?'Manually edited':'Unchanged';}dirty=true; mount.querySelectorAll('.tc-save-status,.tc-focus-save-status').forEach(el=>el.textContent='Unsaved changes. Save before leaving.');};
     mount.onchange=async event=>{if(event.target.hasAttribute('data-milestone-toggle'))updateMilestoneProgress(event.target.closest('.tc-milestones'));if(event.target.hasAttribute('data-focus-milestone'))updateMilestoneProgress(event.target.closest('.tc-weekly-rocks'),true);const change=event.target.dataset.change; if(change){
       if(change==='finance-section'){const scroll=mount.querySelector('.tc-finance-scroll'),row=mount.querySelector(`[data-finance-row="${event.target.value}"]`);if(row)scroll.scrollTop=row.offsetTop-scroll.querySelector('thead').offsetHeight;return;}
@@ -400,6 +658,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   }
   async function navigate(next) {
     if(dirty) {if(!confirm('Discard unsaved changes? Saved records will stay intact.')) return;docs.clear();}
+    closeWorkbook();
     dirty=false; page=next; editor=false; message=''; await loadPage(); draw();
   }
   const formData=name=>Object.fromEntries(new FormData(mount.querySelector(`[data-form="${name}"]`)));
@@ -465,6 +724,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
         }
         if(generation===epoch)draw();return;
       }
+      if(action==='workbook-open') { await openWorkbook(target.dataset.sheet); return; }
       if(action==='leave') { if(due()) throw new Error('Complete your saved check-in or record an emergency bypass first.'); if(!dirty||confirm('Discard unsaved edits and return to TopCoat?')) {dirty=false; window.pecSwitchView?.('dashboard');} return; }
       if(action==='source') { if(dirty&&!confirm('Discard unsaved edits?'))return; dirty=false;sourceView=!sourceView;editor=false;await loadPage(); }
       if(action==='brand') { if(dirty&&!confirm('Discard unsaved edits?'))return;dirty=false;brand=target.dataset.brand;editor=false; }
@@ -515,6 +775,12 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     if(!allowed&&!await bootstrap()) { if(root.isConnected) root.textContent=message||'This workspace is private to its owner.'; return; }
     if(generation!==epoch&&getSession()?.user?.id!==uid)return;
     await loadPage(); if(mount===root&&root.isConnected)draw();
+    // ?v=owner-studio&mbp=workbook&sheet=<id> reopens the workbook. Full screen needs a
+    // click, so the deep link opens the overlay and its toolbar offers Go full screen.
+    if(workbookParam()==='workbook'&&!workbookSheetId&&mount===root&&root.isConnected) {
+      let sheet=null; try{sheet=new URLSearchParams(globalThis.location?.search||'').get('sheet');}catch{}
+      await openWorkbook(sheet);
+    }
   };
   const canLeave=()=>!due()&&(!dirty||confirm('Discard unsaved owner-workspace edits?'));
   const tick=()=>{if(getSession()?.user?.id!==uid){reset();return;}if(uid&&!denied&&retryAt&&new Date(now()).getTime()>=retryAt){void bootstrap();return;}if(allowed&&status){const current=routineStatus(now(),status.config,status.focus);if(current.day!==status.routine.day){if(dirty)return;docs.clear();status.routine=current;void bootstrap();}else if(due()&&!document.getElementById('topcoat-owner-studio'))openOwner();else if(mount?.isConnected&&['sales','revenue'].includes(page)&&!sourceView&&!dirty&&!busy&&!editor&&!document.hidden&&!(mount.contains(document.activeElement)&&document.activeElement?.matches('input,textarea,select'))&&status.config.mbpLiveEnabled!==false&&new Date(now()).getTime()-mbpLastCheck>=(status.config.mbpRefreshMinutes||5)*60000){const generation=epoch,activePage=page;busy=true;void refreshMbpLive().then(()=>{if(generation===epoch&&mount?.isConnected&&page===activePage&&!sourceView&&!dirty)draw();}).finally(()=>{if(generation===epoch)busy=false;});}}};
@@ -525,5 +791,5 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     // authorization, not this convenience guard, protects private records.
     document.addEventListener('click',event=>{const nav=event.target.closest?.('[data-tab], [data-pec-view], [data-rd-view]');if(!nav||nav.closest('#topcoat-owner-studio'))return;if(due()){event.preventDefault();event.stopImmediatePropagation();openOwner();}},true);
   }
-  return {bootstrap,render,reset,due,canLeave,tick,isAllowed:()=>allowed,sessionChanged:()=>{if(getSession()?.user?.id!==uid)reset();},unmount:()=>{detach();mount=null;dirty=false;docs.clear();}};
+  return {bootstrap,render,reset,due,canLeave,tick,isAllowed:()=>allowed,sessionChanged:()=>{if(getSession()?.user?.id!==uid)reset();},unmount:()=>{closeWorkbook();detach();mount=null;dirty=false;docs.clear();}};
 }

@@ -10,6 +10,8 @@
     "production/owner-mbp.js",
     "production/owner-mbp-inputs.js",
     "production/owner-mbp-ui.js",
+    "production/owner-mbp-workbook-layout.js",
+    "production/owner-mbp-workbook.js",
     "production/owner-routine.js",
     "production/owner-finance.js",
     "production/owner-finance-ui.js",

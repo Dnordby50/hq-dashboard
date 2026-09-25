@@ -6,7 +6,7 @@ const { fetchMbpLive } = require('../../production/owner-mbp-live.cjs');
 const FINANCE_YEAR = /^finance:(20[2-9]\d|2100)$/;
 const DOC = /^(mbp:\d{4}|source:\d{4}|(?:source:)?finance:(?:20[2-9]\d|2100)|focus:\d{4}-\d{2}-\d{2}|review:\d{4}-\d{2}-\d{2}|plan:\d{4}-q[1-4]|problems)$/;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone','owner_mbp_live_enabled','owner_mbp_refresh_minutes','owner_income_default_company','owner_income_show_empty'];
+const CONFIG_KEYS = ['owner_studio_enabled','owner_morning_time','owner_morning_days','owner_morning_target_minutes','owner_weekly_time','owner_weekly_day','owner_weekly_target_minutes','owner_timezone','owner_mbp_live_enabled','owner_mbp_refresh_minutes','owner_income_default_company','owner_income_show_empty','owner_mbp_autosave_ms','owner_mbp_workbook_default_sheet'];
 // Request bodies above this are refused before parsing. finance:2026 is about 1.72 MB
 // compact; the database RPC separately refuses bodies over 2,000,000 bytes of jsonb text.
 const MAX_BODY_BYTES = 1800000;

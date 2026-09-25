@@ -7,6 +7,7 @@ test('MBP live refresh defaults do not enable or alter the existing morning rout
     enabled:false, timezone:'America/Phoenix', morningDays:[1,2,3,4,5],
     morningTime:'06:20', morningMinutes:10, weeklyDay:1, weeklyTime:'08:00', weeklyMinutes:30,
     mbpLiveEnabled:true, mbpRefreshMinutes:5, incomeDefaultCompany:'combined', incomeShowEmpty:false,
+    mbpAutosaveMs:800, mbpWorkbookSheet:'sales_total',
   });
   const config=ownerConfig([
     {key:'owner_studio_enabled',value:'true'},

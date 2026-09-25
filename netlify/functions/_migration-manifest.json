@@ -3939,6 +3939,22 @@
           "name": "customers.drips_enabled"
         }
       ]
+    },
+    {
+      "file": "20260925160229_owner_mbp_workbook_settings.sql",
+      "date": null,
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "owner_mbp_autosave_ms"
+        },
+        {
+          "kind": "setting",
+          "name": "owner_mbp_workbook_default_sheet"
+        }
+      ]
     }
   ],
   "knownTables": [

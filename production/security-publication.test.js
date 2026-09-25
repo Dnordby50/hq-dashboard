@@ -8,7 +8,19 @@ const manifest = JSON.parse(await readFile(new URL('../scripts/public-assets.jso
 
 test('internal documents, backend code, maps and environment files cannot be published', () => {
   for (const name of ['AGENTS.md', 'CLAUDE.md', 'SCHEMA.md', 'features.json', '.env', 'netlify/functions/mcp.cjs', 'supabase/schema.sql', 'estimator/assets/source.js.map', 'estimator/notes.md', 'estimator/assets/../../.env']) assert.equal(allowedPublicPath(name), false, name);
-  for (const name of ['index.html', 'help/whats-new.json', 'production/owner-studio.js', 'estimator/sw.js', 'estimator/assets/index-A1b2.js']) assert.equal(allowedPublicPath(name), true, name);
+  for (const name of ['index.html', 'help/whats-new.json', 'production/owner-studio.js', 'production/owner-mbp-workbook.js', 'production/owner-mbp-workbook-layout.js', 'estimator/sw.js', 'estimator/assets/index-A1b2.js']) assert.equal(allowedPublicPath(name), true, name);
+});
+
+// The generated workbook layout is published, so it must carry presentation only.
+test('the published workbook layout contains no owner numbers, account names or workbook bytes', async () => {
+  const source = await readFile(new URL('../production/owner-mbp-workbook-layout.js', import.meta.url), 'utf8');
+  assert.ok(!/\$\s?\d/.test(source), 'no currency amounts');
+  assert.ok(!/\.xlsx|Finishing Touch|Prescott Epoxy|Dylan/i.test(source), 'no workbook file name or private names');
+  const { MBP_WORKBOOK_LAYOUT } = await import('../production/owner-mbp-workbook-layout.js');
+  for (const [id, sheet] of Object.entries(MBP_WORKBOOK_LAYOUT.sheets)) {
+    if (id === 'budget' || id === 'income') assert.deepEqual(sheet.labels, {}, `${id} account names stay in the private document`);
+    for (const label of Object.values(sheet.labels)) assert.ok(!/\d[\d,]{2,}/.test(label), `${id} label looks like a number: ${label}`);
+  }
 });
 
 async function fixture() {

@@ -1,5 +1,8 @@
 // Pure shared schedule and saved-response validation. Ten minutes is a target,
 // not an idle-time requirement. Only a successfully saved response closes a day.
+// Workbook sheet ids, kept local so the server function does not pull the browser
+// layout module in. owner-mbp-workbook.test.js asserts this matches WORKBOOK_SHEETS.
+export const WORKBOOK_SHEET_IDS = Object.freeze(['sales_total', 'sales_painting', 'sales_epoxy', 'revenue_total', 'revenue_painting', 'revenue_epoxy', 'budget', 'income']);
 export const FOCUS_FIELDS = Object.freeze([
   ['alignment', 'What progress have you made on this week’s quarterly-rock milestones? On Monday, what will you complete?'],
   ['yesterday', 'What happened with your last workday\'s commitments and calendar blocks?'],
@@ -35,6 +38,11 @@ export function ownerConfig(rows = []) {
   const mbpRefresh = map.owner_mbp_refresh_minutes === undefined ? '5' : map.owner_mbp_refresh_minutes;
   const mbpRefreshMinutes = Number(mbpRefresh);
   if (!['string', 'number'].includes(typeof mbpRefresh) || !Number.isInteger(mbpRefreshMinutes) || mbpRefreshMinutes < 1 || mbpRefreshMinutes > 60) throw new Error('MBP refresh interval setting is invalid.');
+  const autosave = map.owner_mbp_autosave_ms === undefined ? '800' : map.owner_mbp_autosave_ms;
+  const mbpAutosaveMs = Number(autosave);
+  if (!['string', 'number'].includes(typeof autosave) || !Number.isInteger(mbpAutosaveMs) || mbpAutosaveMs < 300 || mbpAutosaveMs > 5000) throw new Error('Workbook autosave delay setting is invalid.');
+  const mbpWorkbookSheet = map.owner_mbp_workbook_default_sheet === undefined ? 'sales_total' : map.owner_mbp_workbook_default_sheet;
+  if (!WORKBOOK_SHEET_IDS.includes(mbpWorkbookSheet)) throw new Error('Workbook default sheet setting is invalid.');
   const incomeCompany = map.owner_income_default_company === undefined ? 'combined' : map.owner_income_default_company;
   if (!['combined', 'PEC', 'FTP'].includes(incomeCompany)) throw new Error('Income statement default company setting is invalid.');
   const incomeEmpty = map.owner_income_show_empty === undefined ? 'false' : map.owner_income_show_empty;
@@ -44,7 +52,7 @@ export function ownerConfig(rows = []) {
     incomeDefaultCompany: incomeCompany, incomeShowEmpty: incomeEmpty === 'true',
     morningTime: time('owner_morning_time', '06:20'), morningMinutes: duration('owner_morning_target_minutes', 10),
     weeklyDay, weeklyTime: time('owner_weekly_time', '08:00'), weeklyMinutes: duration('owner_weekly_target_minutes', 30),
-    mbpLiveEnabled: mbpLive === 'true', mbpRefreshMinutes,
+    mbpLiveEnabled: mbpLive === 'true', mbpRefreshMinutes, mbpAutosaveMs, mbpWorkbookSheet,
   };
 }
 
