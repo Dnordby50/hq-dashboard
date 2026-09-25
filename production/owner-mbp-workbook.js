@@ -249,6 +249,26 @@ export function workbookRowGroups(layout, sheetId, open = new Set()) {
   }));
 }
 
+/**
+ * Rows the source hides outside every outline group, that still hold a typed value.
+ * No +/- control can reach these, so the toolbar offers to reveal them. Only entered
+ * values count: a formula cell in a hidden template row is not somebody's entry.
+ */
+export function workbookHiddenValueRows(sheetId, sheet, layout = MBP_WORKBOOK_LAYOUT) {
+  const spec = layout.sheets[sheetId];
+  if (!spec || !sheet) return [];
+  const grouped = row => (spec.rowGroups || []).some(group => row >= group.from && row <= group.to);
+  return (spec.hiddenRows || []).filter(row => {
+    if (grouped(row)) return false;
+    for (let c = 3; c <= 14; c++) {
+      const cell = sheet.cells[`${financeColumn(c)}${row}`];
+      if (!cell || cell.f) continue;
+      if (cell.v !== null && cell.v !== undefined && cell.v !== '' && cell.v !== 0) return true;
+    }
+    return false;
+  });
+}
+
 /** Rows hidden by the outline, given which groups the viewer opened. */
 export function outlineHiddenRows(layout, sheetId, open = new Set()) {
   const hidden = new Set();
@@ -496,6 +516,7 @@ function inputContent(body, field, cellState, spec, address, coverage, nf) {
  */
 export function renderWorkbookFinance(sheetId, {
   body, computed, layout = MBP_WORKBOOK_LAYOUT, readOnly = false, openGroups = new Set(), sectionRows = new Map(),
+  showHiddenValues = false,
 } = {}) {
   const geometry = sheetGeometry(layout, sheetId), { spec } = geometry;
   const sheet = body.sheets.find(item => item.kind === spec.kind);
@@ -503,8 +524,12 @@ export function renderWorkbookFinance(sheetId, {
   if (!sheet) return '';
   const templates = spec.templates, rowTemplate = spec.rowTemplate;
   const outlineHidden = outlineHiddenRows(layout, sheetId, openGroups);
+  const revealed = new Set(showHiddenValues ? workbookHiddenValueRows(sheetId, sheet, layout) : []);
   const rows = [];
-  for (let r = 1; r <= spec.rows; r++) if (!outlineHidden.has(r) && !(geometry.hiddenRows.has(r) && !insideGroup(layout, sheetId, r))) rows.push(r);
+  for (let r = 1; r <= spec.rows; r++) {
+    if (revealed.has(r)) { rows.push(r); continue; }
+    if (!outlineHidden.has(r) && !(geometry.hiddenRows.has(r) && !insideGroup(layout, sheetId, r))) rows.push(r);
+  }
   const cols = [];
   for (let c = 1; c <= spec.cols; c++) if (!geometry.hiddenCols.has(c)) cols.push(c);
   const inputs = new Map();

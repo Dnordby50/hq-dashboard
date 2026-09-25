@@ -1,3 +1,18 @@
+## [2026-09-25 10:12 MST] owner: prompt 108 answers, open the buried income rows; no outline bar on SP/RP
+By: Claude Code
+
+Dylan's two answers from the approval gate.
+
+1. Income Statement - 2 rows 73 and 74. He said "I can't open rows 73 and 74", so the rows need a way in. Added a toolbar control on Budget - 2 and Income Statement - 2: "Show N hidden rows with values", which reveals only the rows the source hides OUTSIDE every outline group that still hold an entered value. Off by default, so the opening view is still the workbook's exactly; revealing them does not expand any outline group, and the count only appears when such rows exist. Only entered values count: a formula cell in a hidden template row and an explicit zero are both ignored, so the control never lights up for template scaffolding. The data-notes panel also names the affected rows. On live finance:2026 that is exactly rows 73 and 74 on the Income Statement (one month entered each, linked to Budget - 2 H80 and H81); row 822 is unaffected because its own group control at row 818 already reaches it.
+
+2. No outline bar on Sales Plan or Revenue Produced. That is how it was already built, so nothing changed: the hidden claims columns (O:T) and the weekly override columns (AL, AO) stay hidden with no +/- control, as decision 12 scoped. Recorded in owner-mbp.md so a later pass does not add it back.
+
+Validation: npm test including posttest PASS, owner suite now 146 tests. New case covers finding the buried rows, ignoring grouped rows, formula cells and explicit zeros, the default view matching the workbook, the reveal adding exactly those rows, and the outline groups staying collapsed while revealed. check:source passed; git diff --check clean. Re-rendered the Income Statement preview at 1920x1080 with two synthetic buried rows to confirm they appear in place with their own workbook styling.
+
+Files touched: production/owner-mbp-workbook.js, production/owner-mbp-workbook.test.js, production/owner-studio.js, production/owner-mbp.md, features.json.
+
+Next steps: Dylan, the preview link is unchanged. Compare the eight sheets against the Excel file and reply approve, or list what is off. Step 4 (one MBP tab replacing the four, dropped controls, old deep-link redirects, What's New entry) still waits on that.
+
 ## [2026-09-25 09:52 MST] owner: verify prompt 108 preview live
 By: Claude Code
 

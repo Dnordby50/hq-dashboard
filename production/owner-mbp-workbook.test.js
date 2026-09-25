@@ -7,8 +7,8 @@ import { ownerFixture } from './owner-test-fixture.js';
 import { WORKBOOK_SHEET_IDS as ROUTINE_SHEET_IDS } from './owner-routine.js';
 import {
   WORKBOOK_SHEETS, WORKBOOK_SHEET_IDS, formatExcel, mbpFlag, outlineHiddenRows,
-  renderSummaryPL, renderWorkbookSheet, renderWorkbookTopBox, workbookFooter, workbookNavigate, workbookRowGroups,
-  workbookStyleCss, SUMMARY_PL,
+  renderSummaryPL, renderWorkbookSheet, renderWorkbookTopBox, renderWorkbookFinance, workbookFooter, workbookNavigate,
+  workbookRowGroups, workbookHiddenValueRows, workbookStyleCss, SUMMARY_PL,
 } from './owner-mbp-workbook.js';
 import { MBP_WORKBOOK_LAYOUT } from './owner-mbp-workbook-layout.js';
 
@@ -225,4 +225,23 @@ test('the generated layout carries presentation only, never owner numbers or acc
     }
   }
   assert.ok(workbookStyleCss().startsWith('.tc-wb-table .wbs1{'));
+});
+
+test('rows the source buries outside every outline group are found and can be opened', () => {
+  // Income Statement - 2 hides rows 73 and 74 outside every group, so no +/- control
+  // reaches them; the toolbar reveal is the only way in.
+  const cells = { C73: { v: 1200 }, C74: { v: 900 }, C96: { v: 50 }, D100: { f: '=1+1', v: 5 }, C700: { v: 0 } };
+  assert.deepEqual(workbookHiddenValueRows('income', { cells }), [73, 74]);
+  assert.ok(!workbookHiddenValueRows('income', { cells }).includes(96), 'a row inside a collapsed group is reached by its own control');
+  assert.ok(!workbookHiddenValueRows('income', { cells }).includes(100), 'a formula cell is not somebody\'s entry');
+  assert.ok(!workbookHiddenValueRows('income', { cells }).includes(700), 'an explicit zero is not a value here');
+  const sheet = { id: 'income', name: 'Income Statement - 2', kind: 'income', rows: 829, cols: 23, cells, inputRanges: [] };
+  const body = { year: 2026, sheets: [sheet] }, computed = { sheets: [{ id: 'income', cells }] };
+  const closed = renderWorkbookFinance('income', { body, computed });
+  const open = renderWorkbookFinance('income', { body, computed, showHiddenValues: true });
+  assert.ok(!closed.includes('data-row="73"'), 'the default view matches the workbook');
+  assert.match(open, /data-row="73"/);
+  assert.match(open, /data-row="74"/);
+  assert.ok(!open.includes('data-row="96"'), 'revealing buried rows does not expand the outline groups');
+  assert.equal((open.match(/data-row="/g) || []).length, (closed.match(/data-row="/g) || []).length + 2);
 });

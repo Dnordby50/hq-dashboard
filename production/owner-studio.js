@@ -3,7 +3,7 @@ import { mbpInputFields, applyMbpLive, applyMbpEdits, currentMbpWeek, mbpSaturda
 import { renderMbpInput, mbpSheetFields, parseMbpInput } from './owner-mbp-ui.js';
 import { FOCUS_FIELDS, routineStatus } from './owner-routine.js';
 import { calculateFinance } from './owner-finance.js';
-import { renderWorkbookSheet, renderWorkbookFinance, renderWorkbookTopBox, renderSummaryPL, workbookStyleCss, workbookNotes, workbookNavigate, workbookSheet as workbookSheetMeta, isWorkbookSheetId, WORKBOOK_SHEETS } from './owner-mbp-workbook.js';
+import { renderWorkbookSheet, renderWorkbookFinance, renderWorkbookTopBox, renderSummaryPL, workbookStyleCss, workbookNotes, workbookNavigate, workbookHiddenValueRows, workbookSheet as workbookSheetMeta, isWorkbookSheetId, WORKBOOK_SHEETS } from './owner-mbp-workbook.js';
 import { renderFinanceSheet, financeSnapshotView, financeSectionRows, financeInputCell, financeInputValue, parseFinanceInput, financeCompanyView, financeEmptySlot, financeSetAccountLabel, financeLabelTarget, financeSaveSizeError, FINANCE_COMPANIES } from './owner-finance-ui.js';
 
 // Public application code only. Owner data lives behind the authenticated API,
@@ -118,6 +118,9 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
   // redrawn shell, so the Fullscreen API keeps one element for the whole visit.
   let workbookSheetId=null,workbookRoot=null,workbookGroups=new Map(),workbookScroll=new Map();
   let workbookNotesOpen=false,workbookStatus='',workbookTimer=null,workbookFocus=null,workbookBusy=false,workbookQueued=false;
+  // Rows the source hides outside every outline group: no +/- control reaches them, so the
+  // toolbar offers to reveal the ones that hold a typed value. Off by default, as in Excel.
+  let workbookHiddenValues=new Set();
   let financeYear=null, financeYears=[], financeSource=false, financeHidden=false, financeCreate=false, financeCreateRequest=null;
   // Income statement view state. null means "use the owner setting" until the user changes it.
   let financeCompany=null, financeShowEmpty=null, financeAdding=null;
@@ -128,7 +131,7 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     epoch++; requests.forEach(c=>c.abort()); requests.clear(); uid=null; allowed=false; status=null; docs.clear(); pending.clear(); dirty=false; busy=false; bootstrapPromise=null; insight=''; page='focus'; message='';denied=false;retryAt=0;failures=0;
     mbpLiveMessage='';mbpLastCheck=0;mbpSaveRequest=null;mbpSourceFeed=null;
     financeYear=null;financeYears=[];financeSource=false;financeCreate=false;financeCreateRequest=null;financeHidden=false;financeCompany=null;financeShowEmpty=null;financeAdding=null;
-    closeWorkbook(); workbookGroups.clear(); workbookScroll.clear();
+    closeWorkbook(); workbookGroups.clear(); workbookScroll.clear(); workbookHiddenValues.clear();
     detach(); if(mount?.isConnected) mount.replaceChildren(); mount=null; onAccess(false);
   };
   const api=async(action,body,params={})=>{
@@ -416,21 +419,25 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
     if(!doc?.body.sheets)return {grid:'<p class="tc-wb-empty">Your budget and income statement have not been imported yet.</p>',notes:[]};
     const computed=calculateFinance(doc.body);
     const sheet=doc.body.sheets.find(s=>s.kind===meta.kind);
+    const buried=sheet?workbookHiddenValueRows(workbookSheetId,sheet):[];
+    const notes=workbookNotes({financeBody:doc.body,financeIssues:computed.issues||[],config:status.config});
+    if(buried.length)notes.push({kind:'hidden',text:`${buried.length} row${buried.length===1?'':'s'} the source workbook hides outside every outline group still hold entered values (row${buried.length===1?'':'s'} ${buried.join(', ')}). Use Show hidden rows with values in the toolbar to open them.`});
     return {
-      grid:renderWorkbookFinance(workbookSheetId,{body:doc.body,computed,openGroups:groupsFor(workbookSheetId),sectionRows:sheet?financeSectionRows(sheet):new Map()}),
-      notes:workbookNotes({financeBody:doc.body,financeIssues:computed.issues||[],config:status.config}),
+      grid:renderWorkbookFinance(workbookSheetId,{body:doc.body,computed,openGroups:groupsFor(workbookSheetId),sectionRows:sheet?financeSectionRows(sheet):new Map(),showHiddenValues:workbookHiddenValues.has(workbookSheetId)}),
+      notes,buried:buried.length,
     };
   }
   function drawWorkbook() {
     if(!workbookRoot||!workbookSheetId)return;
     const meta=workbookSheetMeta(workbookSheetId), weekly=meta.kind==='sales'||meta.kind==='revenue';
-    const {grid,notes}=workbookGrid();
+    const {grid,notes,buried=0}=workbookGrid();
     const full=typeof document!=='undefined'&&document.fullscreenElement===workbookRoot;
     const tabs=WORKBOOK_SHEETS.map(sheet=>`<button type="button" data-action="workbook-sheet" data-sheet="${e(sheet.id)}" aria-current="${sheet.id===workbookSheetId}">${e(sheet.label)}</button>`).join('');
     workbookRoot.innerHTML=`<style>${workbookStyleCss()}</style>`
       +`<div class="tc-wb-toolbar"><span class="tc-wb-title">${e(meta.label)}</span>`
       +(weekly?renderMbpPeriodFilter(period).replace('tc-field','tc-field tc-wb-period'):'')
       +`${full?'':'<button type="button" data-action="workbook-fullscreen">Go full screen</button>'}`
+      +(buried?`<button type="button" data-action="workbook-hidden-values" aria-pressed="${workbookHiddenValues.has(workbookSheetId)}">${workbookHiddenValues.has(workbookSheetId)?'Hide them again':`Show ${buried} hidden row${buried===1?'':'s'} with values`}</button>`:'')
       +`<button type="button" data-action="workbook-notes" class="${workbookNotesOpen?'tc-wb-notes-open':''}" aria-pressed="${workbookNotesOpen}" aria-label="${notes.length} data notes">⚠ ${notes.length}</button>`
       +`<span class="tc-wb-status ${workbookStatus==='Conflict'?'is-conflict':''}" role="status" aria-live="polite">${e(workbookStatus)}</span>`
       +`<button type="button" data-action="workbook-exit">Exit</button></div>`
@@ -584,6 +591,10 @@ export function createOwnerStudio({ getSession, openOwner, onAccess=()=>{}, fetc
       if(action==='workbook-exit'){closeWorkbook();draw();return;}
       if(action==='workbook-fullscreen'){try{await workbookRoot.requestFullscreen?.();}catch{}drawWorkbook();return;}
       if(action==='workbook-notes'){workbookNotesOpen=!workbookNotesOpen;drawWorkbook();return;}
+      if(action==='workbook-hidden-values'){
+        if(workbookHiddenValues.has(workbookSheetId))workbookHiddenValues.delete(workbookSheetId);else workbookHiddenValues.add(workbookSheetId);
+        drawWorkbook();return;
+      }
       if(action==='workbook-group'){
         const id=target.dataset.group,open=groupsFor(workbookSheetId);
         if(open.has(id))open.delete(id);else open.add(id);
